@@ -1,0 +1,9 @@
+name = "GradPower"
+uuid = "5211b32c-a125-4187-bd0f-53521f0f3afa"
+authors = ["Adrian Maldonado <dmaldona@hawk.iit.edu>"]
+version = "0.1.0"
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Match = "7eb4fadd-790c-5f42-8a69-bfa0b872bfbf"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
