@@ -1,6 +1,7 @@
 module GradPower
 
 using LinearAlgebra
+using SparseArrays
 
 struct Bus
     i::Int64
@@ -40,6 +41,11 @@ struct Shunt
     bsh::Float64
 end
 
+mutable struct Network
+    adjacency::Vector{Vector{Int}}
+    ybus::Matrix
+end
+
 mutable struct PowerSystem
     baseMVA::Float64
     buses::Array{Bus,1}
@@ -47,9 +53,16 @@ mutable struct PowerSystem
     loads::Array{Load,1}
     branches::Array{Branch,1}
     shunts::Array{Shunt,1}
-    busmap::Dict{Int64,Int64}
+    busmap::Dict{Int,Int}
+    network::Union{Nothing,Network}
+end
+
+function PowerSystem(baseMVA, buses, gens, loads, branches, shunts, busmap)
+    ps = PowerSystem(baseMVA, buses, gens, loads, branches, shunts, busmap, nothing)
+    return ps
 end
 
 include("parse.jl")
+include("network.jl")
 
 end # module GradPower

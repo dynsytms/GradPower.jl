@@ -14,9 +14,6 @@ function parse_data(block_data, field_names)
     return data
 end
 
-#   parse_case(file_name)
-#
-#   Parses a MATPOWER case file and returns a dictionary.
 function parse_case(file_name)
     file_content = read(file_name, String)
     mpc = Dict()
@@ -79,7 +76,7 @@ function mat_to_grad(mpc)
     # Iterate over each bus in the input dictionary
     for (index, bus) in enumerate(mpc["bus"])
         # Create a new Bus structure
-        new_bus = Bus(bus["bus_i"], string(bus["bus_i"]), bus["type"], bus["baseKV"], bus["Vm"], bus["Va"])
+        new_bus = Bus(bus["bus_i"], string(bus["bus_i"]), bus["type"], bus["baseKV"], (π/180.0)*bus["Vm"], bus["Va"])
         # Append the bus to our buses array
         push!(buses, new_bus)
         # Add a mapping from bus_i to the internal representation
