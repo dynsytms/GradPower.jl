@@ -2,6 +2,7 @@ module GradPower
 
 using LinearAlgebra
 using SparseArrays
+using NLsolve
 
 struct Bus
     i::Int64
@@ -43,7 +44,7 @@ end
 
 mutable struct Network
     adjacency::Vector{Vector{Int}}
-    ybus::Matrix
+    ybus::SparseMatrixCSC{ComplexF64,Int64}
 end
 
 mutable struct PowerSystem
@@ -64,5 +65,6 @@ end
 
 include("parse.jl")
 include("network.jl")
+include("pflow.jl")
 
 end # module GradPower

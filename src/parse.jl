@@ -72,29 +72,30 @@ function mat_to_grad(mpc)
     shunts = Shunt[]
     # Initialize an empty busmap
     busmap = Dict{Int64,Int64}()
+    baseMVA = mpc["baseMVA"]
 
     # Iterate over each bus in the input dictionary
     for (index, bus) in enumerate(mpc["bus"])
         # Create a new Bus structure
-        new_bus = Bus(bus["bus_i"], string(bus["bus_i"]), bus["type"], bus["baseKV"], (π/180.0)*bus["Vm"], bus["Va"])
+        new_bus = Bus(bus["bus_i"], string(bus["bus_i"]), bus["type"], bus["baseKV"], bus["Vm"], (π/180.0)*bus["Va"])
         # Append the bus to our buses array
         push!(buses, new_bus)
         # Add a mapping from bus_i to the internal representation
         busmap[bus["bus_i"]] = index
         # If the bus has load, create a Load structure
         if bus["Pd"] > 0.0 || bus["Qd"] > 0.0
-            push!(loads, Load(index, bus["Pd"], bus["Qd"]))
+            push!(loads, Load(index, bus["Pd"]/baseMVA, -bus["Qd"]/baseMVA))
         end
         # If the bus has shunt, create a Shunt structure
         if bus["Gs"] > 0.0 || bus["Bs"] > 0.0
-            push!(shunts, Shunt(index, bus["Gs"], bus["Bs"]))
+            push!(shunts, Shunt(index, bus["Gs"]/baseMVA, bus["Bs"]/baseMVA))
         end
     end
 
     # Convert the rest of the data from the input dictionary
     for gen in mpc["gen"]
         bus = busmap[gen["bus"]]
-        push!(gens, Gen(bus, gen["Pg"], gen["Qg"], gen["mBase"]))
+        push!(gens, Gen(bus, gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"]))
     end
     for branch in mpc["branch"]
         fr = busmap[branch["fbus"]]
