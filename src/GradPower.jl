@@ -1,8 +1,12 @@
 module GradPower
 
+# numerics
 using LinearAlgebra
 using SparseArrays
 using NLsolve
+
+# profiling
+using TimerOutputs
 
 struct Bus
     i::Int64
@@ -56,14 +60,16 @@ mutable struct PowerSystem
     shunts::Array{Shunt,1}
     busmap::Dict{Int,Int}
     network::Union{Nothing,Network}
+    profiler::TimerOutput
 end
 
 function PowerSystem(baseMVA, buses, gens, loads, branches, shunts, busmap)
-    ps = PowerSystem(baseMVA, buses, gens, loads, branches, shunts, busmap, nothing)
+    ps = PowerSystem(baseMVA, buses, gens, loads, branches, shunts, busmap, nothing, TimerOutput())
     return ps
 end
 
 include("parse.jl")
+include("numerics.jl")
 include("network.jl")
 include("pflow.jl")
 

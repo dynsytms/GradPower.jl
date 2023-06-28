@@ -251,6 +251,8 @@ end
 
 function runpf(psys::PowerSystem; verbose=false, fdiff=false)
 
+    prF = psys.profiler
+
     bus_type = [bus.type for bus in psys.buses]
     vmag = [bus.v0m for bus in psys.buses]
     vang = [bus.v0a for bus in psys.buses]
@@ -291,20 +293,22 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
 
     # NLsolve set up
     function func!(f::AbstractArray, x::AbstractArray)
-        resfun!(f, x, vmag, vang, pinj, qinj, psys.network.ybus, bus_type, pq_idx, pqv_idx)
+        @timeit prF "pflow: resfun" resfun!(f, x, vmag, vang, pinj, qinj, psys.network.ybus, bus_type, pq_idx, pqv_idx)
     end
 
     function jac!(jac::AbstractArray, x::AbstractArray)
-        update_jacobian!(jac, x, vmag, vang, pinj, qinj, psys.network.ybus, bus_type, pq_idx, pqv_idx)
+        @timeit prF "pflow: update_jac" update_jacobian!(jac, x, vmag, vang, pinj, qinj, psys.network.ybus, bus_type, pq_idx, pqv_idx)
     end
 
     if fdiff
-        result = nlsolve(func!, x0, method=:newton, iterations=50, show_trace=verbose)
+        @timeit prF "pflow: nlsolve - fdiff" result = nlsolve(func!, x0, method=:newton, iterations=50, show_trace=verbose)
     else
         J0 = construct_jacobian(x0, vmag, vang, pinj, qinj, psys.network.ybus, bus_type, pq_idx, pqv_idx)
         f0 = zero(x0)
         df = OnceDifferentiable(func!, jac!, x0, f0, J0)
-        result = nlsolve(df, x0, method=:newton, iterations=50, show_trace=verbose)
+        @timeit prF "pflow: nlsolve - jac" result = nlsolve(df, x0, method=:newton, iterations=50, show_trace=verbose)
+        # TODO: better interface to select solver
+        #@timeit prF "pflow: newton" result, success = newton(x0, J0, func!, jac!, tol = 1e-8, verbose = true)
     end
     return result
 end
