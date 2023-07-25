@@ -68,6 +68,14 @@ function PowerSystem(baseMVA, buses, gens, loads, branches, shunts, busmap)
     return ps
 end
 
+# Power Flow and static analysis
+
+mutable struct PowerFlowSolution
+    v::AbstractArray
+    sinj::AbstractArray
+end
+
+# Include files
 include("parse.jl")
 include("numerics.jl")
 include("network.jl")

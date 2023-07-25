@@ -249,6 +249,48 @@ function update_jacobian!(
     jac_mat.nzval .= J.nzval
 end
 
+function compute_pinj!(sinj, v, ybus_mat, nbus)
+    rows = rowvals(ybus_mat)
+    vals = nonzeros(ybus_mat)
+
+    for fr_bus in 1:nbus
+
+        sinj[2*fr_bus-1] = 0.0 # P
+        sinj[2*fr_bus] = 0.0 # Q
+
+        vmag_i = v[2*fr_bus-1]
+        vang_i = v[2*fr_bus]
+        angleij = 0.0
+
+        for i in nzrange(ybus_mat, fr_bus)
+            val = vals[i]
+            gij = real(val)
+            bij = imag(val)
+
+            if rows[i] == fr_bus
+                sinj[2*fr_bus-1] += vmag_i*vmag_i*(gij*cos(angleij)
+                    + bij*sin(angleij))
+
+                sinj[2*fr_bus] += vmag_i*vmag_i*(gij*sin(angleij)
+                    - bij*cos(angleij))
+            else
+                to_bus = rows[i]
+
+                vmag_j = v[2*to_bus-1]
+                vang_j = v[2*to_bus]
+
+                angleij = vang_i - vang_j
+
+                sinj[2*fr_bus-1] += vmag_i*vmag_j*(gij*cos(angleij)
+                    + bij*sin(angleij))
+
+                sinj[2*fr_bus] += vmag_i*vmag_j*(gij*sin(angleij)
+                    - bij*cos(angleij))
+            end
+        end
+    end
+end
+
 function runpf(psys::PowerSystem; verbose=false, fdiff=false)
 
     prF = psys.profiler
@@ -272,6 +314,7 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
     nslack = sum(bus_type .== 3)
     npv = sum(bus_type .== 2)
     npq = sum(bus_type .== 1)
+    nbuses = length(bus_type)
 
     x0 = zeros(2*npq + npv)
 
@@ -310,5 +353,28 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
         # TODO: better interface to select solver
         #@timeit prF "pflow: newton" result, success = newton(x0, J0, func!, jac!, tol = 1e-8, verbose = true)
     end
-    return result
+
+    # Retrieve solution
+    sol = result.zero
+
+    # Retrieve voltage magnitudes and angles
+    for i in 1:nbuses
+        if pq_idx[i] > 0
+            vmag[i] = sol[pq_idx[i]]
+        end
+
+        if pqv_idx[i] > 0
+            vang[i] = sol[npq + pqv_idx[i]]
+        end
+    end
+
+    # We will return a vector v and pinj such that
+    # v = [vmag1, vang1, vmag2, vang2, ...]
+    # Sinj = [pinj1, qinj1, pinj2, qinj2, ...]
+    v = vec([vmag vang]')
+    sinj = zeros(length(v))
+    compute_pinj!(sinj, v, psys.network.ybus, nbuses)
+    psol = PowerFlowSolution(v, sinj)
+
+    return psol
 end
