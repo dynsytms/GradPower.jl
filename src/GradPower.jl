@@ -71,7 +71,7 @@ end
 # Power Flow and static analysis
 
 mutable struct PowerFlowSolution
-    v::AbstractArray
+    volt::AbstractArray
     sinj::AbstractArray
 end
 
@@ -80,5 +80,10 @@ include("parse.jl")
 include("numerics.jl")
 include("network.jl")
 include("pflow.jl")
+
+# Exports
+export Bus, Gen, Load, Branch, Shunt, PowerSystem
+export build_network!
+export runpf
 
 end # module GradPower
