@@ -371,7 +371,7 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
     # We will return a vector v and pinj such that
     # v = [vmag1, vang1, vmag2, vang2, ...]
     # Sinj = [pinj1, qinj1, pinj2, qinj2, ...]
-    v = vec([vmag vang]')
+    v = Array(vec([vmag vang]'))
     sinj = zeros(length(v))
     compute_pinj!(sinj, v, psys.network.ybus, nbuses)
     psol = PowerFlowSolution(v, sinj)
