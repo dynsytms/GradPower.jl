@@ -70,20 +70,67 @@ end
 
 # Power Flow and static analysis
 
-mutable struct PowerFlowSolution
+struct PowerFlowSolution
     volt::AbstractArray
     sinj::AbstractArray
 end
 
-# Include files
+# Dynamics
+
+abstract type AbstractDeviceType end
+struct DynamicDevice
+    dtype::AbstractDeviceType
+    diff_ptr::Int64
+    alg_ptr::Int64
+    par_ptr::Int64
+end
+
+mutable struct PowerSystemDynamics
+    devices::Vector{DynamicDevice}
+    num_devices::Int64
+    diff_size::Int64
+    alg_size::Int64
+    par_size::Int64
+end
+
+function PowerSystemDynamics()
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0)
+    return psd
+end
+
+"""
+    add_device!(psd::PowerSystemDynamics, dtype::AbstractDeviceType, bus::Int64)
+
+Add a device to the dynamic system. The device type `dtype` must be a subtype of `AbstractDeviceType`.
+"""
+function add_device!(psd::PowerSystemDynamics, dtype::AbstractDeviceType)
+    diff_ptr = psd.diff_size + 1
+    alg_ptr = psd.alg_size + 1
+    par_ptr = psd.par_size + 1
+    push!(psd.devices, DynamicDevice(dtype, diff_ptr, alg_ptr, par_ptr))
+    psd.num_devices += 1
+    psd.diff_size += dtype.diff_size
+    psd.alg_size += dtype.alg_size
+    psd.par_size += dtype.par_size
+end
+
+
+# Include files. functionality.
 include("parse.jl")
 include("numerics.jl")
 include("network.jl")
 include("pflow.jl")
+include("dynamics.jl")
+
+# Include files. devices.
+include("generators.jl")
 
 # Exports
 export Bus, Gen, Load, Branch, Shunt, PowerSystem
 export build_network!
 export runpf
+export DynamicDevice, PowerSystemDynamics
+export add_device!
+export Genrou
 
 end # module GradPower
