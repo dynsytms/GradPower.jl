@@ -22,6 +22,7 @@ end
 
 struct Gen
     bus::Int64
+    id::String
     psch::Float64
     qsch::Float64
     mbase::Float64
@@ -29,6 +30,7 @@ end
 
 struct Load
     bus::Int64
+    id::String
     pd::Float64
     qd::Float64
 end
@@ -36,6 +38,7 @@ end
 struct Branch
     fr::Int
     to::Int
+    id::String
     r::Float64
     x::Float64
     sh::Float64
@@ -45,6 +48,7 @@ end
 
 struct Shunt
     bus::Int64
+    id::String
     gsh::Float64
     bsh::Float64
 end
