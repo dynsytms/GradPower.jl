@@ -1,5 +1,8 @@
 using Match
-using Printf
+
+# ======================
+# MATPOWER (*.m) parser
+# ======================
 
 function parse_matpower_line(line, field_names)
     split_line = split(line)
@@ -14,7 +17,7 @@ function parse_matpower_data(block_data, field_names)
     return data
 end
 
-function parse_case(file_name)
+function read_matpower_case(file_name)
     file_content = read(file_name, String)
     mpc = Dict()
 
@@ -63,10 +66,65 @@ function parse_case(file_name)
     return mpc
 end
 
+# ======================
+#  PSSE Dynamics (*.dyr)
+# ======================
+
+const DEVICE_TYPE_MAP = Dict(
+    "GENROU" => Genrou,
+    # add more device types here
+)
+
+function return_dyr_device(data, dev, ptr)
+    ptr += 1
+    while dev[end] != "/"
+        append!(dev, split(strip(data[ptr]), r"\s*,\s*|\s+"))
+        ptr = ptr + 1
+    end
+    return ptr, dev
+end
+
+function read_psse_dyr(dyr_filename)
+    devices = []
+    data = readlines(dyr_filename)
+    ptr = 1
+    data_len = length(data)
+
+    while ptr <= data_len
+        if occursin(",", data[ptr])
+            # Comma delimited file
+            dev = split(strip(data[ptr]), r"\s*,\s*")
+        else
+            dev = split(strip(data[ptr]), r"\s+")
+        end
+
+        if length(dev) == 0
+            # Empty
+            ptr = ptr + 1
+        elseif startswith(dev[1], "//")
+            # Comment
+            ptr = ptr + 1
+        else
+            ptr, dev = return_dyr_device(data, dev, ptr)
+            push!(devices, dev)
+        end
+    end
+    return devices
+end
+
 # ============
 # CONSTRUCTORS
 # ============
 
+"""
+    mat_to_grad(mpc)
+
+Converts a MATPOWER case to a PowerSystem GradPower structure after parsing
+with `read_matpower_case`.
+
+Note: Might want to create mpc struct to leverage multiple dispatch and
+ensure that the input is a MATPOWER case.
+"""
 function mat_to_grad(mpc)
     # Initialize empty arrays
     buses = Bus[]
@@ -110,4 +168,25 @@ function mat_to_grad(mpc)
     # Construct the PowerSystem structure
     ps = PowerSystem(mpc["baseMVA"], buses, gens, loads, branches, shunts, busmap)
     return ps
+end
+
+"""
+    create_device_vector(devices)
+
+Converts a vector of PSSE dyr devices to a vector of AbstractDeviceType structs.
+"""
+function create_device_vector(devices)
+    psse_devices = Vector{GradPower.AbstractDeviceType}()
+
+    for device in devices
+        device_type_name = strip(device[2], ''')  # strip apostrophes
+        if haskey(DEVICE_TYPE_MAP, device_type_name)
+            device_type = DEVICE_TYPE_MAP[device_type_name]
+            push!(psse_devices, from_data_fields(device_type, device))
+        else
+            @warn "Unknown device type: $device_type_name"
+        end
+    end
+
+    return psse_devices
 end

@@ -8,6 +8,9 @@ using NLsolve
 # profiling
 using TimerOutputs
 
+# misc
+using Printf
+
 struct Bus
     i::Int64
     id::String
@@ -113,7 +116,6 @@ end
 
 
 # Include files. functionality.
-include("parse.jl")
 include("numerics.jl")
 include("network.jl")
 include("pflow.jl")
@@ -122,6 +124,9 @@ include("dynamics.jl")
 # Include files. devices.
 include("generators.jl")
 
+# Include files. parsers.
+include("parse.jl")
+
 # Exports
 export Bus, Gen, Load, Branch, Shunt, PowerSystem
 export build_network!
@@ -129,5 +134,6 @@ export runpf
 export DynamicDevice, PowerSystemDynamics
 export add_device!
 export Genrou
+export from_data_field
 
 end # module GradPower
