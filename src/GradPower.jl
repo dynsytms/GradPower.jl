@@ -51,32 +51,6 @@ mutable struct Network
     ybus::SparseMatrixCSC{ComplexF64,Int64}
 end
 
-mutable struct PowerSystem
-    baseMVA::Float64
-    buses::Array{Bus,1}
-    gens::Array{Gen,1}
-    loads::Array{Load,1}
-    branches::Array{Branch,1}
-    shunts::Array{Shunt,1}
-    busmap::Dict{Int,Int}
-    network::Union{Nothing,Network}
-    profiler::TimerOutput
-end
-
-function PowerSystem(baseMVA, buses, gens, loads, branches, shunts, busmap)
-    ps = PowerSystem(baseMVA, buses, gens, loads, branches, shunts, busmap, nothing, TimerOutput())
-    return ps
-end
-
-# Power Flow and static analysis
-
-struct PowerFlowSolution
-    volt::AbstractArray
-    sinj::AbstractArray
-end
-
-# Dynamics
-
 abstract type AbstractDeviceType end
 struct DynamicDevice
     dtype::AbstractDeviceType
@@ -91,6 +65,29 @@ mutable struct PowerSystemDynamics
     diff_size::Int64
     alg_size::Int64
     par_size::Int64
+end
+
+mutable struct PowerSystem
+    baseMVA::Float64
+    buses::Array{Bus,1}
+    gens::Array{Gen,1}
+    loads::Array{Load,1}
+    branches::Array{Branch,1}
+    shunts::Array{Shunt,1}
+    busmap::Dict{Int,Int}
+    network::Union{Nothing,Network}
+    dynamic::Union{Nothing,PowerSystemDynamics}
+    profiler::TimerOutput
+end
+
+function PowerSystem(baseMVA, buses, gens, loads, branches, shunts, busmap)
+    ps = PowerSystem(baseMVA, buses, gens, loads, branches, shunts, busmap, nothing, nothing, TimerOutput())
+    return ps
+end
+
+struct PowerFlowSolution
+    volt::AbstractArray
+    sinj::AbstractArray
 end
 
 function PowerSystemDynamics()

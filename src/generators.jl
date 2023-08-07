@@ -1,10 +1,12 @@
 struct Genrou <: AbstractDeviceType
+    # representation
     diff_size::Int64
     alg_size::Int64
     par_size::Int64
-
+    # topology
     bus::Int64
     id::Int64
+    # parameters
     x_d::Float64
     x_q::Float64
     x_dp::Float64

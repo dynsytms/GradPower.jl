@@ -1,16 +1,16 @@
 using Match
 using Printf
 
-function parse_line(line, field_names)
+function parse_matpower_line(line, field_names)
     split_line = split(line)
     parsed_line = map(x -> tryparse(Float64, x), split_line)
     return Dict(zip(field_names, parsed_line))
 end
 
-function parse_data(block_data, field_names)
+function parse_matpower_data(block_data, field_names)
     lines = split(block_data, '\n')
     lines = filter(line -> !isempty(strip(line)), lines)  # remove empty lines
-    data = map(line -> parse_line(line, field_names), lines)
+    data = map(line -> parse_matpower_line(line, field_names), lines)
     return data
 end
 
@@ -56,12 +56,16 @@ function parse_case(file_name)
         match_block = match(block_regex, file_content)
         if match_block !== nothing
             block_data = match_block.captures[1]
-            mpc[block] = parse_data(block_data, fields)
+            mpc[block] = parse_matpower_data(block_data, fields)
         end
     end
 
     return mpc
 end
+
+# ============
+# CONSTRUCTORS
+# ============
 
 function mat_to_grad(mpc)
     # Initialize empty arrays
