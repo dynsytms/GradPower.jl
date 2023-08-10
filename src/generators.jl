@@ -1,4 +1,4 @@
-struct Genrou <: AbstractDeviceType
+struct Genrou <: AbstractGeneratorType
     # representation
     diff_size::Int64
     alg_size::Int64

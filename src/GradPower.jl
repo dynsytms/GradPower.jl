@@ -59,11 +59,26 @@ mutable struct Network
 end
 
 abstract type AbstractDeviceType end
+abstract type AbstractGeneratorType <: AbstractDeviceType end
+abstract type AbstractLoadType <: AbstractDeviceType end
+
 struct DynamicDevice
     dtype::AbstractDeviceType
     diff_ptr::Int64
     alg_ptr::Int64
     par_ptr::Int64
+end
+
+
+struct DynamicMap
+    bus::Vector{Int64}
+    gen::Vector{Int64}
+    load::Vector{Int64}
+end
+
+function DynamicMap(ndevices::Int64)
+    dm = DynamicMap(zeros(Int64, ndevices), zeros(Int64, ndevices), zeros(Int64, ndevices))
+    return dm
 end
 
 mutable struct PowerSystemDynamics
@@ -72,6 +87,7 @@ mutable struct PowerSystemDynamics
     diff_size::Int64
     alg_size::Int64
     par_size::Int64
+    map::Union{Nothing,DynamicMap}
 end
 
 mutable struct PowerSystem
@@ -98,12 +114,12 @@ struct PowerFlowSolution
 end
 
 function PowerSystemDynamics()
-    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0)
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, nothing)
     return psd
 end
 
 function PowerSystemDynamics(psse_dyr_file::String)
-    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0)
+    psd = PowerSystemDynamics()
     dyr_data = read_psse_dyr(psse_dyr_file)
     psse_devices = create_device_vector(dyr_data)
     for device in psse_devices
@@ -128,12 +144,42 @@ function add_device!(psd::PowerSystemDynamics, dtype::AbstractDeviceType)
     psd.par_size += dtype.par_size
 end
 
+function find_gen(ps::PowerSystem, bus::Int64)
+    for (i, gen) in enumerate(ps.gens)
+        if gen.bus == bus
+            return i
+        end
+    end
+    return 0
+end
+
+
 function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Bool=true)
+
+    # create dynamic map.
+    dmap = DynamicMap(psd.num_devices + length(ps.loads))
+
+    # iterate dynamic vector and assign buses.
+    for (i, device) in enumerate(psd.devices)
+        dmap.bus[i] = ps.busmap[device.dtype.bus]
+
+        # if device is a generator, find the corresponding generator in the static system.
+        if device.dtype isa AbstractGeneratorType
+            dmap.gen[i] = find_gen(ps, dmap.bus[i])
+            if dmap.gen[i] == 0
+                @warn "Generator not found for dynamic device $i"
+            end
+        end
+    end
+
     if add_loads
-        for load in ps.loads
+        for (i, load) in enumerate(ps.loads)
+            dmap.load[psd.num_devices + 1] = i
+            dmap.bus[psd.num_devices + 1] = load.bus
             add_device!(psd, ZIPLoad(load.bus, load.id, load.pd, load.qd, 1.0, 0.0, 0.0, 1.0, ps.buses[load.bus].v0m, 0.0, 0.0))
         end
     end
+    psd.map = dmap
     ps.dynamic = psd
 end
 

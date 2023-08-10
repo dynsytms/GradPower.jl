@@ -1,4 +1,4 @@
-struct ZIPLoad <: AbstractDeviceType
+struct ZIPLoad <: AbstractLoadType
     # representation
     diff_size::Int64
     alg_size::Int64
