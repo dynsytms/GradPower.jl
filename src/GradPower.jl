@@ -11,7 +11,7 @@ using TimerOutputs
 # misc
 using Printf
 
-struct Bus
+mutable struct Bus
     i::Int64
     id::String
     type::Int64
@@ -20,7 +20,7 @@ struct Bus
     v0a::Float64
 end
 
-struct Gen
+mutable struct Gen
     bus::Int64
     id::String
     psch::Float64
@@ -28,14 +28,14 @@ struct Gen
     mbase::Float64
 end
 
-struct Load
+mutable struct Load
     bus::Int64
     id::String
     pd::Float64
     qd::Float64
 end
 
-struct Branch
+mutable struct Branch
     fr::Int
     to::Int
     id::String
@@ -46,7 +46,7 @@ struct Branch
     shift::Float64
 end
 
-struct Shunt
+mutable struct Shunt
     bus::Int64
     id::String
     gsh::Float64
@@ -102,6 +102,16 @@ function PowerSystemDynamics()
     return psd
 end
 
+function PowerSystemDynamics(psse_dyr_file::String)
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0)
+    dyr_data = read_psse_dyr(psse_dyr_file)
+    psse_devices = create_device_vector(dyr_data)
+    for device in psse_devices
+        add_device!(psd, device)
+    end
+    return psd
+end
+
 """
     add_device!(psd::PowerSystemDynamics, dtype::AbstractDeviceType, bus::Int64)
 
@@ -118,6 +128,15 @@ function add_device!(psd::PowerSystemDynamics, dtype::AbstractDeviceType)
     psd.par_size += dtype.par_size
 end
 
+function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Bool=true)
+    if add_loads
+        for load in ps.loads
+            add_device!(psd, ZIPLoad(load.bus, load.id, load.pd, load.qd, 1.0, 0.0, 0.0, 1.0, ps.buses[load.bus].v0m, 0.0, 0.0))
+        end
+    end
+    ps.dynamic = psd
+end
+
 
 # Include files. functionality.
 include("numerics.jl")
@@ -127,9 +146,13 @@ include("dynamics.jl")
 
 # Include files. devices.
 include("generators.jl")
+include("loads.jl")
 
 # Include files. parsers.
 include("parse.jl")
+
+# Display functions.
+include("display.jl")
 
 # Exports
 export Bus, Gen, Load, Branch, Shunt, PowerSystem

@@ -5,7 +5,7 @@ struct ZIPLoad <: AbstractDeviceType
     par_size::Int64
     # topology
     bus::Int64
-    id::Int64
+    id::String
     # parameters
     pinj::Float64
     qinj::Float64

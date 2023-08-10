@@ -378,3 +378,50 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
 
     return psol
 end
+
+# Same as runpf but instead of returning a solution, modifies the
+# PowerSystem struct in place.
+function runpf!(psys::PowerSystem; verbose=false, fdiff=false)
+    psol = runpf(psys, verbose=verbose, fdiff=fdiff)
+
+    # bus number to generator. This an array of arays
+    # where bus_to_gen[i] gives an array with the indices
+    # of all generators connected to bus i.
+    # NOTE: might need to create this structure in other place
+    # and store it in the PowerSystem struct
+    bus_to_gen = [Array{Int}(undef, 0) for i in 1:length(psys.buses)]
+    for (idx, gen) in enumerate(psys.gens)
+        push!(bus_to_gen[gen.bus], idx)
+    end
+
+    # Update bus voltages
+    for (idx, bus) in enumerate(psys.buses)
+        bus.v0m = psol.volt[2*idx-1]
+        bus.v0a = psol.volt[2*idx]
+    end
+
+    # compute generation vector
+    sgen = copy(psol.sinj)
+    for (idx, load) in enumerate(psys.loads)
+        sgen[2*load.bus-1] -= load.pd
+        sgen[2*load.bus] -= load.qd
+    end
+
+    # for all the PV buses. we distribute the reactive power
+    # among all the generators evenly.
+    for (idx, bus) in enumerate(psys.buses)
+        ngen = length(bus_to_gen[idx])
+        if bus.type == 2
+            for gen_idx in bus_to_gen[idx]
+                psys.gens[gen_idx].qsch = sgen[2*idx] / ngen
+            end
+        end
+
+        if bus.type == 1
+            for gen_idx in bus_to_gen[idx]
+                psys.gens[gen_idx].psch = sgen[2*idx-1] / ngen
+                psys.gens[gen_idx].qsch = sgen[2*idx] / ngen
+            end
+        end
+    end
+end
