@@ -1,5 +1,7 @@
 module GradPower
 
+import Base: show
+
 # numerics
 using LinearAlgebra
 using SparseArrays
@@ -66,6 +68,7 @@ struct DynamicDevice
     dtype::AbstractDeviceType
     diff_ptr::Int64
     alg_ptr::Int64
+    ctrl_ptr::Int64
     par_ptr::Int64
 end
 
@@ -84,9 +87,10 @@ end
 mutable struct PowerSystemDynamics
     devices::Vector{DynamicDevice}
     num_devices::Int64
-    diff_size::Int64
-    alg_size::Int64
-    par_size::Int64
+    diff_dim::Int64
+    alg_dim::Int64
+    ctrl_dim::Int64
+    par_dim::Int64
     map::Union{Nothing,DynamicMap}
 end
 
@@ -114,7 +118,7 @@ struct PowerFlowSolution
 end
 
 function PowerSystemDynamics()
-    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, nothing)
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing)
     return psd
 end
 
@@ -134,14 +138,16 @@ end
 Add a device to the dynamic system. The device type `dtype` must be a subtype of `AbstractDeviceType`.
 """
 function add_device!(psd::PowerSystemDynamics, dtype::AbstractDeviceType)
-    diff_ptr = psd.diff_size + 1
-    alg_ptr = psd.alg_size + 1
-    par_ptr = psd.par_size + 1
-    push!(psd.devices, DynamicDevice(dtype, diff_ptr, alg_ptr, par_ptr))
+    diff_ptr = psd.diff_dim + 1
+    alg_ptr = psd.alg_dim + 1
+    ctrl_ptr = psd.ctrl_dim + 1
+    par_ptr = psd.par_dim + 1
+    push!(psd.devices, DynamicDevice(dtype, diff_ptr, alg_ptr, ctrl_ptr, par_ptr))
     psd.num_devices += 1
-    psd.diff_size += dtype.diff_size
-    psd.alg_size += dtype.alg_size
-    psd.par_size += dtype.par_size
+    psd.diff_dim += dtype.diff_size
+    psd.alg_dim += dtype.alg_size
+    psd.ctrl_dim += dtype.ctrl_size
+    psd.par_dim += dtype.par_size
 end
 
 function find_gen(ps::PowerSystem, bus::Int64)
@@ -152,7 +158,6 @@ function find_gen(ps::PowerSystem, bus::Int64)
     end
     return 0
 end
-
 
 function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Bool=true)
 
@@ -165,6 +170,7 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
 
         # if device is a generator, find the corresponding generator in the static system.
         if device.dtype isa AbstractGeneratorType
+            # NOTE: this is a hack. we should be able to find the generator by its bus AND id.
             dmap.gen[i] = find_gen(ps, dmap.bus[i])
             if dmap.gen[i] == 0
                 @warn "Generator not found for dynamic device $i"
@@ -183,16 +189,32 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
     ps.dynamic = psd
 end
 
+mutable struct DynamicProblem
+    zvec::AbstractArray
+    uvec::AbstractArray
+    pvec::AbstractArray
+end
+
+function DynamicProblem(ps::PowerSystem)
+    @assert ps.dynamic != nothing "Dynamic system not initialized."
+    @assert ps.dynamic.map != nothing "Dynamic map not initialized."
+    dp = DynamicProblem(zeros(Float64, ps.dynamic.diff_dim + ps.dynamic.alg_dim + 2*length(ps.buses)),
+                        zeros(Float64, ps.dynamic.ctrl_dim),
+                        zeros(Float64, ps.dynamic.par_dim))
+
+    # fill parameter vector.
+    for (i, device) in enumerate(ps.dynamic.devices)
+        fill_pvec!(@view(dp.pvec[device.par_ptr:device.par_ptr+device.dtype.par_size-1]), device.dtype)
+    end
+    return dp
+end
+
 
 # Include files. functionality.
 include("numerics.jl")
 include("network.jl")
 include("pflow.jl")
 include("dynamics.jl")
-
-# Include files. devices.
-include("generators.jl")
-include("loads.jl")
 
 # Include files. parsers.
 include("parse.jl")
@@ -206,7 +228,5 @@ export build_network!
 export runpf
 export DynamicDevice, PowerSystemDynamics
 export add_device!
-export Genrou
-export from_data_field
 
 end # module GradPower

@@ -267,26 +267,18 @@ function compute_pinj!(sinj, v, ybus_mat, nbus)
             gij = real(val)
             bij = imag(val)
 
-            if rows[i] == fr_bus
-                sinj[2*fr_bus-1] += vmag_i*vmag_i*(gij*cos(angleij)
-                    + bij*sin(angleij))
+            to_bus = rows[i]
 
-                sinj[2*fr_bus] += vmag_i*vmag_i*(gij*sin(angleij)
-                    - bij*cos(angleij))
-            else
-                to_bus = rows[i]
+            vmag_j = v[2*to_bus-1]
+            vang_j = v[2*to_bus]
 
-                vmag_j = v[2*to_bus-1]
-                vang_j = v[2*to_bus]
+            angleij = vang_i - vang_j
 
-                angleij = vang_i - vang_j
+            sinj[2*fr_bus-1] += vmag_i*vmag_j*(gij*cos(angleij)
+                + bij*sin(angleij))
 
-                sinj[2*fr_bus-1] += vmag_i*vmag_j*(gij*cos(angleij)
-                    + bij*sin(angleij))
-
-                sinj[2*fr_bus] += vmag_i*vmag_j*(gij*sin(angleij)
-                    - bij*cos(angleij))
-            end
+            sinj[2*fr_bus] += vmag_i*vmag_j*(gij*sin(angleij)
+                - bij*cos(angleij))
         end
     end
 end
@@ -375,7 +367,6 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
     sinj = zeros(length(v))
     compute_pinj!(sinj, v, psys.network.ybus, nbuses)
     psol = PowerFlowSolution(v, sinj)
-
     return psol
 end
 
@@ -417,7 +408,7 @@ function runpf!(psys::PowerSystem; verbose=false, fdiff=false)
             end
         end
 
-        if bus.type == 1
+        if bus.type == 3
             for gen_idx in bus_to_gen[idx]
                 psys.gens[gen_idx].psch = sgen[2*idx-1] / ngen
                 psys.gens[gen_idx].qsch = sgen[2*idx] / ngen

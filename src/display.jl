@@ -1,4 +1,3 @@
-import Base: show
 
 function show(io::IO, sys::PowerSystem)
     println(io, "PowerSystem:")
