@@ -58,6 +58,7 @@ end
 mutable struct Network
     adjacency::Vector{Vector{Int}}
     ybus::SparseMatrixCSC{ComplexF64,Int64}
+    ybus_real::SparseMatrixCSC{Float64,Int64}
 end
 
 abstract type AbstractDeviceType end
@@ -77,10 +78,30 @@ struct DynamicMap
     bus::Vector{Int64}
     gen::Vector{Int64}
     load::Vector{Int64}
+    # pointers
+    diff_ptr::Vector{Int64}
+    alg_ptr::Vector{Int64}
+    ctrl_ptr::Vector{Int64}
+    par_ptr::Vector{Int64}
+    # sizes
+    diff_size::Vector{Int64}
+    alg_size::Vector{Int64}
+    ctrl_size::Vector{Int64}
+    par_size::Vector{Int64}
 end
 
 function DynamicMap(ndevices::Int64)
-    dm = DynamicMap(zeros(Int64, ndevices), zeros(Int64, ndevices), zeros(Int64, ndevices))
+    dm = DynamicMap(zeros(Int64, ndevices),
+                    zeros(Int64, ndevices),
+                    zeros(Int64, ndevices),
+                    zeros(Int64, ndevices),
+                    zeros(Int64, ndevices),
+                    zeros(Int64, ndevices),
+                    zeros(Int64, ndevices),
+                    zeros(Int64, ndevices),
+                    zeros(Int64, ndevices),
+                    zeros(Int64, ndevices),
+                    zeros(Int64, ndevices))
     return dm
 end
 
@@ -185,6 +206,20 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
             add_device!(psd, ZIPLoad(load.bus, load.id, load.pd, load.qd, 1.0, 0.0, 0.0, 1.0, ps.buses[load.bus].v0m, 0.0, 0.0))
         end
     end
+
+    # iterate dynamic vector and assign pointers and sizes.
+    for (i, device) in enumerate(psd.devices)
+        dmap.diff_ptr[i] = device.diff_ptr
+        dmap.alg_ptr[i] = device.alg_ptr
+        dmap.ctrl_ptr[i] = device.ctrl_ptr
+        dmap.par_ptr[i] = device.par_ptr
+
+        dmap.diff_size[i] = device.dtype.diff_size
+        dmap.alg_size[i] = device.dtype.alg_size
+        dmap.ctrl_size[i] = device.dtype.ctrl_size
+        dmap.par_size[i] = device.dtype.par_size
+    end
+
     psd.map = dmap
     ps.dynamic = psd
 end
@@ -201,12 +236,6 @@ function DynamicProblem(ps::PowerSystem)
     dp = DynamicProblem(zeros(Float64, ps.dynamic.diff_dim + ps.dynamic.alg_dim + 2*length(ps.buses)),
                         zeros(Float64, ps.dynamic.ctrl_dim),
                         zeros(Float64, ps.dynamic.par_dim))
-
-    # fill parameter vector.
-    for (i, device) in enumerate(ps.dynamic.devices)
-        fill_pvec!(@view(dp.pvec[device.par_ptr:device.par_ptr+device.dtype.par_size-1]), device.dtype)
-    end
-    return dp
 end
 
 

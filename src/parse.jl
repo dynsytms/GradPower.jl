@@ -238,7 +238,7 @@ function raw_to_grad(raw::PsystemRaw)
 
     for shunt in raw.shunts
         bus = busmap[shunt.busn]
-        push!(shunts, Shunt(bus, shunt.name, shunt.gl/baseMVA, shunt.bl/baseMVA))
+        push!(shunts, Shunt(bus, shunt.name, shunt.gshunt/baseMVA, shunt.bshunt/baseMVA))
     end
 
     # Construct the PowerSystem structure
