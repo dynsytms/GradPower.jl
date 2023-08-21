@@ -128,6 +128,17 @@ function rhs_fun!(f::AbstractArray, z::AbstractArray, u::AbstractArray, p::Abstr
         cinject!(f_net, diff, alg, ctrl, par, vloc, device.dtype)
         rhs_fun!(f_diff, f_alg, diff, alg, ctrl, par, vloc, device.dtype)
     end
+
+    for (i, event) in enumerate(sys.dynamic.events)
+        if event.status
+            bus = event.bus
+            vr = v[2*(bus-1)+1]
+            vi = v[2*(bus-1)+2]
+            yfault = 1.0/event.rfault
+            f[diff_dim+alg_dim+2*(bus-1)+1] -= yfault*vr
+            f[diff_dim+alg_dim+2*(bus-1)+2] -= yfault*vi
+        end
+    end
 end
 
 function beuler!(
@@ -152,6 +163,20 @@ function integrate!(dp::DynamicProblem, ps::PowerSystem, tf::Float64; dt::Float6
     nsteps = Int(round(tf/dt))
     tvec = collect(0:dt:tf)
 
+    # retrieve events.
+    # TODO: we can only do one event right now.
+    events = ps.dynamic.events
+    @assert length(events) <= 1
+    ton = toff = tf + dt
+    step_on = step_off = nsteps + 1
+    if length(events) == 1
+        event = events[1]
+        ton = event.ton
+        toff = event.toff
+        step_on = Int(round(ton/dt))
+        step_off = Int(round(toff/dt))
+    end
+
     # retrieve sizes
     nbus = length(ps.buses)
     system_size = ps.dynamic.diff_dim + ps.dynamic.alg_dim + 2*nbus
@@ -159,37 +184,51 @@ function integrate!(dp::DynamicProblem, ps::PowerSystem, tf::Float64; dt::Float6
 
     # allocate solution trajectory.
     traj = zeros(Float64, system_size, nsteps+1)
-    traj[:,1] .= dp.zvec
 
     # allocate temporary vectors
-    z = zeros(Float64, system_size)
-    f = zeros(Float64, system_size)
+    zold = zeros(Float64, system_size)
+    println("Integrating from t = 0 s to t = $tf s with dt = $dt s.")
 
-    # allocate temporary views
-    x = @view z[1:ps.dynamic.diff_dim]
-    y = @view z[ps.dynamic.diff_dim+1:ps.dynamic.diff_dim+ps.dynamic.alg_dim]
-    v = @view z[ps.dynamic.diff_dim+ps.dynamic.alg_dim+1:end]
+    println(dp.zvec)
+    # newton parameters
+    ftol = 1e-9
+    max_iter = 30
 
+    # initial condition
+    zold .= dp.zvec
+    traj[:,1] .= dp.zvec
+    
     # time loop
     for k in 1:nsteps
         @printf("Time-stepping. t = %.2f s.\n", tvec[k])
-        # retrieve current state
-        z .= traj[:,k]
+        f_beuler!(f, z) = beuler!(f, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
+        sol = nlsolve(f_beuler!, zold, ftol=ftol, iterations=max_iter)
+        @printf("Converged in %d iterations. Residual norm: %.2e.\n", sol.iterations, sol.residual_norm)
+        zold .= sol.zero
+        traj[:,k+1] .= zold
 
-        # wrap the beuler function for NLSolve
-        # TODO: this is not very efficient, but it works for now.
-        f_beuler!(f, z) = beuler!(f, z, traj[:,k], dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
-        sol = nlsolve(f_beuler!, z, ftol=1e-12, iterations=30)
-        if !sol.f_converged
-            @error "Newton solver did not converge at time $tvec[k]."
-        else
-            @printf("Converged in %d iterations. Residual norm: %.2e.\n", sol.iterations, sol.residual_norm)
-            z .= sol.zero
+        if k == step_on
+            activate!(events[1])
+            println("Event activated at t = $ton s. Fault at bus $(events[1].bus).")
+            f_beuler_on!(f, z) = beuler!(f, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, 0.0)
+            sol = nlsolve(f_beuler_on!, zold, ftol=ftol, iterations=max_iter)
+            zold .= sol.zero
+            @printf("ALG. Converged in %d iterations. Residual norm: %.2e.\n", sol.iterations, sol.residual_norm)
+        elseif k == step_off
+            deactivate!(events[1])
+            println("Event deactivated at t = $toff s.")
+            f_beuler_off!(f, z) = beuler!(f, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, 0.0)
+            sol = nlsolve(f_beuler_off!, zold, ftol=ftol, iterations=max_iter)
+            @printf("ALG. Converged in %d iterations. Residual norm: %.2e.\n", sol.iterations, sol.residual_norm)
+            zold .= sol.zero
         end
 
-        # store solution
-        traj[:,k+1] .= z
     end
+    # ensure fault is deactivated at the end
+    for event in events
+        deactivate!(event)
+    end
+
     dp.zvec = traj[:,end]
     return tvec, traj
 end

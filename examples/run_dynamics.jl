@@ -1,3 +1,4 @@
+using Plots
 using Revise    
 using GradPower
 
@@ -15,12 +16,14 @@ GradPower.set_dynamics!(sys, psd)
 
 # power flow
 GradPower.build_network!(sys)
-GradPower.runpf!(sys, verbose=true);
+GradPower.runpf!(sys, verbose=false);
 
 # dynamic simulation
 tfinal = 1.0
 dprob = GradPower.DynamicProblem(sys)
 GradPower.initialize_dynamics!(dprob, sys)
-# perturb state manually
-dprob.zvec[5] += 0.01
-GradPower.integrate!(dprob, sys, tfinal)
+
+# add event
+event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
+
+tvec, traj = GradPower.integrate!(dprob, sys, tfinal)

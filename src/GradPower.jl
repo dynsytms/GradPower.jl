@@ -73,7 +73,6 @@ struct DynamicDevice
     par_ptr::Int64
 end
 
-
 struct DynamicMap
     bus::Vector{Int64}
     gen::Vector{Int64}
@@ -105,6 +104,25 @@ function DynamicMap(ndevices::Int64)
     return dm
 end
 
+mutable struct ContingencyEvent
+    bus::Int64
+    status::Bool
+    rfault::Float64
+    ton::Float64
+    toff::Float64
+end
+
+function ContingencyEvent(bus::Int64, rfault::Float64, ton::Float64, toff::Float64)
+    ce = ContingencyEvent(bus, false, rfault, ton, toff)
+    return ce
+end
+
+mutable struct DynamicProblem
+    zvec::AbstractArray
+    uvec::AbstractArray
+    pvec::AbstractArray
+end
+
 mutable struct PowerSystemDynamics
     devices::Vector{DynamicDevice}
     num_devices::Int64
@@ -113,6 +131,7 @@ mutable struct PowerSystemDynamics
     ctrl_dim::Int64
     par_dim::Int64
     map::Union{Nothing,DynamicMap}
+    events::Union{Nothing, Vector{ContingencyEvent}}
 end
 
 mutable struct PowerSystem
@@ -139,7 +158,7 @@ struct PowerFlowSolution
 end
 
 function PowerSystemDynamics()
-    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing)
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, Vector{ContingencyEvent}())
     return psd
 end
 
@@ -224,12 +243,6 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
     ps.dynamic = psd
 end
 
-mutable struct DynamicProblem
-    zvec::AbstractArray
-    uvec::AbstractArray
-    pvec::AbstractArray
-end
-
 function DynamicProblem(ps::PowerSystem)
     @assert ps.dynamic != nothing "Dynamic system not initialized."
     @assert ps.dynamic.map != nothing "Dynamic map not initialized."
@@ -238,6 +251,25 @@ function DynamicProblem(ps::PowerSystem)
                         zeros(Float64, ps.dynamic.par_dim))
 end
 
+function add_event!(psd::PowerSystemDynamics, event::ContingencyEvent)
+    push!(psd.events, event)
+end
+
+function add_event!(ps::PowerSystem, event::ContingencyEvent)
+    if ps.dynamic == nothing
+        @warn "No dynamics data found. Did not register event"
+        return
+    end
+    add_event!(ps.dynamic, event)
+end
+
+function activate!(event::ContingencyEvent)
+    event.status = true
+end
+
+function deactivate!(event::ContingencyEvent)
+    event.status = false
+end
 
 # Include files. functionality.
 include("numerics.jl")
