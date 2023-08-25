@@ -45,31 +45,33 @@ function cinject!(
         v::AbstractArray,
         dtype::ZIPLoad
 )
-    vr = v[1]
-    vi = v[2]
+    @inbounds begin
+        vr = v[1]
+        vi = v[2]
 
-    pl = p[1]
-    ql = p[2]
-    α = p[3]
-    β = p[4]
-    γ = p[5]
-    yload_real = p[8]
-    yload_imag = p[9]
-    yload_real = α*yload_real
-    yload_imag = α*yload_imag
+        pl = p[1]
+        ql = p[2]
+        α = p[3]
+        β = p[4]
+        γ = p[5]
+        yload_real = p[8]
+        yload_imag = p[9]
+        yload_real = α*yload_real
+        yload_imag = α*yload_imag
 
-    vm2 = vr*vr + vi*vi
-    vm2_tld = 0.2
+        vm2 = vr*vr + vi*vi
+        vm2_tld = 0.2
 
-    f[1] -= vr*yload_real - vi*yload_imag
-    f[2] -= vr*yload_imag + vi*yload_real
+        f[1] -= vr*yload_real - vi*yload_imag
+        f[2] -= vr*yload_imag + vi*yload_real
 
-    if vm2 > vm2_tld
-        f[1] -= (1-α)*(pl*vr - ql*vi)/vm2
-        f[2] -= (1-α)*(ql*vr + pl*vi)/vm2
-    else
-        f[1] -= (1-α)*(pl*vr - ql*vi)/vm2_tld
-        f[2] -= (1-α)*(ql*vr + pl*vi)/vm2_tld
+        if vm2 > vm2_tld
+            f[1] -= (1-α)*(pl*vr - ql*vi)/vm2
+            f[2] -= (1-α)*(ql*vr + pl*vi)/vm2
+        else
+            f[1] -= (1-α)*(pl*vr - ql*vi)/vm2_tld
+            f[2] -= (1-α)*(ql*vr + pl*vi)/vm2_tld
+        end
     end
 end
 

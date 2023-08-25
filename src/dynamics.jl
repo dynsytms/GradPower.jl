@@ -97,9 +97,12 @@ function rhs_fun!(f::AbstractArray, z::AbstractArray, u::AbstractArray, p::Abstr
     v = @view z[diff_dim+alg_dim+1:end]
 
     # network balance
-    f[diff_dim+alg_dim+1:end] .= -sys.network.ybus_real*v
+    #f[diff_dim+alg_dim+1:end] .= -sys.network.ybus_real*v
+    fv = @view f[diff_dim+alg_dim+1:end]
+    mul!(fv, sys.network.ybus_real, v, -1.0, 0.0)
 
-    for (i, device) in enumerate(sys.dynamic.devices)
+
+    @inbounds for (i, device) in enumerate(sys.dynamic.devices)
         bus = map.bus[i]
 
         # retrieve pointers and sizes from map
@@ -129,7 +132,7 @@ function rhs_fun!(f::AbstractArray, z::AbstractArray, u::AbstractArray, p::Abstr
         rhs_fun!(f_diff, f_alg, diff, alg, ctrl, par, vloc, device.dtype)
     end
 
-    for (i, event) in enumerate(sys.dynamic.events)
+    @inbounds for (i, event) in enumerate(sys.dynamic.events)
         if event.status
             bus = event.bus
             vr = v[2*(bus-1)+1]
@@ -152,7 +155,10 @@ function beuler!(
     dt::Float64
 )
     rhs_fun!(f, z, u, p, sys)
-    f[1:diff_dim] .= z[1:diff_dim] .- zold[1:diff_dim] .- dt*f[1:diff_dim]
+    #@views f[1:diff_dim] .= z[1:diff_dim] .- zold[1:diff_dim] .- dt.*f[1:diff_dim]
+    @inbounds for i = 1:diff_dim
+        f[i] = z[i] - zold[i] - dt*f[i]
+    end
 end
 
 function integrate!(dp::DynamicProblem, ps::PowerSystem, tf::Float64; dt::Float64=(1.0/120.0))

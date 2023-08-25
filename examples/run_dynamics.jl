@@ -5,6 +5,8 @@ using GradPower
 raw_file = "examples/2bus.raw"
 dyr_file = "examples/2bus.dyr"
 
+#raw_file = "examples/ACTIVSg2000.raw"
+#dyr_file = "examples/ACTIVSg2000.dyr"
 
 # parse
 devices = GradPower.read_psse_dyr(dyr_file)
@@ -25,5 +27,4 @@ GradPower.initialize_dynamics!(dprob, sys)
 
 # add event
 event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
-
 tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
