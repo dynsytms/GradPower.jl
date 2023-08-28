@@ -285,3 +285,88 @@ function rhs_fun!(
         f_alg[4] = v_q - (vr*cd + vi*sd)
     end
 end
+
+function preallocate_jacobian!(
+    coord_list::Vector{Vector{Int}},
+    diff_ptr::Int,
+    alg_ptr::Int,
+    ctrl_ptr::Int,
+    volt_ptr::Int,
+    dtype::Genrou
+)
+    dp = diff_ptr
+    ap = alg_ptr
+    vp = volt_ptr
+
+    e_qp = dp
+    e_dp = dp + 1
+    phi_1d = dp + 2
+    phi_2q = dp + 3
+    w = dp + 4
+    delta = dp + 5
+
+    v_q = ap
+    v_d = ap + 1
+    i_q = ap + 2
+    i_d = ap + 3
+    vr, vi = vp, vp + 1
+
+    exciter = false
+    governor = false
+
+    # First row
+    row = dp
+    cols = exciter ? [e_qp, phi_1d, ctrl_ptr, i_d] : [e_qp, phi_1d, i_d]
+    append!(coord_list[row], cols)
+
+    # Second row
+    row = dp + 1
+    cols = [e_dp, phi_2q, i_q]
+    append!(coord_list[row], cols)
+
+    # Third row
+    row = dp + 2
+    cols = [e_qp, phi_1d, i_d]
+    append!(coord_list[row], cols)
+
+    # Fourth row
+    row = dp + 3
+    cols = [e_dp, phi_2q, i_q]
+    append!(coord_list[row], cols)
+
+    # Fifth row
+    row = dp + 4
+    cols = governor ? [e_qp, e_dp, phi_1d, phi_2q, ctrl_ptr, i_q, i_d, w] : [e_qp, e_dp, phi_1d, phi_2q, i_q, i_d, w]
+    append!(coord_list[row], cols)
+
+    # Sixth row
+    row = dp + 5
+    cols = [w]
+    append!(coord_list[row], cols)
+
+    # Algebraic part
+    row = ap
+    cols = [e_qp, phi_1d, v_q, i_d]
+    append!(coord_list[row], cols)
+
+    row = ap + 1
+    cols = [e_dp, phi_2q, v_d, i_q]
+    append!(coord_list[row], cols)
+
+    row = ap + 2
+    cols = [delta, v_d, vr, vi]
+    append!(coord_list[row], cols)
+
+    row = ap + 3
+    cols = [delta, v_q, vr, vi]
+    append!(coord_list[row], cols)
+
+    row = vp
+    cols = [delta, i_q, i_d]
+    append!(coord_list[row], cols)
+
+    row = vp + 1
+    cols = [delta, i_q, i_d]
+    append!(coord_list[row], cols)
+    println(coord_list)
+end

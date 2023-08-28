@@ -86,3 +86,14 @@ function rhs_fun!(
         dtype::ZIPLoad
 )
 end
+
+function preallocate_jacobian!(
+        coord_list::Vector{Vector{Int}},
+        diff_ptr::Int,
+        alg_ptr::Int,
+        ctrl_ptr::Int,
+        volt_ptr::Int,
+        dtype::ZIPLoad
+)
+    return nothing
+end

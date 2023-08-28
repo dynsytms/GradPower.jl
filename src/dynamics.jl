@@ -194,8 +194,6 @@ function integrate!(dp::DynamicProblem, ps::PowerSystem, tf::Float64; dt::Float6
     # allocate temporary vectors
     zold = zeros(Float64, system_size)
     println("Integrating from t = 0 s to t = $tf s with dt = $dt s.")
-
-    println(dp.zvec)
     # newton parameters
     ftol = 1e-9
     max_iter = 30
@@ -292,6 +290,77 @@ function cinject!(
         dtype::AbstractDeviceType
 )
     @warn "cinject! not implemented for device type $(dtype)"
+end
+
+function preallocate_jacobian(ps::PowerSystem)
+    diff_dim = ps.dynamic.diff_dim
+    alg_dim = ps.dynamic.alg_dim
+    ctrl_dim = ps.dynamic.ctrl_dim
+    nbus = length(ps.buses)
+    adj = ps.network.adjacency
+    map = ps.dynamic.map
+
+    # total system size
+    sys_dim = diff_dim + alg_dim + 2*nbus
+
+    # coordinate list for sparse jacobian
+    coord_list = [Vector{Int}() for _ in 1:sys_dim]
+
+    # diagonal non-zeros for integrators
+    for i in 1:diff_dim
+        push!(coord_list[i], i)
+    end
+
+    # network equations
+    ptr = diff_dim + alg_dim + 1
+    for fr in 1:nbus
+        push!(coord_list[ptr + 2*(fr - 1)], ptr + 2*(fr - 1))
+        push!(coord_list[ptr + 2*(fr - 1)], ptr + 2*(fr - 1) + 1)
+        push!(coord_list[ptr + 2*(fr - 1) + 1], ptr + 2*(fr - 1))
+        push!(coord_list[ptr + 2*(fr - 1) + 1], ptr + 2*(fr - 1) + 1)
+        for to in adj[fr]
+            push!(coord_list[ptr + 2*(fr - 1)], ptr + 2*(to - 1))
+            push!(coord_list[ptr + 2*(fr - 1)], ptr + 2*(to - 1) + 1)
+            push!(coord_list[ptr + 2*(fr - 1) + 1], ptr + 2*(to - 1))
+            push!(coord_list[ptr + 2*(fr - 1) + 1], ptr + 2*(to - 1) + 1)
+        end
+    end
+
+    # iterate over devices
+    for (i, device) in enumerate(ps.dynamic.devices)
+        bus = map.bus[i]
+        diff_ptr = map.diff_ptr[i]
+        alg_ptr = diff_dim + map.alg_ptr[i]
+        volt_ptr = diff_dim + alg_dim + 2*(bus -1) + 1
+        ctrl_ptr = map.ctrl_ptr[i]
+        preallocate_jacobian!(coord_list, diff_ptr, alg_ptr, ctrl_ptr, volt_ptr, device.dtype)
+    end
+
+    # form coordinate lists (row, col, data)
+    row = Int[]
+    col = Int[]
+
+    for i in 1:length(coord_list)
+        if !isempty(coord_list[i])
+            append!(row, fill(i, length(coord_list[i])))
+            append!(col, coord_list[i])
+        end
+    end
+
+    data = zeros(length(row))
+    Jsp = sparse(row, col, data, sys_dim, sys_dim)
+    return Jsp
+end
+
+function preallocate_jacobian!(
+    coord_list::Vector{Vector{Int}},
+    diff_ptr::Int,
+    alg_ptr::Int,
+    ctrl_ptr::Int,
+    volt_ptr::Int,
+    dtype::AbstractDeviceType
+)
+    @warn "preallocate_jacobian! not implemented for $(dtype)"
 end
 
 export Genrou

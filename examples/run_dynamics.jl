@@ -1,9 +1,13 @@
 using Plots
 using Revise    
 using GradPower
+using SparseArrays
 
 raw_file = "examples/2bus.raw"
 dyr_file = "examples/2bus.dyr"
+
+raw_file = "examples/ieee9_v33.raw"
+dyr_file = "examples/ieee9bus.dyr"
 
 #raw_file = "examples/ACTIVSg2000.raw"
 #dyr_file = "examples/ACTIVSg2000.dyr"
@@ -26,5 +30,7 @@ dprob = GradPower.DynamicProblem(sys)
 GradPower.initialize_dynamics!(dprob, sys)
 
 # add event
-event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
-tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
+#event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
+#tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
+
+Jsp = GradPower.preallocate_jacobian(sys)
