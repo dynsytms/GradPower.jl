@@ -272,6 +272,7 @@ function deactivate!(event::ContingencyEvent)
 end
 
 # Include files. functionality.
+include("utils.jl")
 include("numerics.jl")
 include("network.jl")
 include("pflow.jl")

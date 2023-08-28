@@ -34,3 +34,5 @@ GradPower.initialize_dynamics!(dprob, sys)
 #tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
 
 Jsp = GradPower.preallocate_jacobian(sys)
+
+GradPower.rhs_jac!(Jsp, dprob.zvec, dprob.uvec, dprob.pvec, sys)

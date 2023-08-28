@@ -363,5 +363,18 @@ function preallocate_jacobian!(
     @warn "preallocate_jacobian! not implemented for $(dtype)"
 end
 
+
+function rhs_jac!(
+    jac::AbstractMatrix,
+    z::AbstractArray,
+    u::AbstractArray,
+    p::AbstractArray,
+    sys::PowerSystem)
+
+    println("Jacobian matrix computation")
+
+end
+
+
 export Genrou
 export from_data_field
