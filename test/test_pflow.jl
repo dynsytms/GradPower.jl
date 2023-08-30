@@ -20,7 +20,6 @@
             0.9549 - 0.0726im]
         vmag = sol.volt[1:2:end]
         vang = sol.volt[2:2:end]
-        println(vmag)
         for i in 1:length(vmat)
             @test isapprox(abs(vmat[i]), vmag[i], rtol=1e-2)
             @test isapprox(angle(vmat[i]), vang[i], rtol=1e-2)

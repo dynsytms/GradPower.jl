@@ -5,8 +5,11 @@ function build_network!(psys::PowerSystem)
     # Create the ybus matrix
     ybus = create_ybus_complex(psys)
 
+    # Create real ybus matrix
+    ybus_re = realify_ybus(ybus)
+
     # Create the network
-    psys.network = Network(adjacency, ybus)
+    psys.network = Network(adjacency, ybus, ybus_re)
 end
 
 function adjacency_list(sys::PowerSystem)
