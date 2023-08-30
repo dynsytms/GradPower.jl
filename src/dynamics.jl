@@ -155,9 +155,58 @@ function beuler!(
     dt::Float64
 )
     rhs_fun!(f, z, u, p, sys)
-    #@views f[1:diff_dim] .= z[1:diff_dim] .- zold[1:diff_dim] .- dt.*f[1:diff_dim]
     @inbounds for i = 1:diff_dim
         f[i] = z[i] - zold[i] - dt*f[i]
+    end
+end
+
+function beuler_jac!(
+    J::SparseMatrixCSC,
+    z::AbstractVector,
+    zold::AbstractVector,
+    u::AbstractVector,
+    p::AbstractVector,
+    sys::PowerSystem,
+    diff_dim::Int64,
+    dt::Float64
+)
+    # set all elements to zero
+    fill!(J.nzval, 0.0)
+
+    # evaluate Jacobian
+    rhs_jac!(J, z, u, p, sys)
+
+    # scale for backward Euler
+    _jacobian_beuler!(J, diff_dim, dt)
+end
+
+function _jacobian_beuler!(J::SparseMatrixCSC, NDIFFEQ::Int, h::Float64)
+    # Iterating through each column
+    for col = 1:size(J, 2)
+        # Flag to check if diagonal element for the column is found
+        diagonal_found = false
+        
+        # Iterating through the non-zero elements in each column
+        for row_index in nzrange(J, col)
+            row = rowvals(J)[row_index]
+            
+            # Update values if the row index is less or equal to NDIFFEQ
+            if row <= NDIFFEQ
+                J.nzval[row_index] *= -h
+                
+                # Update diagonal element
+                if row == col
+                    J.nzval[row_index] += 1.0
+                    diagonal_found = true
+                end
+           end
+        end
+
+        # If diagonal element was not found and col is within NDIFFEQ, then add it
+        if !diagonal_found && col <= NDIFFEQ
+            @warn "Diagonal element not found for column $col. Adding it."
+            J[col, col] += 1.0
+        end
     end
 end
 
@@ -201,12 +250,19 @@ function integrate!(dp::DynamicProblem, ps::PowerSystem, tf::Float64; dt::Float6
     # initial condition
     zold .= dp.zvec
     traj[:,1] .= dp.zvec
+
+    # initialize residual and Jacobian
+    f0 = zeros(Float64, system_size)
+    J0 = preallocate_jacobian(ps)
     
     # time loop
     for k in 1:nsteps
         @printf("Time-stepping. t = %.2f s.\n", tvec[k])
         f_beuler!(f, z) = beuler!(f, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
-        sol = nlsolve(f_beuler!, zold, ftol=ftol, iterations=max_iter)
+        j_beuler!(J, z) = beuler_jac!(J, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
+        df = OnceDifferentiable(f_beuler!, j_beuler!, zold, f0, J0)
+        sol = nlsolve(df, zold, method=:newton, iterations=max_iter, ftol=ftol)
+        #sol = nlsolve(f_beuler!, zold, ftol=ftol, iterations=max_iter)
         @printf("Converged in %d iterations. Residual norm: %.2e.\n", sol.iterations, sol.residual_norm)
         zold .= sol.zero
         traj[:,k+1] .= zold
@@ -371,8 +427,183 @@ function rhs_jac!(
     p::AbstractArray,
     sys::PowerSystem)
 
-    println("Jacobian matrix computation")
+    diff_dim = sys.dynamic.diff_dim
+    alg_dim = sys.dynamic.alg_dim
+    ctrl_dim = sys.dynamic.ctrl_dim
+    nbus = length(sys.buses)
+    adj = sys.network.adjacency
+    map = sys.dynamic.map
+    
+    x = @view z[1:diff_dim]
+    y = @view z[diff_dim+1:diff_dim+alg_dim]
+    v = @view z[diff_dim+alg_dim+1:end]
 
+    # total system size
+    current_injection_jacobian!(jac, sys.network.ybus_real, diff_dim + alg_dim)
+
+    # index vector
+    idx_dev = Array{Int}(undef, 7)
+    
+    # iterate over devices
+    for (i, device) in enumerate(sys.dynamic.devices)
+        bus = map.bus[i]
+        diff_ptr = map.diff_ptr[i]
+        alg_ptr = map.alg_ptr[i]
+        ctrl_ptr = map.ctrl_ptr[i]
+        par_ptr = map.par_ptr[i]
+        
+        diff_size = map.diff_size[i]
+        alg_size = map.alg_size[i]
+        ctrl_size = map.ctrl_size[i]
+        par_size = map.par_size[i]
+        
+        diff = @view x[diff_ptr:diff_ptr+diff_size-1]
+        alg = @view y[alg_ptr:alg_ptr+alg_size-1]
+        ctrl = @view u[ctrl_ptr:ctrl_ptr+ctrl_size-1]
+        par = @view p[par_ptr:par_ptr+par_size-1]
+        vloc = @view v[2*bus-1:2*bus]
+
+        idx_dev[1] = diff_ptr
+        idx_dev[2] = diff_dim + alg_ptr
+        idx_dev[3] = alg_dim + diff_dim
+        idx_dev[4] = par_ptr
+        idx_dev[5] = bus
+        idx_dev[6] = ctrl_ptr
+
+        rhs_jac!(jac, diff, alg, ctrl, par, vloc, idx_dev, device.dtype)
+    end
+end
+
+function rhs_jac!(
+    jac::AbstractMatrix,
+    x::AbstractArray,
+    y::AbstractArray,
+    u::AbstractArray,
+    p::AbstractArray,
+    v::AbstractArray,
+    idx_dev::Vector{Int},
+    dtype::AbstractDeviceType
+)
+    @warn "rhs_jac! not implemented for $(dtype)"
+end
+
+function rhs_jac!(
+    jac::AbstractMatrix,
+    x::AbstractArray,
+    y::AbstractArray,
+    u::AbstractArray,
+    p::AbstractArray,
+    v::AbstractArray,
+    idx_dev::Vector{Int},
+    dtype::ZIPLoad
+    )
+
+    dp = idx_dev[1]
+    ap = idx_dev[2]
+    dev = idx_dev[3]
+    pp = idx_dev[4]
+    bus = idx_dev[5]
+
+    vr = v[1]
+    vi = v[2]
+
+    pl = p[1]
+    ql = p[2]
+    α = p[3]
+    β = p[4]
+    γ = p[5]
+    yload_real = p[8]
+    yload_imag = p[9]
+
+    vm = sqrt(vr^2 + vi^2)
+    va = atan(vi, vr)
+
+    row1 = dev + 2 * (bus - 1) + 1
+    row2 = dev + 2 * (bus - 1) + 2
+    col1 = dev + 2 * (bus - 1) + 1
+    col2 = dev + 2 * (bus - 1) + 2
+
+    # Constant admittance contribution
+    vm2 = vr^2 + vi^2
+    vm2_tld = 0.2
+
+    val1 = -α * yload_real
+    val2 = α * yload_imag
+    jac[row1, col1] += val1
+    jac[row1, col2] += val2
+    #csc_add_row!(jac, row_map, row, col, val)
+
+    val1 = -α * yload_imag
+    val2 = -α * yload_real
+    jac[row2, col1] += val1
+    jac[row2, col2] += val2
+    #csc_add_row!(jac, row_map, row, col, val)
+
+    # Constant power contribution
+    row = dev + 2 * (bus - 1) + 1
+    if vm2 > vm2_tld
+        val1 = (1-α) * ((ql * vr + pl * vi) * 2 * vr - ql * vm2) / vm2^2
+        val2 = (1-α) * ((ql * vr + pl * vi) * 2 * vi - pl * vm2) / vm2^2
+        jac[row1, col1] += val1
+        jac[row1, col2] += val2
+    else
+        val1 = (1-α) * (-ql) / vm2_tld
+        val2 = (1-α) * (-pl) / vm2_tld
+        jac[row1, col1] += val1
+        jac[row1, col2] += val2
+    end
+    #csc_add_row!(jac, row_map, row, col, val)
+
+    row = dev + 2 * (bus - 1) + 2
+    if vm2 > vm2_tld
+        val1 = (1-α) * ((pl * vr - ql * vi) * 2 * vr - pl * vm2) / vm2^2
+        val2 = (1-α) * ((pl * vr - ql * vi) * 2 * vi + ql * vm2) / vm2^2
+        jac[row2, col1] += val1
+        jac[row2, col2] += val2
+    else
+        val1 = (1-α) * (-pl) / vm2_tld
+        val2 = (1-α) * ql / vm2_tld
+        jac[row2, col1] += val1
+        jac[row2, col2] += val2
+    end
+end
+
+
+
+
+"""
+    current_injection_jacobian!(ybus::SparseMatrixCSC, jac::SparseMatrixCSC, dev::Int)
+
+Copy the data from `ybus` to `jac` with an offset `dev` for row and column indices.
+"""
+function current_injection_jacobian!(jac::SparseMatrixCSC, ybus::SparseMatrixCSC, dev::Int)
+    n_cols = size(ybus, 2)
+    
+    ybus_rows = rowvals(ybus)
+    ybus_vals = nonzeros(ybus)
+    
+    jac_rows = rowvals(jac)
+    jac_vals = nonzeros(jac)
+    
+    # Loop through each column
+    for col_idx in 1:n_cols
+        for i in nzrange(ybus, col_idx)
+            row_idx = ybus_rows[i]
+            val = -ybus_vals[i]
+            
+            # Calculate new row and column indices with offset dev
+            new_row = row_idx + dev
+            new_col = col_idx + dev
+            
+            # Find corresponding position in jac using nzrange
+            for j in nzrange(jac, new_col)
+                if jac_rows[j] == new_row
+                    jac_vals[j] = val
+                    break
+                end
+            end
+        end
+    end
 end
 
 

@@ -2,6 +2,8 @@ using Plots
 using Revise    
 using GradPower
 using SparseArrays
+using FiniteDiff
+
 
 raw_file = "examples/2bus.raw"
 dyr_file = "examples/2bus.dyr"
@@ -9,8 +11,8 @@ dyr_file = "examples/2bus.dyr"
 raw_file = "examples/ieee9_v33.raw"
 dyr_file = "examples/ieee9bus.dyr"
 
-#raw_file = "examples/ACTIVSg2000.raw"
-#dyr_file = "examples/ACTIVSg2000.dyr"
+raw_file = "examples/ACTIVSg2000.raw"
+dyr_file = "examples/ACTIVSg2000.dyr"
 
 # parse
 devices = GradPower.read_psse_dyr(dyr_file)
@@ -34,5 +36,16 @@ GradPower.initialize_dynamics!(dprob, sys)
 #tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
 
 Jsp = GradPower.preallocate_jacobian(sys)
-
 GradPower.rhs_jac!(Jsp, dprob.zvec, dprob.uvec, dprob.pvec, sys)
+
+function rhs(x)
+    f = zeros(sys.dynamic.diff_dim + sys.dynamic.alg_dim + 2*length(sys.buses))
+    GradPower.rhs_fun!(f, x, dprob.uvec, dprob.pvec, sys)
+    return f
+end
+
+#Jfd = FiniteDiff.finite_difference_jacobian(rhs, dprob.zvec)
+
+#GradPower.compare_matrix(Array(Jsp), Jfd)
+
+@time tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
