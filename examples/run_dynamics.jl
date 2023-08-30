@@ -27,7 +27,6 @@ GradPower.runpf!(sys, verbose=false);
 dprob = GradPower.DynamicProblem(sys)
 GradPower.initialize_dynamics!(dprob, sys)
 
-# add event
 event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
 
 # integrate dynamics

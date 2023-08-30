@@ -72,6 +72,8 @@ end
 abstract type AbstractDeviceType end
 abstract type AbstractGeneratorType <: AbstractDeviceType end
 abstract type AbstractLoadType <: AbstractDeviceType end
+abstract type AbstractGenControlType <: AbstractDeviceType end
+abstract type AbstractGovernorType <: AbstractGenControlType end
 
 struct DynamicDevice
     dtype::AbstractDeviceType
@@ -222,6 +224,7 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
             num_gen_devices += 1
         end
     end
+    mvbase = ps.baseMVA
 
     # create dynamic map.
     dmap = DynamicMap(psd.num_devices - num_gen_devices + length(ps.gens) + length(ps.loads))
@@ -240,6 +243,7 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
             if dmap.gen[i] == 0
                 @warn "Generator not found for dynamic device $i"
             else
+                set_ratio!(device.dtype, ps.gens[dmap.gen[i]].mbase/mvbase)
                 push!(matched_gens, dmap.gen[i])
             end
         end

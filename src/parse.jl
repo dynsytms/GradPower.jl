@@ -94,6 +94,7 @@ end
 
 const DEVICE_TYPE_MAP = Dict(
     "GENROU" => Genrou,
+    #"IEESGO" => IEESGO,
     # add more device types here
 )
 

@@ -55,6 +55,17 @@ function from_data_fields(::Type{Genrou}, fields::Vector{SubString{String}})
 
     Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp)
 end
+                
+function set_ratio!(dtype::Genrou, ratio::Float64)
+    dtype.x_d = dtype.x_d*(1.0/ratio)
+    dtype.x_q = dtype.x_q*(1.0/ratio)
+    dtype.x_dp = dtype.x_dp*(1.0/ratio)
+    dtype.x_qp = dtype.x_qp*(1.0/ratio)
+    dtype.x_ddp = dtype.x_ddp*(1.0/ratio)
+    dtype.xl = dtype.xl*(1.0/ratio)
+    dtype.H = dtype.H*ratio
+    dtype.D = dtype.D*ratio
+end
 
 function fill_pvec!(pvec::AbstractArray, dtype::Genrou)
     pvec[1] = dtype.x_d

@@ -22,9 +22,9 @@ function create_case9()
     push!(buses, Bus(9, "9", 1, 345.0, 1.0, 0.0))
 
     # Create generators
-    push!(gens, Gen(1, "1", 0.0, 0.0, 100.0))
-    push!(gens, Gen(2, "1", 1.63, 0.0, 100.0))
-    push!(gens, Gen(3, "1", 0.85, 0.0, 100.0))
+    push!(gens, Gen(1, "1", 0.0, 0.0, 100.0, 1))
+    push!(gens, Gen(2, "1", 1.63, 0.0, 100.0, 1))
+    push!(gens, Gen(3, "1", 0.85, 0.0, 100.0, 1))
 
     # Create loads
     push!(loads, Load(5, "1", 0.9, -0.3))

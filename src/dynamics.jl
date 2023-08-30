@@ -1,5 +1,6 @@
 include("generators.jl")
 include("loads.jl")
+include("governors.jl")
 
 function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
 
@@ -106,7 +107,6 @@ function rhs_fun!(f::AbstractArray, z::AbstractArray, u::AbstractArray, p::Abstr
     #f[diff_dim+alg_dim+1:end] .= -sys.network.ybus_real*v
     fv = @view f[diff_dim+alg_dim+1:end]
     mul!(fv, sys.network.ybus_real, v, -1.0, 0.0)
-
 
     @inbounds for (i, device) in enumerate(sys.dynamic.devices)
         bus = map.bus[i]
