@@ -53,7 +53,7 @@ end
 
 
 function newton_step!(
-    z::AbstractVector,
+    z0::AbstractVector,
     f0::AbstractVector,
     J0::AbstractMatrix,
     fact,
@@ -64,12 +64,15 @@ function newton_step!(
     dt::Float64;
     itermax::Int=50,
     tol::Float64=1e-9,
-    verbose::Bool=false
+    verbose::Bool=false,
+    jac_verify::Bool=false
 )
+    
     # Initialize
     success = false
     verbose && @printf("   Iter     Residual inf-norm\n")
-    dx = zeros(length(z))
+    dx = zeros(length(z0))
+    z = copy(z0)
     for i = 1:itermax
         # Evaluate the right-hand side
         beuler!(f0, z, zold, u, p, sys, sys.dynamic.diff_dim, dt)
@@ -79,20 +82,32 @@ function newton_step!(
             success = true
             break
         end
+        
         # Evaluate the Jacobian
         beuler_jac!(J0, z, zold, u, p, sys, sys.dynamic.diff_dim, dt)
+
+        # verify jacobian
+        if jac_verify
+            @assert size(J0, 1) <= 100
+            @warn "Jacobian verification"
+            function ff(z)
+                f = zeros(length(z))
+                beuler!(f, z, zold, u, p, sys, sys.dynamic.diff_dim, dt)
+                return f
+            end
+            Jfd = FiniteDiff.finite_difference_jacobian(ff, z)
+            valid = compare_matrix(Array(J0), Jfd)
+            @assert valid "Jacobian verification failed"
+        end
+        
         # Solve the linear system
-        #dx = -J0 \ f0
+        #fact = klu(J0)
         klu!(fact, J0)
         ldiv!(dx,fact,f0)
-        #println(dx)
-        #dx1 = -J0 \ f0
-        #println(dx1 + dx)
 
-        #@assert false
-        #z .-= dx
         # Update the state
         z -= dx
     end
+    z0 .= z
     return success
 end

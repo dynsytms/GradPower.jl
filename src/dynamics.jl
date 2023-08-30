@@ -210,8 +210,13 @@ function _jacobian_beuler!(J::SparseMatrixCSC, NDIFFEQ::Int, h::Float64)
     end
 end
 
-function integrate!(dp::DynamicProblem, ps::PowerSystem, tf::Float64; dt::Float64=(1.0/120.0))
-
+function integrate!(
+    dp::DynamicProblem,
+    ps::PowerSystem,
+    tf::Float64;
+    dt::Float64=(1.0/120.0),
+    verbose::Bool=false
+)
     # TODO: here we should have some checks to ensure that the problem is initialized
 
     # calculate number of steps
@@ -242,7 +247,7 @@ function integrate!(dp::DynamicProblem, ps::PowerSystem, tf::Float64; dt::Float6
 
     # allocate temporary vectors
     zold = zeros(Float64, system_size)
-    println("Integrating from t = 0 s to t = $tf s with dt = $dt s.")
+    verbose && println("Integrating from t = 0 s to t = $tf s with dt = $dt s.")
     # newton parameters
     ftol = 1e-9
     max_iter = 30
@@ -255,8 +260,9 @@ function integrate!(dp::DynamicProblem, ps::PowerSystem, tf::Float64; dt::Float6
     f0 = zeros(Float64, system_size)
     J0 = preallocate_jacobian(ps)
     beuler_jac!(J0, zold, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
-    fact = klu(J0)
 
+    # pre-factorization
+    fact = klu(J0)
     fact.common.scale = 0
     fact.common.btf = 0
     fact.common.ordering = 1
@@ -264,30 +270,18 @@ function integrate!(dp::DynamicProblem, ps::PowerSystem, tf::Float64; dt::Float6
 
     # time loop
     for k in 1:nsteps
-        @printf("Time-stepping. t = %.2f s.\n", tvec[k])
-        #f_beuler!(f, z) = beuler!(f, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
-        #j_beuler!(J, z) = beuler_jac!(J, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
-        #df = OnceDifferentiable(f_beuler!, j_beuler!, zold, f0, J0)
-        #sol = nlsolve(df, zold, method=:newton, iterations=max_iter, ftol=ftol)
-        #zold .= sol.zero
-        #@printf("Converged in %d iterations. Residual norm: %.2e.\n", sol.iterations, sol.residual_norm)
-        newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=true)
+        verbose && println("Time-stepping. t = $(tvec[k]) s.")
+        newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false)
         traj[:,k+1] .= zold
-
+        
         if k == step_on
             activate!(events[1])
-            println("Event activated at t = $ton s. Fault at bus $(events[1].bus).")
-            f_beuler_on!(f, z) = beuler!(f, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, 0.0)
-            sol = nlsolve(f_beuler_on!, zold, ftol=ftol, iterations=max_iter)
-            zold .= sol.zero
-            @printf("ALG. Converged in %d iterations. Residual norm: %.2e.\n", sol.iterations, sol.residual_norm)
+            verbose && println("Event activated at t = $ton s. Fault at bus $(events[1].bus).")
+            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false)
         elseif k == step_off
             deactivate!(events[1])
-            println("Event deactivated at t = $toff s.")
-            f_beuler_off!(f, z) = beuler!(f, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, 0.0)
-            sol = nlsolve(f_beuler_off!, zold, ftol=ftol, iterations=max_iter)
-            @printf("ALG. Converged in %d iterations. Residual norm: %.2e.\n", sol.iterations, sol.residual_norm)
-            zold .= sol.zero
+            verbose && println("Event deactivated at t = $toff s.")
+            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false)
         end
 
     end
@@ -479,6 +473,22 @@ function rhs_jac!(
 
         rhs_jac!(jac, diff, alg, ctrl, par, vloc, idx_dev, device.dtype)
     end
+
+    # iterate events
+    # TODO: move this to its own function. Define different events (bus fault, line fault, etc.)
+    @inbounds for (i, event) in enumerate(sys.dynamic.events)
+        if event.status
+            bus = event.bus
+            vr = v[2*(bus-1)+1]
+            vi = v[2*(bus-1)+2]
+            yfault = 1.0/event.rfault
+
+            ptr1 = diff_dim+alg_dim+2*(bus-1)+1
+            ptr2 = diff_dim+alg_dim+2*(bus-1)+2
+            jac[ptr1, ptr1] += -yfault
+            jac[ptr2, ptr2] += -yfault
+        end
+    end
 end
 
 function rhs_jac!(
@@ -493,89 +503,6 @@ function rhs_jac!(
 )
     @warn "rhs_jac! not implemented for $(dtype)"
 end
-
-function rhs_jac!(
-    jac::AbstractMatrix,
-    x::AbstractArray,
-    y::AbstractArray,
-    u::AbstractArray,
-    p::AbstractArray,
-    v::AbstractArray,
-    idx_dev::Vector{Int},
-    dtype::ZIPLoad
-    )
-
-    dp = idx_dev[1]
-    ap = idx_dev[2]
-    dev = idx_dev[3]
-    pp = idx_dev[4]
-    bus = idx_dev[5]
-
-    vr = v[1]
-    vi = v[2]
-
-    pl = p[1]
-    ql = p[2]
-    α = p[3]
-    β = p[4]
-    γ = p[5]
-    yload_real = p[8]
-    yload_imag = p[9]
-
-    vm = sqrt(vr^2 + vi^2)
-    va = atan(vi, vr)
-
-    row1 = dev + 2 * (bus - 1) + 1
-    row2 = dev + 2 * (bus - 1) + 2
-    col1 = dev + 2 * (bus - 1) + 1
-    col2 = dev + 2 * (bus - 1) + 2
-
-    # Constant admittance contribution
-    vm2 = vr^2 + vi^2
-    vm2_tld = 0.2
-
-    val1 = -α * yload_real
-    val2 = α * yload_imag
-    jac[row1, col1] += val1
-    jac[row1, col2] += val2
-    #csc_add_row!(jac, row_map, row, col, val)
-
-    val1 = -α * yload_imag
-    val2 = -α * yload_real
-    jac[row2, col1] += val1
-    jac[row2, col2] += val2
-    #csc_add_row!(jac, row_map, row, col, val)
-
-    # Constant power contribution
-    row = dev + 2 * (bus - 1) + 1
-    if vm2 > vm2_tld
-        val1 = (1-α) * ((ql * vr + pl * vi) * 2 * vr - ql * vm2) / vm2^2
-        val2 = (1-α) * ((ql * vr + pl * vi) * 2 * vi - pl * vm2) / vm2^2
-        jac[row1, col1] += val1
-        jac[row1, col2] += val2
-    else
-        val1 = (1-α) * (-ql) / vm2_tld
-        val2 = (1-α) * (-pl) / vm2_tld
-        jac[row1, col1] += val1
-        jac[row1, col2] += val2
-    end
-    #csc_add_row!(jac, row_map, row, col, val)
-
-    row = dev + 2 * (bus - 1) + 2
-    if vm2 > vm2_tld
-        val1 = (1-α) * ((pl * vr - ql * vi) * 2 * vr - pl * vm2) / vm2^2
-        val2 = (1-α) * ((pl * vr - ql * vi) * 2 * vi + ql * vm2) / vm2^2
-        jac[row2, col1] += val1
-        jac[row2, col2] += val2
-    else
-        val1 = (1-α) * (-pl) / vm2_tld
-        val2 = (1-α) * ql / vm2_tld
-        jac[row2, col1] += val1
-        jac[row2, col2] += val2
-    end
-end
-
-
 
 
 """
@@ -614,5 +541,5 @@ function current_injection_jacobian!(jac::SparseMatrixCSC, ybus::SparseMatrixCSC
 end
 
 
-export Genrou
+export Genrou, ZIPLoad
 export from_data_field

@@ -13,8 +13,8 @@ dyr_file = "examples/2bus.dyr"
 #raw_file = "examples/ieee9_v33.raw"
 #dyr_file = "examples/ieee9bus.dyr"
 
-raw_file = "examples/ACTIVSg2000.raw"
-dyr_file = "examples/ACTIVSg2000.dyr"
+#raw_file = "examples/ACTIVSg2000.raw"
+#dyr_file = "examples/ACTIVSg2000.dyr"
 
 # parse
 devices = GradPower.read_psse_dyr(dyr_file)
@@ -50,5 +50,6 @@ end
 
 #GradPower.compare_matrix(Array(Jsp), Jfd)
 #Profile.clear()
-@time tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
+event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
+tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
 #pprof()

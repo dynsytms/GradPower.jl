@@ -12,3 +12,6 @@ include("test_case9data.jl")
         include("test_pflow.jl")
     end
 end
+@testset "dynamic" begin
+    include("test_dynamics.jl")
+end

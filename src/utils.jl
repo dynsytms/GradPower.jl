@@ -7,6 +7,8 @@ function compare_matrix(A::AbstractMatrix, B::AbstractMatrix; rtol=1e-2, atol=1e
 
     rows, cols = size(A)
 
+    mism = 0
+
     # Check each element
     for i in 1:rows
         for j in 1:cols
@@ -32,9 +34,11 @@ function compare_matrix(A::AbstractMatrix, B::AbstractMatrix; rtol=1e-2, atol=1e
             # Check if the differences are within tolerances
             if abs_diff > atol && rel_diff > rtol
                 println("Element mismatch at row $i, column $j: $a (A) vs $b (B)")
+                mism += 1
             end
         end
     end
 
-    return true
+    valid = (mism == 0)
+    return valid
 end
