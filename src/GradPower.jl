@@ -6,6 +6,7 @@ import Base: show
 using LinearAlgebra
 using SparseArrays
 using NLsolve
+using KLU
 
 # profiling
 using TimerOutputs

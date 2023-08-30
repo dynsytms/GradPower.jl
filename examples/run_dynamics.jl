@@ -4,12 +4,14 @@ using GradPower
 using SparseArrays
 using FiniteDiff
 
+using Profile
+using PProf
 
 raw_file = "examples/2bus.raw"
 dyr_file = "examples/2bus.dyr"
 
-raw_file = "examples/ieee9_v33.raw"
-dyr_file = "examples/ieee9bus.dyr"
+#raw_file = "examples/ieee9_v33.raw"
+#dyr_file = "examples/ieee9bus.dyr"
 
 raw_file = "examples/ACTIVSg2000.raw"
 dyr_file = "examples/ACTIVSg2000.dyr"
@@ -47,5 +49,6 @@ end
 #Jfd = FiniteDiff.finite_difference_jacobian(rhs, dprob.zvec)
 
 #GradPower.compare_matrix(Array(Jsp), Jfd)
-
+#Profile.clear()
 @time tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
+#pprof()

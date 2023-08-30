@@ -254,17 +254,24 @@ function integrate!(dp::DynamicProblem, ps::PowerSystem, tf::Float64; dt::Float6
     # initialize residual and Jacobian
     f0 = zeros(Float64, system_size)
     J0 = preallocate_jacobian(ps)
-    
+    beuler_jac!(J0, zold, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
+    fact = klu(J0)
+
+    fact.common.scale = 0
+    fact.common.btf = 0
+    fact.common.ordering = 1
+    fact.common.tol = 1e-3
+
     # time loop
     for k in 1:nsteps
         @printf("Time-stepping. t = %.2f s.\n", tvec[k])
-        f_beuler!(f, z) = beuler!(f, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
-        j_beuler!(J, z) = beuler_jac!(J, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
-        df = OnceDifferentiable(f_beuler!, j_beuler!, zold, f0, J0)
-        sol = nlsolve(df, zold, method=:newton, iterations=max_iter, ftol=ftol)
-        #sol = nlsolve(f_beuler!, zold, ftol=ftol, iterations=max_iter)
-        @printf("Converged in %d iterations. Residual norm: %.2e.\n", sol.iterations, sol.residual_norm)
-        zold .= sol.zero
+        #f_beuler!(f, z) = beuler!(f, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
+        #j_beuler!(J, z) = beuler_jac!(J, z, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
+        #df = OnceDifferentiable(f_beuler!, j_beuler!, zold, f0, J0)
+        #sol = nlsolve(df, zold, method=:newton, iterations=max_iter, ftol=ftol)
+        #zold .= sol.zero
+        #@printf("Converged in %d iterations. Residual norm: %.2e.\n", sol.iterations, sol.residual_norm)
+        newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=true)
         traj[:,k+1] .= zold
 
         if k == step_on

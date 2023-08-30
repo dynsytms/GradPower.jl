@@ -51,3 +51,48 @@ function newton(
     return x, success
 end
 
+
+function newton_step!(
+    z::AbstractVector,
+    f0::AbstractVector,
+    J0::AbstractMatrix,
+    fact,
+    zold::AbstractVector,
+    u::AbstractVector,
+    p::AbstractVector,
+    sys::PowerSystem,
+    dt::Float64;
+    itermax::Int=50,
+    tol::Float64=1e-9,
+    verbose::Bool=false
+)
+    # Initialize
+    success = false
+    verbose && @printf("   Iter     Residual inf-norm\n")
+    dx = zeros(length(z))
+    for i = 1:itermax
+        # Evaluate the right-hand side
+        beuler!(f0, z, zold, u, p, sys, sys.dynamic.diff_dim, dt)
+        norm_f = norm(f0, Inf)
+        verbose && @printf("   %2d     %.6e\n", i-1, norm_f)
+        if norm_f < tol
+            success = true
+            break
+        end
+        # Evaluate the Jacobian
+        beuler_jac!(J0, z, zold, u, p, sys, sys.dynamic.diff_dim, dt)
+        # Solve the linear system
+        #dx = -J0 \ f0
+        klu!(fact, J0)
+        ldiv!(dx,fact,f0)
+        #println(dx)
+        #dx1 = -J0 \ f0
+        #println(dx1 + dx)
+
+        #@assert false
+        #z .-= dx
+        # Update the state
+        z -= dx
+    end
+    return success
+end
