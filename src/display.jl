@@ -1,4 +1,21 @@
+function display_parameters(sys::PowerSystem)
+    # iterate all the devices and display parameters.
+    println("Displaying parameters...")
 
+    if sys.dynamic == nothing
+        println("No dynamic data found.")
+        return
+    end
+
+    for (i, device) in enumerate(sys.dynamic.devices)
+        ptr = device.par_ptr
+        dtype = device.dtype
+        @printf("Device %d: %s\n", i, get_device_name(dtype))
+        for (j, par) in enumerate(get_param_names(dtype))
+            @printf("  [%d] %s\n", ptr + (j - 1), par)
+        end
+    end
+end
 function show(io::IO, sys::PowerSystem)
     println(io, "PowerSystem:")
     println(io, "  baseMVA: ", sys.baseMVA)
