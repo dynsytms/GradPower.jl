@@ -7,6 +7,7 @@ using LinearAlgebra
 using SparseArrays
 using NLsolve
 using KLU
+using ForwardDiff
 
 # profiling
 using TimerOutputs
@@ -275,6 +276,7 @@ end
 # Include files. functionality.
 include("utils.jl")
 include("numerics.jl")
+include("ad.jl")
 include("network.jl")
 include("pflow.jl")
 include("dynamics.jl")
