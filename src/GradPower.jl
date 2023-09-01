@@ -280,6 +280,7 @@ include("ad.jl")
 include("network.jl")
 include("pflow.jl")
 include("dynamics.jl")
+include("sensitivities.jl")
 
 # Include files. parsers.
 include("parse.jl")
