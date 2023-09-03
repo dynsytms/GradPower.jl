@@ -22,6 +22,8 @@ function jacp_vec!(
     par_dim = sys.dynamic.par_dim
     dev = diff_dim + alg_dim
 
+    @assert length(vec) == par_dim
+
     x = @view z[1:diff_dim]
     y = @view z[diff_dim+1:diff_dim+alg_dim]
     v = @view z[diff_dim+alg_dim+1:end]
@@ -52,7 +54,7 @@ function jacp_vec!(
 
         # ensure device contributes to derivative. If not, skip
         # We do this by checking that the direction vector is not zero.
-        # given that Jv = 0 if v = 0.
+        # given that Jvec = 0 if vec = 0.
         if norm(vec[par_ptr:par_ptr+par_size-1]) < 1e-10
             continue
         end
@@ -114,4 +116,22 @@ function jacp_vec!(
             end
         end
     end
+end
+
+function jacp_vec_fd!(
+    out::AbstractArray,
+    vec::AbstractArray,
+    z::AbstractArray,
+    u::AbstractArray,
+    p::AbstractArray,
+    sys::PowerSystem;
+)
+    function rhs(pnom)
+        f = similar(pnom, length(z))
+        rhs_fun!(f, z, u, pnom, sys)
+        return f
+    end
+
+    Jfd = FiniteDiff.finite_difference_jacobian(rhs, p)
+    out .= Jfd*vec
 end

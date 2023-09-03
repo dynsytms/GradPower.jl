@@ -23,22 +23,22 @@ function tlm(
     δz = copy(δz0)
     J = preallocate_jacobian(ps)
     rhs = zeros(system_size)
-
+    dt = tvec[2] - tvec[1]
+    @views beuler_jac!(J, traj[:, 1], traj[:, 1], dp.uvec, dp.pvec, ps, diff_dim, dt)
+    fact = klu(J)
     nsteps = size(tvec, 1)
+
     for i = 1:(nsteps - 1)
         dt = tvec[i+1] - tvec[i]
         @views beuler_jac!(J, traj[:, i + 1], traj[:, i + 1], dp.uvec, dp.pvec, ps, diff_dim, dt)
-            
         rhs .= 0.0
         if δp != nothing
-            jacp_vec!(rhs, δp, dprob.zvec, dprob.uvec, dprob.pvec, ps)
+            jacp_vec_fd!(rhs, δp, dp.zvec, dp.uvec, dp.pvec, ps)
         end
-
         @views rhs[1:diff_dim] .*= dt
         @views rhs[1:diff_dim] .+= δz[1:diff_dim]
         rhs .*= -1.0
-        δz = J \ rhs
-        #fact = klu(J)
+        δz .= J \ rhs
         #klu!(fact, J)
         #ldiv!(δz, fact, rhs)
     end

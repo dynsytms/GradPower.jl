@@ -66,6 +66,18 @@ function fill_pvec!(pvec::AbstractArray, dtype::Genrou)
     pvec[12] = dtype.T_q0dp
 end
 
+function get_device_name(dtype::Genrou)
+    return "Genrou"
+end
+
+function get_bus(dtype::Genrou)
+    return dtype.bus
+end
+
+function get_param_names(dtype::Genrou)
+    return ["x_d", "x_q", "x_dp", "x_qp", "x_ddp", "xl", "H", "D", "T_d0p", "T_q0p", "T_d0dp", "T_q0dp"]
+end
+
 function initial_guess!(x0::AbstractArray, pvec::AbstractArray, p::Float64, q::Float64, vm::Float64, va::Float64, dtype::Genrou)
     x_d = pvec[1]
     x_q = pvec[2]
