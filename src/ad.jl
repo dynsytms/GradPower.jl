@@ -31,6 +31,7 @@ function jacp_vec!(
     out_diff = @view out[1:diff_dim]
     out_alg = @view out[diff_dim+1:diff_dim+alg_dim]
 
+
     @inbounds for (i, device) in enumerate(sys.dynamic.devices)
         bus = map.bus[i]
 
@@ -62,13 +63,14 @@ function jacp_vec!(
         # Current injection
         function cinj(x)
             f = similar(x, 2)
+            fill!(f, zero(eltype(x)))
             GradPower.cinject!(f, diff, alg, ctrl, x, vloc, device.dtype)
             return f
         end
-        
+
         tangent = @view vec[par_ptr:par_ptr+par_size-1]
         result = @views out[dev + 2*bus - 1: dev + 2*bus]
-        
+
         if full_jac
             J = ForwardDiff.jacobian(cinj, par)
             result .= J*tangent
@@ -79,7 +81,8 @@ function jacp_vec!(
         # Algebraic contribution
         function rhs_g(x)
             f_alg = similar(x, alg_size)
-            GradPower.rhs_alg!(f_alg, diff, alg, ctrl, x, vloc, device.dtype)
+            fill!(f_alg, zero(eltype(x)))
+            rhs_alg!(f_alg, diff, alg, ctrl, x, vloc, device.dtype)
             return f_alg
         end
 
@@ -99,7 +102,8 @@ function jacp_vec!(
 
         function rhs_f(x)
             f_diff = similar(x, diff_size)
-            GradPower.rhs_diff!(f_diff, diff, alg, ctrl, x, vloc, device.dtype)
+            fill!(f_diff, zero(eltype(x)))
+            rhs_diff!(f_diff, diff, alg, ctrl, x, vloc, device.dtype)
             return f_diff
         end
 
@@ -128,6 +132,7 @@ function jacp_vec_fd!(
 )
     function rhs(pnom)
         f = similar(pnom, length(z))
+        fill!(f, zero(eltype(pnom)))
         rhs_fun!(f, z, u, pnom, sys)
         return f
     end

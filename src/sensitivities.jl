@@ -19,12 +19,12 @@ function tlm(
     @assert length(tvec) == size(traj, 2)
     @assert size(traj, 1) == length(δz0)
     @assert size(δz0, 1) == system_size
-    
+
     # fixed time step (for now)
     dt = tvec[2] - tvec[1]
     tf = tvec[end]
     nsteps = size(tvec, 1)
-    
+
     # retrieve events.
     # TODO: we can only do one event right now.
     events = ps.dynamic.events
@@ -53,7 +53,7 @@ function tlm(
         if δp != nothing
             if finite_diff
                 jacp_vec_fd!(rhs, δp, dp.zvec, dp.uvec, dp.pvec, ps)
-            else    
+            else
                 jacp_vec!(rhs, δp, dp.zvec, dp.uvec, dp.pvec, ps)
             end
         end
@@ -69,7 +69,7 @@ function tlm(
             deactivate!(events[1])
         end
     end
-    
+
     for event in events
         deactivate!(event)
     end
@@ -102,15 +102,15 @@ function _jacobian_sens_beuler!(J::SparseMatrixCSC, NDIFFEQ::Int, h::Float64)
     for col = 1:size(J, 2)
         # Flag to check if diagonal element for the column is found
         diagonal_found = false
-        
+
         # Iterating through the non-zero elements in each column
         for row_index in nzrange(J, col)
             row = rowvals(J)[row_index]
-            
+
             # Update values if the row index is less or equal to NDIFFEQ
             if row <= NDIFFEQ
                 J.nzval[row_index] *= h
-                
+
                 # Update diagonal element
                 if row == col
                     J.nzval[row_index] -= 1.0
