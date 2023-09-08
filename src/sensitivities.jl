@@ -8,6 +8,7 @@ function tlm(
     tvec::AbstractArray;
     store_trajectory=false,
     δp::Union{AbstractArray, Nothing}=nothing,
+    finite_diff::Bool=false
 )
     nbus = length(ps.buses)
     diff_dim = ps.dynamic.diff_dim
@@ -50,7 +51,11 @@ function tlm(
         @views beuler_sens_jac!(J, traj[:, i + 1], dp.uvec, dp.pvec, ps, diff_dim, dt)
         rhs .= 0.0
         if δp != nothing
-            jacp_vec_fd!(rhs, δp, dp.zvec, dp.uvec, dp.pvec, ps)
+            if finite_diff
+                jacp_vec_fd!(rhs, δp, dp.zvec, dp.uvec, dp.pvec, ps)
+            else    
+                jacp_vec!(rhs, δp, dp.zvec, dp.uvec, dp.pvec, ps)
+            end
         end
         @views rhs[1:diff_dim] .*= dt
         @views rhs[1:diff_dim] .+= δz[1:diff_dim]

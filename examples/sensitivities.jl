@@ -77,7 +77,7 @@ pidx = 20
 GradPower.initialize_dynamics!(dprob, sys)
 #event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
 tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
-@time δztf = GradPower.tlm(δz0, dprob, sys, traj, tvec, δp=δp)
+@time δztf = GradPower.tlm(δz0, dprob, sys, traj, tvec, δp=δp, finite_diff=true)
 
 function final_state_param(p)
     dprob = GradPower.DynamicProblem(sys)
