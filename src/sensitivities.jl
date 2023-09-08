@@ -18,19 +18,36 @@ function tlm(
     @assert length(tvec) == size(traj, 2)
     @assert size(traj, 1) == length(δz0)
     @assert size(δz0, 1) == system_size
+    
+    # fixed time step (for now)
+    dt = tvec[2] - tvec[1]
+    tf = tvec[end]
+    nsteps = size(tvec, 1)
+    
+    # retrieve events.
+    # TODO: we can only do one event right now.
+    events = ps.dynamic.events
+    @assert length(events) <= 1
+    ton = toff = tf + dt
+    step_on = step_off = nsteps + 1
+    if length(events) == 1
+        event = events[1]
+        ton = event.ton
+        toff = event.toff
+        step_on = Int(round(ton/dt))
+        step_off = Int(round(toff/dt))
+    end
 
     # buffers
     δz = copy(δz0)
     J = preallocate_jacobian(ps)
     rhs = zeros(system_size)
     dt = tvec[2] - tvec[1]
-    @views beuler_jac!(J, traj[:, 1], traj[:, 1], dp.uvec, dp.pvec, ps, diff_dim, dt)
+    @views beuler_sens_jac!(J, traj[:, 1], dp.uvec, dp.pvec, ps, diff_dim, dt)
     fact = klu(J)
-    nsteps = size(tvec, 1)
 
     for i = 1:(nsteps - 1)
-        dt = tvec[i+1] - tvec[i]
-        @views beuler_jac!(J, traj[:, i + 1], traj[:, i + 1], dp.uvec, dp.pvec, ps, diff_dim, dt)
+        @views beuler_sens_jac!(J, traj[:, i + 1], dp.uvec, dp.pvec, ps, diff_dim, dt)
         rhs .= 0.0
         if δp != nothing
             jacp_vec_fd!(rhs, δp, dp.zvec, dp.uvec, dp.pvec, ps)
@@ -41,7 +58,66 @@ function tlm(
         δz .= J \ rhs
         #klu!(fact, J)
         #ldiv!(δz, fact, rhs)
+        if i == step_on
+            activate!(events[1])
+        elseif i == step_off
+            deactivate!(events[1])
+        end
+    end
+    
+    for event in events
+        deactivate!(event)
     end
 
     return δz
+end
+
+# TODO: Unify beuler methods. This is just negative sign.
+function beuler_sens_jac!(
+    J::SparseMatrixCSC,
+    z::AbstractVector,
+    u::AbstractVector,
+    p::AbstractVector,
+    sys::PowerSystem,
+    diff_dim::Int64,
+    dt::Float64
+)
+    # set all elements to zero
+    fill!(J.nzval, 0.0)
+
+    # evaluate Jacobian
+    rhs_jac!(J, z, u, p, sys)
+
+    # scale for backward Euler
+    _jacobian_sens_beuler!(J, diff_dim, dt)
+end
+
+function _jacobian_sens_beuler!(J::SparseMatrixCSC, NDIFFEQ::Int, h::Float64)
+    # Iterating through each column
+    for col = 1:size(J, 2)
+        # Flag to check if diagonal element for the column is found
+        diagonal_found = false
+        
+        # Iterating through the non-zero elements in each column
+        for row_index in nzrange(J, col)
+            row = rowvals(J)[row_index]
+            
+            # Update values if the row index is less or equal to NDIFFEQ
+            if row <= NDIFFEQ
+                J.nzval[row_index] *= h
+                
+                # Update diagonal element
+                if row == col
+                    J.nzval[row_index] -= 1.0
+                    diagonal_found = true
+                end
+           end
+        end
+
+        # If diagonal element was not found and col is within NDIFFEQ, then add it
+        if !diagonal_found && col <= NDIFFEQ
+            @warn "Diagonal element not found for column $col. Adding it."
+            J[col, col] -= 1.0
+        end
+    end
 end

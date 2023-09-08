@@ -71,11 +71,11 @@ println("TLM initial conditions error = $error")
 # compute TLM w.r.t. parameters
 δz0 = zeros(length(dprob.zvec))
 δp = zeros(length(dprob.pvec)) # direction of perturbation
-pidx = 7
+pidx = 20
 δp[pidx] = 1.0
 
 GradPower.initialize_dynamics!(dprob, sys)
-event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
+#event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
 tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
 @time δztf = GradPower.tlm(δz0, dprob, sys, traj, tvec, δp=δp)
 
@@ -83,13 +83,11 @@ function final_state_param(p)
     dprob = GradPower.DynamicProblem(sys)
     GradPower.initialize_dynamics!(dprob, sys)
     dprob.pvec[pidx] += p
-    #event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
     tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
     return traj[:, end]
 end
 
-ϵ = 1e-2
-
+ϵ = 1e-4
 traj1 = final_state_param(0)
 traj2 = final_state_param(ϵ)
 traj3 = final_state_param(-ϵ)
