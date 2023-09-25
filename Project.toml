@@ -4,7 +4,6 @@ authors = ["D. Adrian Maldonado <maldonadod@anl.gov>", "François Pacaud <franco
 version = "0.1.1"
 
 [deps]
-Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 FiniteDiff = "6a86dc24-6348-571c-b903-95158fe2bd41"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 KLU = "ef3ab10e-7fda-4108-b977-705223b18434"

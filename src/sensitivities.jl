@@ -77,6 +77,65 @@ function tlm(
     return δz
 end
 
+function adjoint(
+    λ0::AbstractArray,
+    dp::DynamicProblem,
+    ps::PowerSystem,
+    traj::AbstractArray,
+    tvec::AbstractArray;
+    store_trajectory=false,
+    δp::Union{AbstractArray, Nothing}=nothing,
+    finite_diff::Bool=false
+)
+    nbus = length(ps.buses)
+    diff_dim = ps.dynamic.diff_dim
+    alg_dim = ps.dynamic.alg_dim
+    system_size = diff_dim + alg_dim + 2*nbus
+
+    # integration time is determined by trajectory.
+    @assert length(tvec) == size(traj, 2)
+    @assert size(traj, 1) == length(λ0)
+    @assert size(λ0, 1) == system_size
+
+    # fixed time step (for now)
+    dt = tvec[2] - tvec[1]
+    tf = tvec[end]
+    nsteps = size(tvec, 1)
+
+    # buffers
+    λ = copy(λ0)
+    J = preallocate_jacobian(ps)
+    rhs = zeros(system_size)
+    dt = tvec[2] - tvec[1]
+
+    for i = 1:(nsteps - 1)
+        println("step: $i")
+        println(λ)
+        rhs .= 0.0
+
+        # construct transpose of Jacobian
+        fill!(J.nzval, 0.0)
+        rhs_jac!(J, traj[:, end - (i - 1)], dp.uvec, dp.pvec, ps)
+        show(J)
+        Jt = transpose(J)
+        show(Jt)
+
+        # TODO: INNEFFICIENT: modify Jacobian.
+        Jt[1:diff_dim, :] .*= dt
+        for j = 1:diff_dim
+            Jt[j, j] += 1.0
+        end
+        
+        # assemble r.h. s
+        @views rhs[1:diff_dim] .+= -λ[1:diff_dim]
+        println("rhs: $rhs")
+        λ .= Jt \ rhs
+        println("λ: $λ")
+    end
+
+    return λ
+end
+
 # TODO: Unify beuler methods. This is just negative sign.
 function beuler_sens_jac!(
     J::SparseMatrixCSC,
