@@ -26,7 +26,8 @@ GradPower.build_network!(sys)
 GradPower.runpf!(sys, verbose=false);
 
 # dynamic simulation
-tfinal = 2/120.0
+dt = 1.0/120.0
+tfinal = 100.0/120.0
 #tfinal = 1.0
 dprob = GradPower.DynamicProblem(sys)
 GradPower.initialize_dynamics!(dprob, sys)
@@ -35,28 +36,34 @@ GradPower.initialize_dynamics!(dprob, sys)
 #event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
 tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
 
-state_idx = 3
+state_idx = 4
 λ0 = zeros(length(dprob.zvec))
 λ0[state_idx] = 1.0
 
 @time λ = GradPower.adjoint(λ0, dprob, sys, traj, tvec)
 
-# compute TLM w.r.t initial condition using finite differences
-function final_state(ϵ)
+function final_state(x)
     dprob = GradPower.DynamicProblem(sys)
     GradPower.initialize_dynamics!(dprob, sys)
-    dprob.zvec[state_idx] += ϵ
-    #dprob.zvec .+= ϵ*ones(length(dprob.zvec))
+    dprob.zvec .= x
     tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
-    return traj[:, end]
+    return traj[state_idx, end]
 end
 
-ϵ = 1e-6
-traj1 = final_state(0)
-traj2 = final_state(ϵ)
-traj3 = final_state(-ϵ)
+if false
+J = GradPower.preallocate_jacobian(sys)
+GradPower.rhs_jac!(J, traj[:, end], dprob.uvec, dprob.pvec, sys)
+Jd = Array(J)
+Jt = transpose(Jd)
+diff_dim = sys.dynamic.diff_dim
+Jt[1:diff_dim, :] .*= dt
+for j = 1:diff_dim
+    Jt[j, j] -= 1.0
+end
+rhs = copy(λ0)
+rhs *= -1
+λs = Jt \ rhs
+end
 
-λfd = (traj2 - traj3) / (2*ϵ)
-
-error = norm(λ - λfd, Inf)
-println("TLM initial conditions error = $error")
+# compute other stuff
+gg = FiniteDiff.finite_difference_gradient(final_state, znom)
