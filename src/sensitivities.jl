@@ -77,6 +77,18 @@ function tlm(
     return δz
 end
 
+function rdiff!(
+    out::AbstractArray,
+    z::AbstractArray,
+    u::AbstractArray,
+    p::AbstractArray,
+    ps::PowerSystem
+)
+    # for now, just quadratic diagonal of speeds.
+
+    out[5] = 2*z[5]
+end
+
 function adjoint(
     λ0::AbstractArray,
     dp::DynamicProblem,
@@ -85,7 +97,8 @@ function adjoint(
     tvec::AbstractArray;
     store_trajectory=false,
     δp::Union{AbstractArray, Nothing}=nothing,
-    finite_diff::Bool=false
+    finite_diff::Bool=false,
+    functional::Bool=false
 )
     nbus = length(ps.buses)
     diff_dim = ps.dynamic.diff_dim
@@ -104,21 +117,18 @@ function adjoint(
 
     # buffers
     λ = copy(λ0)
+    μ = zeros(size(dp.pvec, 1))
     J = preallocate_jacobian(ps)
     rhs = zeros(system_size)
     dt = tvec[2] - tvec[1]
 
     for i = 1:(nsteps - 1)
-        #println("step: $i")
-        #println(λ)
         rhs .= 0.0
 
         # construct transpose of Jacobian
         fill!(J.nzval, 0.0)
         rhs_jac!(J, traj[:, end - (i - 1)], dp.uvec, dp.pvec, ps)
-        #show(J)
         Jt = transpose(J)
-        #show(Jt)
 
         # TODO: INNEFFICIENT: modify Jacobian.
         Jt[1:diff_dim, :] .*= dt
@@ -127,14 +137,21 @@ function adjoint(
         end
         
         # assemble r.h. s
+        if functional == true
+            rdiff!(rhs, traj[:, end - (i - 1)], dp.uvec, dp.pvec, ps)
+        end
+        rhs[1:diff_dim] *= dt
+
         @views rhs[1:diff_dim] .+= -λ[1:diff_dim]
-        #println("rhs: $rhs")
-        #rhs .*= -1.0
         λ .= Jt \ rhs
-        #println("λ: $λ")
+
+        # update μ
+        outp = zeros(size(dp.pvec, 1))
+        jacpt_vec_fd!(outp, λ, dp.zvec, dp.uvec, dp.pvec, ps)
+        μ = μ + dt*outp
     end
 
-    return λ
+    return λ, μ
 end
 
 # TODO: Unify beuler methods. This is just negative sign.

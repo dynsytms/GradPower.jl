@@ -5,7 +5,7 @@ using SparseArrays
 using FiniteDiff
 using ForwardDiff
 using LinearAlgebra
-using BenchmarkTools
+#using BenchmarkTools
 
 using Profile
 using PProf
@@ -13,8 +13,8 @@ using PProf
 raw_file = "examples/2bus.raw"
 dyr_file = "examples/2bus.dyr"
 
-raw_file = "examples/ieee9_v33.raw"
-dyr_file = "examples/ieee9bus.dyr"
+#raw_file = "examples/ieee9_v33.raw"
+#dyr_file = "examples/ieee9bus.dyr"
 
 #raw_file = "examples/ACTIVSg2000.raw"
 #dyr_file = "examples/ACTIVSg2000.dyr"
@@ -52,15 +52,23 @@ function jvp_fd(pp, v)
     return Jfd*v
 end
 
-println("Computing Jacobian-vector product using finite differences...")
+function jvp_trans_fd(pp, v)
+    Jfd = FiniteDiff.finite_difference_jacobian(rhs, pp_nom)
+    return transpose(Jfd)*v
+end
+
+println("Jacobian vector product")
 #jvp_fd(pp_nom, vdir)
 jvpf = jvp_fd(pp_nom, vdir)
-
-println("Computing Jacobian-vector product using ForwardDiff...")
 jvp_ad = zeros(length(dprob.zvec))
 GradPower.jacp_vec!(jvp_ad, vdir, dprob.zvec, dprob.uvec, pp_nom, sys, full_jac=false)
 jvp_ad = zeros(length(dprob.zvec))
-@time GradPower.jacp_vec!(jvp_ad, vdir, dprob.zvec, dprob.uvec, pp_nom, sys)
+GradPower.jacp_vec!(jvp_ad, vdir, dprob.zvec, dprob.uvec, pp_nom, sys)
 # compute difference
 error = norm(jvpf - jvp_ad)/norm(jvpf)
 println("error relative: ", error)
+
+println("Jacobian^T vector product")
+vdir = zeros(length(dprob.zvec))
+vdir[1] = 1.0
+jvpf_t = jvp_trans_fd(pp_nom, vdir)

@@ -140,3 +140,22 @@ function jacp_vec_fd!(
     Jfd = FiniteDiff.finite_difference_jacobian(rhs, p)
     out .= Jfd*vec
 end
+
+function jacpt_vec_fd!(
+    out::AbstractArray,
+    vec::AbstractArray,
+    z::AbstractArray,
+    u::AbstractArray,
+    p::AbstractArray,
+    sys::PowerSystem;
+)
+    function rhs(pnom)
+        f = similar(pnom, length(z))
+        fill!(f, zero(eltype(pnom)))
+        rhs_fun!(f, z, u, pnom, sys)
+        return f
+    end
+
+    Jfd = FiniteDiff.finite_difference_jacobian(rhs, p)
+    out .= transpose(Jfd)*vec
+end

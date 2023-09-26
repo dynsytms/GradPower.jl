@@ -144,6 +144,11 @@ function rhs_fun!(f::AbstractArray, z::AbstractArray, u::AbstractArray, p::Abstr
     end
 end
 
+# NOTE: TODO: Implement different objective types using multiple dispatch.
+function functional(z::AbstractArray, u::AbstractArray, p::AbstractArray, sys::PowerSystem)
+    return z[5]^2.0
+end
+
 function beuler!(
     f::AbstractVector,
     z::AbstractVector,

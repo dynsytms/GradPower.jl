@@ -4,7 +4,7 @@ using SparseArrays
 using FiniteDiff
 using ForwardDiff
 using LinearAlgebra
-
+using UnicodePlots
 
 raw_file = "examples/2bus.raw"
 dyr_file = "examples/2bus.dyr"
@@ -40,7 +40,10 @@ state_idx = 4
 λ0 = zeros(length(dprob.zvec))
 λ0[state_idx] = 1.0
 
-@time λ = GradPower.adjoint(λ0, dprob, sys, traj, tvec)
+λ, μ = GradPower.adjoint(λ0, dprob, sys, traj, tvec)
+
+
+# compute finite differences.
 
 function final_state(x)
     dprob = GradPower.DynamicProblem(sys)
@@ -50,20 +53,55 @@ function final_state(x)
     return traj[state_idx, end]
 end
 
-if false
-J = GradPower.preallocate_jacobian(sys)
-GradPower.rhs_jac!(J, traj[:, end], dprob.uvec, dprob.pvec, sys)
-Jd = Array(J)
-Jt = transpose(Jd)
-diff_dim = sys.dynamic.diff_dim
-Jt[1:diff_dim, :] .*= dt
-for j = 1:diff_dim
-    Jt[j, j] -= 1.0
-end
-rhs = copy(λ0)
-rhs *= -1
-λs = Jt \ rhs
+function final_state_p(p)
+    dprob = GradPower.DynamicProblem(sys)
+    GradPower.initialize_dynamics!(dprob, sys)
+    dprob.pvec .= p
+    tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
+    return traj[state_idx, end]
 end
 
-# compute other stuff
-gg = FiniteDiff.finite_difference_gradient(final_state, znom)
+znom = dprob.zvec
+λfd = FiniteDiff.finite_difference_gradient(final_state, znom)
+pnom = dprob.pvec
+μfd = FiniteDiff.finite_difference_gradient(final_state_p, pnom)
+
+println("Compute sensitivities w.r.t final state")
+println("Compute λ")
+println(λ)
+println(λfd)
+println("Compute μ")
+println(μ)
+println(μfd)
+
+println("")
+println("")
+println("Compute sensitivities w.r.t. functional")
+
+# now, include functional
+
+function objective_numeric(tvec, traj, u, p, sys)
+    val = 0.0
+    for i=1:(size(traj, 2) - 1)
+        rfun = GradPower.functional(traj[:, i + 1], u, p, sys)
+        val += (tvec[i + 1] - tvec[i])*rfun
+    end
+    return val
+end
+
+function functional_state(x)
+    dprob = GradPower.DynamicProblem(sys)
+    GradPower.initialize_dynamics!(dprob, sys)
+    dprob.zvec .= x
+    tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
+    return objective_numeric(tvec, traj, dprob.uvec, dprob.pvec, sys)
+end
+eps = 1e-6
+zz = copy(znom)
+zz[5] += eps
+obj = functional_state(zz)
+fd_obj = FiniteDiff.finite_difference_gradient(functional_state, znom)
+println(obj/eps)
+
+λ0 = zeros(length(dprob.zvec))
+λfun, μfun = GradPower.adjoint(λ0, dprob, sys, traj, tvec, functional=true)
