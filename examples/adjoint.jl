@@ -76,7 +76,6 @@ println(μfd)
 
 println("")
 println("")
-println("Compute sensitivities w.r.t. functional")
 
 # now, include functional
 
@@ -105,3 +104,14 @@ println(obj/eps)
 
 λ0 = zeros(length(dprob.zvec))
 λfun, μfun = GradPower.adjoint(λ0, dprob, sys, traj, tvec, functional=true)
+
+println("Compute sensitivities w.r.t. functional")
+println("Compute λ")
+println(λfun)
+println(fd_obj)
+println("Compute μ")
+println(μfun)
+
+println("")
+println("")
+println("Compute sensitivities w.r.t. functional")
