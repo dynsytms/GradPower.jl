@@ -48,8 +48,6 @@ end
 function NLPModels.grad!(nlp::DynamicNLP, x::AbstractVector, g::AbstractVector)
     copyto!(nlp.prob.pvec, p)
     tvec, traj = integrate!(nlp.prob, nlp.sys, nlp.tfinal)
-    state_idx = 4
-    nlp.λ0[state_idx] = 1.0
     λ, μ = adjoint(nlp.λ0, nlp.prob, nlp.sys, traj, tvec; functional=true)
     return μ
 end
