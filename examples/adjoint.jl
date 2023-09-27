@@ -27,8 +27,8 @@ GradPower.runpf!(sys, verbose=false);
 
 # dynamic simulation
 dt = 1.0/120.0
-tfinal = 100.0/120.0
-#tfinal = 1.0
+tfinal = 1.0/120.0
+tfinal = 1.0
 dprob = GradPower.DynamicProblem(sys)
 GradPower.initialize_dynamics!(dprob, sys)
 
@@ -42,9 +42,7 @@ state_idx = 4
 
 λ, μ = GradPower.adjoint(λ0, dprob, sys, traj, tvec)
 
-
 # compute finite differences.
-
 function final_state(x)
     dprob = GradPower.DynamicProblem(sys)
     GradPower.initialize_dynamics!(dprob, sys)
@@ -95,12 +93,17 @@ function functional_state(x)
     tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
     return objective_numeric(tvec, traj, dprob.uvec, dprob.pvec, sys)
 end
-eps = 1e-6
-zz = copy(znom)
-zz[5] += eps
-obj = functional_state(zz)
-fd_obj = FiniteDiff.finite_difference_gradient(functional_state, znom)
-println(obj/eps)
+
+function functional_statep(p)
+    dprob = GradPower.DynamicProblem(sys)
+    GradPower.initialize_dynamics!(dprob, sys)
+    dprob.pvec .= p
+    tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
+    return objective_numeric(tvec, traj, dprob.uvec, dprob.pvec, sys)
+end
+
+λfun_fd = FiniteDiff.finite_difference_gradient(functional_state, znom)
+μfun_fd = FiniteDiff.finite_difference_gradient(functional_statep, pnom)
 
 λ0 = zeros(length(dprob.zvec))
 λfun, μfun = GradPower.adjoint(λ0, dprob, sys, traj, tvec, functional=true)
@@ -108,10 +111,7 @@ println(obj/eps)
 println("Compute sensitivities w.r.t. functional")
 println("Compute λ")
 println(λfun)
-println(fd_obj)
+println(λfun_fd)
 println("Compute μ")
 println(μfun)
-
-println("")
-println("")
-println("Compute sensitivities w.r.t. functional")
+println(μfun_fd)

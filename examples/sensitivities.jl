@@ -35,7 +35,7 @@ dprob = GradPower.DynamicProblem(sys)
 GradPower.initialize_dynamics!(dprob, sys)
 
 # integrate dynamics
-#event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
+event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
 tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
 
 # compute TLM w.r.t. initial condition
@@ -66,6 +66,7 @@ traj3 = final_state(-ϵ)
 #println("δztf = $δztf")
 
 error = norm(δztf - δztf_fd, Inf)
+
 println("TLM initial conditions error = $error")
 
 # compute TLM w.r.t. parameters
@@ -77,7 +78,7 @@ pidx = 20
 GradPower.initialize_dynamics!(dprob, sys)
 #event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
 tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
-@time δztf = GradPower.tlm(δz0, dprob, sys, traj, tvec, δp=δp, finite_diff=true)
+@time δztf = GradPower.tlm(δz0, dprob, sys, traj, tvec, δp=δp, finite_diff=false)
 
 function final_state_param(p)
     dprob = GradPower.DynamicProblem(sys)
@@ -87,7 +88,7 @@ function final_state_param(p)
     return traj[:, end]
 end
 
-ϵ = 1e-4
+ϵ = 1e-6
 traj1 = final_state_param(0)
 traj2 = final_state_param(ϵ)
 traj3 = final_state_param(-ϵ)
@@ -97,3 +98,5 @@ traj3 = final_state_param(-ϵ)
 
 error = norm(δztf - δztf_fd, Inf)
 println("TLM parameter error = $error")
+println(δztf)
+println(δztf_fd)
