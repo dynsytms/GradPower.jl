@@ -9,6 +9,9 @@ using NLsolve
 using KLU
 using ForwardDiff
 
+import NLPModels
+import MadNLP
+
 # profiling
 using TimerOutputs
 
@@ -281,6 +284,9 @@ include("network.jl")
 include("pflow.jl")
 include("dynamics.jl")
 include("sensitivities.jl")
+
+# Optimization model.
+include("nlp.jl")
 
 # Include files. parsers.
 include("parse.jl")
