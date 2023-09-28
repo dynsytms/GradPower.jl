@@ -1,4 +1,4 @@
-using Revise    
+using Revise
 using GradPower
 using MadNLP
 using NLPModels
@@ -24,7 +24,6 @@ GradPower.runpf!(sys, verbose=false);
 
 # dynamic simulation
 dt = 1.0/120.0
-tfinal = 1.0/120.0
 tfinal = 2.0
 dprob = GradPower.DynamicProblem(sys)
 GradPower.initialize_dynamics!(dprob, sys)
@@ -43,8 +42,10 @@ uvar[7] = 1.2*uvar[7]
 nlp = GradPower.DynamicNLP(sys, dprob, tfinal, lvar, uvar)
 
 # solve problem
-ips = MadNLP.MadNLPSolver(nlp; print_level=MadNLP.INFO,
-            kkt_system=MadNLP.DENSE_KKT_SYSTEM,
-            hessian_approximation=MadNLP.DENSE_BFGS,
-            linear_solver=LapackCPUSolver,)
-MadNLP.solve!(ips)
+solver = MadNLP.MadNLPSolver(nlp;
+    print_level=MadNLP.INFO,
+    kkt_system=MadNLP.DENSE_KKT_SYSTEM,
+    hessian_approximation=MadNLP.DENSE_BFGS,
+    linear_solver=LapackCPUSolver,
+)
+MadNLP.solve!(solver)
