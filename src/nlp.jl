@@ -13,7 +13,7 @@ function DynamicNLP(
     tfinal::Float64,
     lvar::AbstractArray,
     uvar::AbstractArray;
-    counters=Counters()
+    counters=NLPModels.Counters()
 )
     nvar = length(dprob.pvec)
     ncon = 0
@@ -26,29 +26,30 @@ function DynamicNLP(
         uvar=uvar,
         minimize=true,
     )
-    return DynamicNLP(sys, dprob, tfinal, meta, counters)
+    return DynamicNLP(sys, dprob, tfinal, λ0, meta, counters)
 end
 
-function NLPModels.obj(nlp::DynamicNLP{T, S}, x::AbstractVector) where {T, S}
+function NLPModels.obj(nlp::DynamicNLP{T, S}, p::AbstractVector) where {T, S}
     copyto!(nlp.prob.pvec, p)
     tvec, traj = integrate!(nlp.prob, nlp.sys, nlp.tfinal)
     tf = size(traj, 2)
 
-    u, p = nlp.prob.uvec, nlp.prob.pvec
+    uvec, pvec = nlp.prob.uvec, nlp.prob.pvec
     # Integrate objective along time
     val = zero(T)
     for t in 1:tf-1
         x = view(traj, :, t+1)
-        rfun = functional(x, u, p, nlp.sys)
+        rfun = functional(x, uvec, pvec, nlp.sys)
         val += (tvec[t+1] - tvec[t]) * rfun
     end
     return val
 end
 
 function NLPModels.grad!(nlp::DynamicNLP, x::AbstractVector, g::AbstractVector)
-    copyto!(nlp.prob.pvec, p)
+    copyto!(nlp.prob.pvec, x)
     tvec, traj = integrate!(nlp.prob, nlp.sys, nlp.tfinal)
     λ, μ = adjoint(nlp.λ0, nlp.prob, nlp.sys, traj, tvec; functional=true)
+    copyto!(g, μ)
     return μ
 end
 

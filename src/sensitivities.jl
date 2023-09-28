@@ -85,8 +85,10 @@ function rdiff!(
     ps::PowerSystem
 )
     # for now, just quadratic diagonal of speeds.
-
-    out[5] = 2.0*z[5]
+    idxs = gen_speeds(ps)
+    for (i, idx) in enumerate(idxs)
+        out[idx] = 2.0*z[idx]
+    end
 end
 
 function adjoint(
