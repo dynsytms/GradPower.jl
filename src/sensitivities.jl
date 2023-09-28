@@ -86,7 +86,7 @@ function rdiff!(
 )
     # for now, just quadratic diagonal of speeds.
 
-    out[5] = 2*z[5]
+    out[5] = 2.0*z[5]
 end
 
 function adjoint(
@@ -96,7 +96,6 @@ function adjoint(
     traj::AbstractArray,
     tvec::AbstractArray;
     store_trajectory=false,
-    δp::Union{AbstractArray, Nothing}=nothing,
     finite_diff::Bool=false,
     functional::Bool=false
 )
@@ -154,7 +153,7 @@ function adjoint(
         if functional == true
             rdiff!(rhs, traj[:, i], dp.uvec, dp.pvec, ps)
         end
-        rhs[1:diff_dim] *= -dt
+        rhs[1:diff_dim] *= dt
 
         @views rhs[1:diff_dim] .+= λ[1:diff_dim]
         λ .= Jt \ rhs

@@ -28,12 +28,12 @@ GradPower.runpf!(sys, verbose=false);
 # dynamic simulation
 dt = 1.0/120.0
 tfinal = 1.0/120.0
-tfinal = 1.0
+tfinal = 2.0
 dprob = GradPower.DynamicProblem(sys)
 GradPower.initialize_dynamics!(dprob, sys)
 
 # integrate dynamics
-#event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
+event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
 tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
 
 state_idx = 4
