@@ -2,12 +2,13 @@ using Revise
 using GradPower
 using MadNLP
 using NLPModels
+using NPZ
 
 raw_file = "examples/2bus.raw"
 dyr_file = "examples/2bus.dyr"
 
-#raw_file = "examples/ieee9_v33.raw"
-#dyr_file = "examples/ieee9bus.dyr"
+raw_file = "examples/ieee9_v33.raw"
+dyr_file = "examples/ieee9bus.dyr"
 
 #raw_file = "examples/ACTIVSg2000.raw"
 #dyr_file = "examples/ACTIVSg2000.dyr"
@@ -30,6 +31,17 @@ GradPower.initialize_dynamics!(dprob, sys)
 
 # integrate dynamics
 event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
+tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
+
+# save nominal trajectory
+npzwrite("traj.npz", Dict("tvec"=>tvec, "traj"=>traj))
+
+# compute adjoint
+λ0 = zeros(length(dprob.zvec))
+λfun, μfun = GradPower.adjoint(λ0, dprob, sys, traj, tvec, functional=true)
+
+# save gradient of functional with respect to parameters
+npzwrite("grad.npz", Dict("grad"=>μfun))
 
 # build nlp
 lvar = copy(dprob.pvec)
@@ -38,6 +50,12 @@ uvar = copy(dprob.pvec)
 # inertia
 lvar[7] = 0.8*lvar[7]
 uvar[7] = 1.2*uvar[7]
+
+# 9 bus
+lvar[19] = 0.8*lvar[19]
+uvar[19] = 1.2*uvar[19]
+lvar[31] = 0.8*lvar[31]
+uvar[31] = 1.2*uvar[31]
 
 nlp = GradPower.DynamicNLP(sys, dprob, tfinal, lvar, uvar)
 
@@ -49,3 +67,15 @@ solver = MadNLP.MadNLPSolver(nlp;
     linear_solver=LapackCPUSolver,
 )
 MadNLP.solve!(solver)
+
+# obtain optimal pvec
+pvec_opt = solver.x.values
+
+# integrate dynamics
+dprob = GradPower.DynamicProblem(sys)
+GradPower.initialize_dynamics!(dprob, sys)
+dprob.pvec .= pvec_opt
+tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
+
+# save optimal trajectory
+npzwrite("traj_opt.npz", Dict("tvec"=>tvec, "traj"=>traj))
