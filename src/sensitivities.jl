@@ -136,34 +136,42 @@ function adjoint(
     J = preallocate_jacobian(ps)
     rhs = zeros(system_size)
     dt = tvec[2] - tvec[1]
+    outp = zeros(size(dp.pvec, 1))
 
     for i = reverse(2:nsteps)
         rhs .= 0.0
-
-        # construct transpose of Jacobian
         fill!(J.nzval, 0.0)
         rhs_jac!(J, traj[:, i], dp.uvec, dp.pvec, ps)
-        Jt = transpose(J)
 
-        # TODO: INNEFFICIENT: modify Jacobian.
-        Jt[1:diff_dim, :] .*= -dt
-        for j = 1:diff_dim
-            Jt[j, j] += 1.0
+        # option A. inneficient
+        if false
+            Jt = copy(transpose(J))
+            Jt[1:diff_dim, :] .*= -dt
+            for j = 1:diff_dim
+                Jt[j, j] += 1.0
+            end
         end
+
+        # option B.
+        _jacobian_adjoint_beuler!(J, diff_dim, dt)
+        Jt = copy(transpose(J))
         
         # assemble r.h. s
         if functional == true
             rdiff!(rhs, traj[:, i], dp.uvec, dp.pvec, ps)
         end
-        rhs[1:diff_dim] *= dt
+        rhs[1:diff_dim] .*= dt
 
         @views rhs[1:diff_dim] .+= λ[1:diff_dim]
         λ .= Jt \ rhs
 
         # update μ
-        outp = zeros(size(dp.pvec, 1))
-        jacpt_vec_fd!(outp, λ, traj[:, i], dp.uvec, dp.pvec, ps)
-        μ = μ + dt*outp
+        if finite_diff
+            jacpt_vec_fd!(outp, λ, traj[:, i], dp.uvec, dp.pvec, ps)
+        else
+            jacpt_vec!(outp, λ, traj[:, i], dp.uvec, dp.pvec, ps)
+        end
+        μ .= μ + dt*outp
 
         # reverse integration
         if i == step_off + 1
@@ -226,6 +234,36 @@ function _jacobian_sens_beuler!(J::SparseMatrixCSC, NDIFFEQ::Int, h::Float64)
         if !diagonal_found && col <= NDIFFEQ
             @warn "Diagonal element not found for column $col. Adding it."
             J[col, col] -= 1.0
+        end
+    end
+end
+
+function _jacobian_adjoint_beuler!(J::SparseMatrixCSC, NDIFFEQ::Int, h::Float64)
+    # Iterating through each column
+    for col = 1:size(J, 2)
+        # Flag to check if diagonal element for the column is found
+        diagonal_found = false
+
+        # Iterating through the non-zero elements in each column
+        for row_index in nzrange(J, col)
+            row = rowvals(J)[row_index]
+
+            # Update values if the row index is less or equal to NDIFFEQ
+            if col <= NDIFFEQ
+                J.nzval[row_index] *= -h
+
+                # Update diagonal element
+                if row == col
+                    J.nzval[row_index] += 1.0
+                    diagonal_found = true
+                end
+           end
+        end
+
+        # If diagonal element was not found and col is within NDIFFEQ, then add it
+        if !diagonal_found && col <= NDIFFEQ
+            @warn "Diagonal element not found for column $col. Adding it."
+            J[col, col] += 1.0
         end
     end
 end

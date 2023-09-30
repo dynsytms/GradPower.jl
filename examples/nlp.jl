@@ -10,8 +10,8 @@ dyr_file = "examples/2bus.dyr"
 raw_file = "examples/ieee9_v33.raw"
 dyr_file = "examples/ieee9bus.dyr"
 
-#raw_file = "examples/ACTIVSg2000.raw"
-#dyr_file = "examples/ACTIVSg2000.dyr"
+raw_file = "examples/ACTIVSg200.raw"
+dyr_file = "examples/ACTIVSg200.dyr"
 
 # parse
 raw = GradPower.read_psse_raw(raw_file)
@@ -47,15 +47,21 @@ npzwrite("grad.npz", Dict("grad"=>μfun))
 lvar = copy(dprob.pvec)
 uvar = copy(dprob.pvec)
 
-# inertia
-lvar[7] = 0.8*lvar[7]
-uvar[7] = 1.2*uvar[7]
 
-# 9 bus
-lvar[19] = 0.8*lvar[19]
-uvar[19] = 1.2*uvar[19]
-lvar[31] = 0.8*lvar[31]
-uvar[31] = 1.2*uvar[31]
+# find number of dynamic generators
+ngen = 0
+for device in sys.dynamic.devices
+    if device.dtype isa Genrou
+        global ngen += 1
+    end
+end
+
+for i in 1:ngen
+    # adjust inertia
+    lvar[7 + 12*(i-1)] = 0.8*lvar[7 + 12*(i-1)]
+    uvar[7 + 12*(i-1)] = 1.2*uvar[7 + 12*(i-1)]
+end
+
 
 nlp = GradPower.DynamicNLP(sys, dprob, tfinal, lvar, uvar)
 
