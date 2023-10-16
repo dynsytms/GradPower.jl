@@ -66,6 +66,18 @@ function fill_pvec!(pvec::AbstractArray, dtype::Genrou)
     pvec[12] = dtype.T_q0dp
 end
 
+function get_device_name(dtype::Genrou)
+    return "Genrou"
+end
+
+function get_bus(dtype::Genrou)
+    return dtype.bus
+end
+
+function get_param_names(dtype::Genrou)
+    return ["x_d", "x_q", "x_dp", "x_qp", "x_ddp", "xl", "H", "D", "T_d0p", "T_q0p", "T_d0dp", "T_q0dp"]
+end
+
 function initial_guess!(x0::AbstractArray, pvec::AbstractArray, p::Float64, q::Float64, vm::Float64, va::Float64, dtype::Genrou)
     x_d = pvec[1]
     x_q = pvec[2]
@@ -202,7 +214,9 @@ function cinject!(
         i_q = y[3]
         i_d = y[4]
         delta = x[6]
-        sd, cd = sincos(delta)
+        #sd, cd = sincos(delta)
+        sd = sin(delta)
+        cd = cos(delta)
 
         f[1] += sd*i_d + cd*i_q
         f[2] += -cd*i_d + sd*i_q
@@ -283,6 +297,137 @@ function rhs_fun!(
         sd, cd = sincos(delta)
         f_alg[3] = v_d - (vr*sd - vi*cd)
         f_alg[4] = v_q - (vr*cd + vi*sd)
+    end
+end
+
+function rhs_alg!(
+        f_alg::AbstractArray,
+        x::AbstractArray,
+        y::AbstractArray,
+        u::AbstractArray,
+        p::AbstractArray,
+        v::AbstractArray,
+        dtype::Genrou
+)
+    @inbounds begin
+        # parameters
+        x_d = p[1]
+        x_q = p[2]
+        x_dp = p[3]
+        x_qp = p[4]
+        x_ddp = p[5]
+        xl = p[6]
+        H = p[7]
+        D = p[8]
+        T_d0p = p[9]
+        T_q0p = p[10]
+        T_d0dp = p[11]
+        T_q0dp = p[12]
+        x_qdp = x_ddp
+
+        # states
+        e_qp = x[1]
+        e_dp = x[2]
+        phi_1d = x[3]
+        phi_2q = x[4]
+        w = x[5]
+        delta = x[6]
+        v_q = y[1]
+        v_d = y[2]
+        i_q = y[3]
+        i_d = y[4]
+
+        # control
+        e_fd = u[1]
+        p_m = u[2]
+
+        # voltage
+        vr = v[1]
+        vi = v[2]
+
+        tmech = (p_m - D*w)/(1.0 + w)
+
+        # auxiliary variables
+        psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
+                (x_dp - x_ddp)/(x_dp - xl)*phi_1d
+
+        psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
+                (x_qp - x_ddp)/(x_qp - xl)*phi_2q
+
+        # Stator currents
+        f_alg[1] = i_d - ((x_ddp - xl)/(x_dp - xl)*e_qp +
+                (x_dp - x_ddp)/(x_dp - xl)*phi_1d - v_q)/x_ddp
+        f_alg[2] = i_q - (-(x_qdp - xl)/(x_qp - xl)*e_dp +
+                (x_qp - x_qdp)/(x_qp - xl)*phi_2q + v_d)/x_qdp
+        sd, cd = sincos(delta)
+        f_alg[3] = v_d - (vr*sd - vi*cd)
+        f_alg[4] = v_q - (vr*cd + vi*sd)
+    end
+end
+
+function rhs_diff!(
+        f_diff::AbstractArray,
+        x::AbstractArray,
+        y::AbstractArray,
+        u::AbstractArray,
+        p::AbstractArray,
+        v::AbstractArray,
+        dtype::Genrou
+)
+    @inbounds begin
+        # parameters
+        x_d = p[1]
+        x_q = p[2]
+        x_dp = p[3]
+        x_qp = p[4]
+        x_ddp = p[5]
+        xl = p[6]
+        H = p[7]
+        D = p[8]
+        T_d0p = p[9]
+        T_q0p = p[10]
+        T_d0dp = p[11]
+        T_q0dp = p[12]
+        x_qdp = x_ddp
+
+        # states
+        e_qp = x[1]
+        e_dp = x[2]
+        phi_1d = x[3]
+        phi_2q = x[4]
+        w = x[5]
+        delta = x[6]
+        v_q = y[1]
+        v_d = y[2]
+        i_q = y[3]
+        i_d = y[4]
+
+        # control
+        e_fd = u[1]
+        p_m = u[2]
+
+        # voltage
+        vr = v[1]
+        vi = v[2]
+
+        tmech = (p_m - D*w)/(1.0 + w)
+
+        # auxiliary variables
+        psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
+                (x_dp - x_ddp)/(x_dp - xl)*phi_1d
+
+        psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
+                (x_qp - x_ddp)/(x_qp - xl)*phi_2q
+
+        # equations
+        f_diff[1] = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp)*(-e_qp + i_d*(x_dp - xl)
+                    + phi_1d)/((x_dp - xl)^2))*(x_d - x_dp))/T_d0p
+        f_diff[2] = (-e_dp + (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl)
+                    + phi_2q)/((x_qp - xl)^2))*(x_q - x_qp))/T_q0p
+        f_diff[3] = ( e_qp - i_d*(x_dp - xl) - phi_1d)/T_d0dp
+        f_diff[4] = (-e_dp - i_q*(x_qp - xl) - phi_2q)/T_q0dp
+        f_diff[5] = (tmech - psi_de*i_q + psi_qe*i_d)/(2.0*H)
+        f_diff[6] = 2.0*π*60.0*w
     end
 end
 

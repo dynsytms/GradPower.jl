@@ -42,3 +42,18 @@ function compare_matrix(A::AbstractMatrix, B::AbstractMatrix; rtol=1e-2, atol=1e
     valid = (mism == 0)
     return valid
 end
+
+function gen_speeds(sys::PowerSystem)
+    if sys.dynamic == nothing
+        return []
+    end
+
+    idxs = []
+    for (i, device) in enumerate(sys.dynamic.devices)
+        ptr = device.diff_ptr
+        if device.dtype isa Genrou
+            push!(idxs, ptr + 4)
+        end
+    end
+    return idxs
+end

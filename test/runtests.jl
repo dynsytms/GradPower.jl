@@ -1,6 +1,7 @@
 using GradPower
 using Test
 using SparseArrays
+using LinearAlgebra
 
 include("test_case9data.jl")
 
