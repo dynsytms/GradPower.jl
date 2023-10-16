@@ -144,6 +144,16 @@ function rhs_fun!(f::AbstractArray, z::AbstractArray, u::AbstractArray, p::Abstr
     end
 end
 
+# NOTE: TODO: Implement different objective types using multiple dispatch.
+function functional(z::AbstractArray, u::AbstractArray, p::AbstractArray, sys::PowerSystem)
+    idxs = gen_speeds(sys)
+    val = 0.0
+    for (i, idx) in enumerate(idxs)
+        val += z[idx]^2.0
+    end
+    return val
+end
+
 function beuler!(
     f::AbstractVector,
     z::AbstractVector,

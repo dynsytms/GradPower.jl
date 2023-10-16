@@ -36,6 +36,18 @@ function fill_pvec!(pvec::AbstractArray, dtype::ZIPLoad)
     pvec[9] = dtype.yimag
 end
 
+function get_device_name(dtype::ZIPLoad)
+    return "ZIPLoad"
+end
+
+function get_bus(dtype::ZIPLoad)
+    return dtype.bus
+end
+
+function get_param_names(dtype::ZIPLoad)
+    return ["pinj", "qinj", "α", "β", "γ", "weight", "v0mag", "yreal", "yimag"]
+end
+
 function cinject!(
         f::AbstractArray,
         x::AbstractArray,
