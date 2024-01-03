@@ -17,19 +17,21 @@ GradPower.build_network!(sys)
 GradPower.runpf!(sys, verbose=false);
 
 # dynamic simulation
-tfinal = 1.0
+tfinal = 4.8
 dprob = GradPower.DynamicProblem(sys)
 GradPower.initialize_dynamics!(dprob, sys)
+println("znom: ", dprob.zvec)
+znom = copy(dprob.zvec)
 
 # integrate dynamics
-event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
+event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.02, 0.2, 0.3))
 tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
 
 state_idx = 4
 λ0 = zeros(length(dprob.zvec))
 λ0[state_idx] = 1.0
 
-λ, μ = GradPower.adjoint(λ0, dprob, sys, traj, tvec)
+λ, μ, λ_traj = GradPower.adjoint(λ0, dprob, sys, traj, tvec, store_trajectory=true)
 
 # compute finite differences.
 function final_state(x)
@@ -48,7 +50,8 @@ function final_state_p(p)
     return traj[state_idx, end]
 end
 
-znom = dprob.zvec
+#znom = dprob.zvec
+println("znom: ", znom)
 λfd = FiniteDiff.finite_difference_gradient(final_state, znom)
 pnom = dprob.pvec
 μfd = FiniteDiff.finite_difference_gradient(final_state_p, pnom)
@@ -60,6 +63,11 @@ println(λfd)
 println("Compute μ")
 println(μ)
 println(μfd)
+
+# relative norm error
+println("Relative norm error")
+println("λ: ", norm(λ - λfd)/norm(λ))
+println("μ: ", norm(μ - μfd)/norm(μ))
 
 println("")
 println("")
@@ -90,12 +98,12 @@ function functional_statep(p)
     tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
     return objective_numeric(tvec, traj, dprob.uvec, dprob.pvec, sys)
 end
-
+#println("znom: ", znom)
 λfun_fd = FiniteDiff.finite_difference_gradient(functional_state, znom)
 μfun_fd = FiniteDiff.finite_difference_gradient(functional_statep, pnom)
 
 λ0 = zeros(length(dprob.zvec))
-λfun, μfun = GradPower.adjoint(λ0, dprob, sys, traj, tvec, functional=true)
+λfun, μfun, λtraj_fun = GradPower.adjoint(λ0, dprob, sys, traj, tvec, functional=true, store_trajectory=true)
 
 println("Compute sensitivities w.r.t. functional")
 println("Compute λ")
@@ -104,3 +112,7 @@ println(λfun_fd)
 println("Compute μ")
 println(μfun)
 println(μfun_fd)
+
+println("Relative norm error")
+println("λ: ", norm(λfun - λfun_fd))
+println("μ: ", norm(μfun - μfun_fd))
