@@ -488,6 +488,7 @@ function rhs_jac!(
     # TODO: move this to its own function. Define different events (bus fault, line fault, etc.)
     @inbounds for (i, event) in enumerate(sys.dynamic.events)
         if event.status
+            #println("Event is activated")
             bus = event.bus
             vr = v[2*(bus-1)+1]
             vi = v[2*(bus-1)+2]

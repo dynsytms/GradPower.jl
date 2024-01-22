@@ -27,7 +27,6 @@ tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
 
 # compute TLM w.r.t. initial condition
 δz0 = ones(length(dprob.zvec))
-
 δztf = GradPower.tlm(δz0, dprob, sys, traj, tvec)
 
 # compute TLM w.r.t initial condition using finite differences
@@ -46,6 +45,9 @@ traj3 = final_state(-ϵ)
 
 δztf_fd = (traj2 - traj3) / (2*ϵ)
 error = norm(δztf - δztf_fd, Inf)
+
+println("δztf = $δztf")
+println("δztf_fd = $δztf_fd")
 
 println("TLM initial conditions error = $error")
 

@@ -45,7 +45,6 @@ function tlm(
     rhs = zeros(system_size)
     dt = tvec[2] - tvec[1]
     @views beuler_sens_jac!(J, traj[:, 1], dp.uvec, dp.pvec, ps, diff_dim, dt)
-    fact = klu(J)
 
     for i = 1:(nsteps - 1)
         @views beuler_sens_jac!(J, traj[:, i + 1], dp.uvec, dp.pvec, ps, diff_dim, dt)
@@ -61,8 +60,6 @@ function tlm(
         @views rhs[1:diff_dim] .+= δz[1:diff_dim]
         rhs .*= -1.0
         δz .= J \ rhs
-        #klu!(fact, J)
-        #ldiv!(δz, fact, rhs)
         if i == step_on
             activate!(events[1])
         elseif i == step_off
@@ -99,7 +96,8 @@ function adjoint(
     tvec::AbstractArray;
     store_trajectory=false,
     finite_diff::Bool=false,
-    functional::Bool=false
+    functional::Bool=false,
+    verbose::Bool=false
 )
     nbus = length(ps.buses)
     diff_dim = ps.dynamic.diff_dim
@@ -138,21 +136,17 @@ function adjoint(
     dt = tvec[2] - tvec[1]
     outp = zeros(size(dp.pvec, 1))
 
+    if store_trajectory
+        traj_λ = zeros(system_size, nsteps)
+        traj_λ[:, end] .= λ
+    end
+
     for i = reverse(2:nsteps)
+        verbose && println("Adjoint step: ", i)
         rhs .= 0.0
         fill!(J.nzval, 0.0)
         rhs_jac!(J, traj[:, i], dp.uvec, dp.pvec, ps)
 
-        # option A. inneficient
-        if false
-            Jt = copy(transpose(J))
-            Jt[1:diff_dim, :] .*= -dt
-            for j = 1:diff_dim
-                Jt[j, j] += 1.0
-            end
-        end
-
-        # option B.
         _jacobian_adjoint_beuler!(J, diff_dim, dt)
         Jt = copy(transpose(J))
         
@@ -160,12 +154,10 @@ function adjoint(
         if functional == true
             rdiff!(rhs, traj[:, i], dp.uvec, dp.pvec, ps)
         end
-        rhs[1:diff_dim] .*= dt
-
-        @views rhs[1:diff_dim] .+= λ[1:diff_dim]
+        rhs .*= dt
+        rhs .+= λ
         λ .= Jt \ rhs
 
-        # update μ
         if finite_diff
             jacpt_vec_fd!(outp, λ, traj[:, i], dp.uvec, dp.pvec, ps)
         else
@@ -173,11 +165,17 @@ function adjoint(
         end
         μ .= μ + dt*outp
 
-        # reverse integration
-        if i == step_off + 1
+        if i == step_off + 2
+            verbose && println("\t Activate event")
             activate!(events[1])
-        elseif i == step_on + 1
+        elseif i == step_on + 2
+            verbose && println("\t De-Activate event")
             deactivate!(events[1])
+        end
+
+        λ[diff_dim + 1:end] .= 0.0
+        if store_trajectory
+            traj_λ[:, i - 1] .= λ
         end
     end
     
@@ -185,7 +183,7 @@ function adjoint(
         deactivate!(event)
     end
 
-    return λ, μ
+    return λ, μ, traj_λ
 end
 
 # TODO: Unify beuler methods. This is just negative sign.
