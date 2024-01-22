@@ -2,6 +2,7 @@ using GradPower
 using Test
 using SparseArrays
 using LinearAlgebra
+using FiniteDiff
 
 include("test_case9data.jl")
 
