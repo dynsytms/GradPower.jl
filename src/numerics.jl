@@ -68,6 +68,7 @@ function newton_step!(
     jac_verify::Bool=false
 )
     
+    jac_verify = false
     # Initialize
     success = false
     verbose && @printf("   Iter     Residual inf-norm\n")
@@ -88,7 +89,7 @@ function newton_step!(
 
         # verify jacobian
         if jac_verify
-            @assert size(J0, 1) <= 100
+            #@assert size(J0, 1) <= 100
             @warn "Jacobian verification"
             function ff(z)
                 f = zeros(length(z))
@@ -98,10 +99,11 @@ function newton_step!(
             Jfd = FiniteDiff.finite_difference_jacobian(ff, z)
             valid = compare_matrix(Array(J0), Jfd)
             @assert valid "Jacobian verification failed"
+            @assert false "Jacobian verification passed"
         end
         
         # Solve the linear system
-        #fact = klu(J0)
+        fact = klu(J0)
         klu!(fact, J0)
         ldiv!(dx,fact,f0)
 

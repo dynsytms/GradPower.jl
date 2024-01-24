@@ -6,7 +6,7 @@ mutable struct Genrou <: AbstractGeneratorType
     par_size::Int64
     # topology
     bus::Int64
-    id::Int64
+    id::String
     # parameters
     x_d::Float64
     x_q::Float64
@@ -27,10 +27,15 @@ function Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_
     return gen
 end
 
+function GenericGenerator(bus, id)
+    gen = Genrou(bus, id, 1.9266, 1.8442, 0.3812, 0.5469, 0.2889, 0.2443, 50.0, 0.0, 7.729, 0.859, 0.047, 0.068)
+    return gen
+end
+
 function from_data_fields(::Type{Genrou}, fields::Vector{SubString{String}})
     # Parse fields into Genrou constructor
     bus = parse(Int64, fields[1])
-    id = parse(Int64, fields[3])
+    id = String(fields[3])
     T_d0p = parse(Float64, fields[4])
     T_d0dp = parse(Float64, fields[5])
     T_q0p = parse(Float64, fields[6])
@@ -76,6 +81,14 @@ end
 
 function get_param_names(dtype::Genrou)
     return ["x_d", "x_q", "x_dp", "x_qp", "x_ddp", "xl", "H", "D", "T_d0p", "T_q0p", "T_d0dp", "T_q0dp"]
+end
+
+function get_diff_names(dtype::Genrou)
+    return ["delta", "omega", "e_dp", "e_qp", "phi_1d", "phi_2q"]
+end
+
+function get_alg_names(dtype::Genrou)
+    return ["i_d", "i_q"]
 end
 
 function initial_guess!(x0::AbstractArray, pvec::AbstractArray, p::Float64, q::Float64, vm::Float64, va::Float64, dtype::Genrou)

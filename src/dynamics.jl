@@ -75,6 +75,12 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
             initial_guess!(xinit, pview, pg, qg, vm, va, device.dtype)
             rhs_fun!(f, x) = initialize_dynamics!(f, x, pview, pg, qg, vm, va, device.dtype)
             sol = nlsolve(rhs_fun!, xinit, ftol=1e-12, iterations=30, autodiff = :forward)
+
+            # warning if not converged
+            if !sol.f_converged
+                println("Warning: initialization of device $(i) did not converge.")
+            end
+
             xinit .= sol.zero
             # copy to zvec and uvec
             x[diff_ptr:diff_ptr+diff_size-1] .= xinit[1:diff_size]

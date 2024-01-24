@@ -8,6 +8,8 @@ using SparseArrays
 using NLsolve
 using KLU
 using ForwardDiff
+using UnicodePlots
+using Statistics
 
 import NLPModels
 import MadNLP
@@ -195,9 +197,15 @@ function add_device!(psd::PowerSystemDynamics, dtype::AbstractDeviceType)
     psd.par_dim += dtype.par_size
 end
 
-function find_gen(ps::PowerSystem, bus::Int64)
+function find_gen(ps::PowerSystem, bus::Int64, gen_id::String)
+    # remove spaces and appostrophes from gen_id.
+    gen_id = replace(gen_id, " " => "")
+    gen_id = replace(gen_id, "'" => "")
     for (i, gen) in enumerate(ps.gens)
-        if gen.bus == bus
+            gen_id_gen = replace(gen.id, " " => "")
+            gen_id_gen = replace(gen_id_gen, "'" => "")
+        if gen.bus == bus && gen_id_gen == gen_id
+            #println("Gen bus: ", gen.bus, " gen id: ", gen_id_gen, " gen_id: ", gen_id)
             return i
         end
     end
@@ -206,8 +214,19 @@ end
 
 function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Bool=true)
 
+    # number of dynamic devices of generator type.
+    num_gen_devices = 0
+    for device in psd.devices
+        if device.dtype isa AbstractGeneratorType
+            num_gen_devices += 1
+        end
+    end
+
     # create dynamic map.
-    dmap = DynamicMap(psd.num_devices + length(ps.loads))
+    dmap = DynamicMap(psd.num_devices - num_gen_devices + length(ps.gens) + length(ps.loads))
+    #dmap = DynamicMap(psd.num_devices + length(ps.loads))
+
+    matched_gens = []
 
     # iterate dynamic vector and assign buses.
     for (i, device) in enumerate(psd.devices)
@@ -215,10 +234,27 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
 
         # if device is a generator, find the corresponding generator in the static system.
         if device.dtype isa AbstractGeneratorType
-            # NOTE: this is a hack. we should be able to find the generator by its bus AND id.
-            dmap.gen[i] = find_gen(ps, dmap.bus[i])
+            gen_id = device.dtype.id
+            dmap.gen[i] = find_gen(ps, dmap.bus[i], gen_id)
             if dmap.gen[i] == 0
                 @warn "Generator not found for dynamic device $i"
+            else
+                push!(matched_gens, dmap.gen[i])
+            end
+        end
+    end
+
+    # check if all static generators have a corresponding dynamic generator. if not,
+    # we will add static negative loads.
+    if length(matched_gens) != length(ps.gens)
+        @warn "Not all static generators have a corresponding dynamic generator. Adding negative loads."
+        for (i, gen) in enumerate(ps.gens)
+            if !(i in matched_gens)
+                dmap.bus[psd.num_devices + 1] = gen.bus
+                #dmap.load[psd.num_devices + 1] = 0
+                #add_device!(psd, ZIPLoad(gen.bus, gen.id, -gen.psch, -gen.qsch, 0.0, 0.0, 0.0, 1.0, ps.buses[gen.bus].v0m, 0.0, 0.0))
+                dmap.gen[psd.num_devices + 1] = i
+                add_device!(psd, GenericGenerator(gen.bus, gen.id))
             end
         end
     end

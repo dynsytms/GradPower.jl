@@ -48,6 +48,14 @@ function get_param_names(dtype::ZIPLoad)
     return ["pinj", "qinj", "α", "β", "γ", "weight", "v0mag", "yreal", "yimag"]
 end
 
+function get_diff_names(dtype::ZIPLoad)
+    return []
+end
+
+function get_alg_names(dtype::ZIPLoad)
+    return []
+end
+
 function cinject!(
         f::AbstractArray,
         x::AbstractArray,

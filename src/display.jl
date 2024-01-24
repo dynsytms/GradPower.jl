@@ -16,6 +16,60 @@ function display_parameters(sys::PowerSystem)
         end
     end
 end
+
+function get_index_info(idx::Int, ps::PowerSystem)
+    # given an index from the state vector, find out the state variable
+    diff_dim = ps.dynamic.diff_dim
+    alg_dim = ps.dynamic.alg_dim
+    ctrl_dim = ps.dynamic.ctrl_dim
+    par_dim = ps.dynamic.par_dim
+    nbus = length(ps.buses)
+
+    if idx > diff_dim + alg_dim + 2*nbus
+        println("Index out of bounds.")
+    elseif idx <= diff_dim
+        for i in 1:length(ps.dynamic.devices) - 1
+            device = ps.dynamic.devices[i]
+            device2 = ps.dynamic.devices[i + 1]
+
+            diff_ptr = device.diff_ptr
+            diff_ptr2 = device2.diff_ptr
+            if diff_ptr <= idx < diff_ptr2
+                println("Device: ", i)
+                println("State variable: ", get_diff_names(device.dtype)[idx - diff_ptr + 1])
+                show(ps.dynamic.devices[i].dtype)
+                return
+            end
+        end
+    elseif idx <= diff_dim + alg_dima
+        idx = idx - diff_dim
+        for i in 1:length(ps.dynamic.devices) - 1
+            device = ps.dynamic.devices[i]
+            device2 = ps.dynamic.devices[i + 1]
+
+            alg_ptr = device.alg_ptr
+            alg_ptr2 = device2.alg_ptr
+            if alg_ptr <= idx < alg_ptr2
+                println("Device: ", i)
+                println("State variable: ", get_alg_names(device.dtype)[idx - alg_ptr + 1])
+                return
+            end
+        end
+    else idx <= diff_dim + alg_dim + 2*nbus
+        idx = idx - diff_dim - alg_dim
+        if idx % 2 == 0
+            println("Bus: ", idx/2)
+            println("State variable: ", "v")
+            return
+        else
+            println("Bus: ", (idx + 1)/2)
+            println("State variable: ", "δ")
+            return
+        end
+    end
+
+end
+
 function show(io::IO, sys::PowerSystem)
     println(io, "PowerSystem:")
     println(io, "  baseMVA: ", sys.baseMVA)
@@ -62,5 +116,97 @@ function show(io::IO, sys::PowerSystem)
     println(io, "------------------------------")
     for shunt in sys.shunts
         println(io, "$(shunt.bus)\t$(shunt.id)\t\t$(shunt.gsh)\t$(shunt.bsh)")
+    end
+end
+
+function show(io::IO, bus::Bus)
+    println(io, "Bus:")
+    println(io, "  i: ", bus.i)
+    println(io, "  id: ", bus.id)
+    println(io, "  type: ", bus.type)
+    println(io, "  baseKV: ", bus.baseKV)
+    println(io, "  v0m: ", bus.v0m)
+    println(io, "  v0a: ", bus.v0a)
+end
+
+function find_outliers(vec::Vector{Float64})
+    # finds outliers in a vector of Float64
+    # returns indices of outliers
+    mean_val = mean(vec)
+    std_val = std(vec)
+    outliers = findall(x -> x > mean_val + 2.5 * std_val || x < mean_val - 3.5 * std_val, vec)
+    return outliers
+end
+
+function visual_stats(sys::PowerSystem)
+    # displays various statistics about the system. such as histogram of voltage magnitues,
+    # histogram of generator dispatch, histogram of load demand, etc.
+
+    # uses unicodeplots
+
+    # plot voltage magnitudes
+    vm = [bus.v0m for bus in sys.buses]
+    plt = histogram(vm, title="Voltage Magnitudes", xlabel="Voltage Magnitude", ylabel="Count")
+    display(plt)
+
+    # plot voltage angles
+    va = [bus.v0a for bus in sys.buses]
+    plt = histogram(va, title="Voltage Angles", xlabel="Voltage Angle", ylabel="Count")
+    display(plt)
+
+    # plot generator dispatch
+    psch = [gen.psch for gen in sys.gens]
+    plt = histogram(psch, title="Generator Dispatch", xlabel="Active Power", ylabel="Count")
+    display(plt)
+
+    # plot load demand
+    pd = [load.pd for load in sys.loads]
+    plt = histogram(pd, title="Load Demand", xlabel="Active Power", ylabel="Count")
+    display(plt)
+end
+
+function get_bus_info(busn::Int64, sys::PowerSystem)
+    # prints all information about a bus. including connected branches, connected generators,
+    # connected loads, etc.
+
+    # find the bus
+    bus_idx = findfirst(x -> x.i == busn, sys.buses)
+
+    if bus_idx == nothing
+        println("Bus not found.")
+        return
+    end
+    show(stdout, sys.buses[bus_idx])
+
+    # find connected generators
+    gen_idx = findall(x -> x.bus == bus_idx, sys.gens)
+    if length(gen_idx) > 0
+        println("\nConnected Generators:")
+        println("================================================================")
+        println("bus\tid\t\tpsch\t\tqsch\t\tmbase")
+        println("----------------------------------------------------------------")
+        for idx in gen_idx
+            gen = sys.gens[idx]
+            psch_str = @sprintf("%.3e", gen.psch)
+            qsch_str = @sprintf("%.3e", gen.qsch)
+            println("$(gen.bus)\t$(gen.id)\t\t$(psch_str)\t$(qsch_str)\t$(gen.mbase)")
+
+            # print dynamic model
+
+
+        end
+    end
+
+    # find connected loads
+    load_idx = findall(x -> x.bus == bus_idx, sys.loads)
+    if length(load_idx) > 0
+        println("\nConnected Loads:")
+        println("===================================")
+        println("bus\tid\t\tpd\tqd")
+        println("-----------------------------------")
+        for idx in load_idx
+            load = sys.loads[idx]
+            println("$(load.bus)\t$(load.id)\t\t$(load.pd)\t$(load.qd)")
+        end
     end
 end
