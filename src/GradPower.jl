@@ -35,6 +35,7 @@ mutable struct Gen
     psch::Float64
     qsch::Float64
     mbase::Float64
+    status::Bool
 end
 
 mutable struct Load

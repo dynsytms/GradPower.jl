@@ -179,7 +179,7 @@ function mat_to_grad(mpc)
     # Convert the rest of the data from the input dictionary
     for gen in mpc["gen"]
         bus = busmap[gen["bus"]]
-        push!(gens, Gen(bus, " ", gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"]))
+        push!(gens, Gen(bus, " ", gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"]), gen["status"])
     end
     for branch in mpc["branch"]
         fr = busmap[branch["fbus"]]
@@ -249,7 +249,7 @@ function raw_to_grad(raw::PsystemRaw)
 
     for gen in raw.gens
         bus = busmap[gen.busn]
-        push!(gens, Gen(bus, gen.name, gen.pg/baseMVA, gen.qg/baseMVA, gen.mbase))
+        push!(gens, Gen(bus, gen.name, gen.pg/baseMVA, gen.qg/baseMVA, gen.mbase, gen.status))
     end
 
     for load in raw.loads
