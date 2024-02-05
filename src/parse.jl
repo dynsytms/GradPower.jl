@@ -67,6 +67,27 @@ function read_matpower_case(file_name)
     return mpc
 end
 
+
+# ============================
+# PSSE Parser and Constructor
+# ============================
+
+"""
+    from_psse(raw_data_file::String, dyr_file::String)
+
+Reads a PSSE raw file and a PSSE dyr file and constructs a PowerSystem
+
+"""
+function from_psse(raw_file::String, dyr_file::Union{String, Nothing})
+    raw = read_psse_raw(raw_file)
+    sys = raw_to_grad(raw)
+    if dyr_file !== nothing
+        psd = PowerSystemDynamics(dyr_file)
+        set_dynamics!(sys, psd)
+    end
+    return sys
+end
+
 # ======================
 #  PSSE Dynamics (*.dyr)
 # ======================

@@ -139,6 +139,8 @@ function adjoint(
     if store_trajectory
         traj_λ = zeros(system_size, nsteps)
         traj_λ[:, end] .= λ
+    else
+        traj_λ = nothing
     end
 
     for i = reverse(2:nsteps)
@@ -156,7 +158,11 @@ function adjoint(
         end
         rhs .*= dt
         rhs .+= λ
-        λ .= Jt \ rhs
+
+        # Solve the linear system
+        fact = klu(Jt)
+        klu!(fact, Jt)
+        ldiv!(λ, fact, rhs)
 
         if finite_diff
             jacpt_vec_fd!(outp, λ, traj[:, i], dp.uvec, dp.pvec, ps)

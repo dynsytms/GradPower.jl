@@ -300,5 +300,6 @@ export build_network!
 export runpf
 export DynamicDevice, PowerSystemDynamics
 export add_device!
+export from_psse
 
 end # module GradPower
