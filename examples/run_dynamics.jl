@@ -7,8 +7,8 @@ using FiniteDiff
 using Profile
 using PProf
 
-raw_file = "examples/2bus.raw"
-dyr_file = "examples/2bus.dyr"
+raw_file = "data/2bus_33.raw"
+dyr_file = "data/2bus.dyr"
 
 #raw_file = "examples/ieee9_v33.raw"
 #dyr_file = "examples/ieee9bus.dyr"
