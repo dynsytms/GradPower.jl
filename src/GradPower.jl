@@ -75,6 +75,8 @@ abstract type AbstractLoadType <: AbstractDeviceType end
 abstract type AbstractGenControlType <: AbstractDeviceType end
 abstract type AbstractGovernorType <: AbstractGenControlType end
 
+abstract type CostFunctional end
+
 struct DynamicDevice
     dtype::AbstractDeviceType
     diff_ptr::Int64
@@ -142,6 +144,7 @@ mutable struct PowerSystemDynamics
     par_dim::Int64
     map::Union{Nothing,DynamicMap}
     events::Union{Nothing, Vector{ContingencyEvent}}
+    functional::Union{Nothing, CostFunctional}
 end
 
 mutable struct PowerSystem
@@ -168,7 +171,7 @@ struct PowerFlowSolution
 end
 
 function PowerSystemDynamics()
-    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, Vector{ContingencyEvent}())
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, Vector{ContingencyEvent}(), nothing)
     return psd
 end
 
@@ -289,6 +292,17 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
     ps.dynamic = psd
 end
 
+function set_functional!(ps::PowerSystem, cost::CostFunctional)
+    @assert ps.dynamic != nothing "Dynamic system not initialized."
+    ps.dynamic.cost = cost
+end
+
+function set_functional!(ps::PowerSystem)
+    @assert ps.dynamic != nothing "Dynamic system not initialized."
+    # default cost functional is quadratic for all generators.
+    ps.dynamic.cost = QuadraticCost()
+end
+
 function DynamicProblem(ps::PowerSystem)
     @assert ps.dynamic != nothing "Dynamic system not initialized."
     @assert ps.dynamic.map != nothing "Dynamic map not initialized."
@@ -325,6 +339,7 @@ include("network.jl")
 include("pflow.jl")
 include("dynamics.jl")
 include("sensitivities.jl")
+include("functional.jl")
 
 # Optimization model.
 include("nlp.jl")
