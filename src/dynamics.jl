@@ -2,6 +2,61 @@ include("generators.jl")
 include("loads.jl")
 include("governors.jl")
 
+function initialize_device(
+        device::DynamicDevice,
+        i::Int64,
+        map::DynamicMap,
+        ps::PowerSystem,
+        x::AbstractArray,
+        y::AbstractArray,
+        u::AbstractArray,
+        p::AbstractArray
+    )
+
+    # retrieve pointers and sizes
+    diff_ptr = device.diff_ptr
+    alg_ptr = device.alg_ptr
+    ctrl_ptr = device.ctrl_ptr
+    par_ptr = device.par_ptr
+
+    diff_size = device.dtype.diff_size
+    alg_size = device.dtype.alg_size
+    ctrl_size = device.dtype.ctrl_size
+    par_size = device.dtype.par_size
+    
+    # parameter view
+    pview = @view(p[par_ptr:par_ptr+par_size-1])
+    
+    # find generator in static system and retrieve power injection.
+    gen = ps.gens[map.gen[i]]
+    pg = gen.psch
+    qg = gen.qsch
+    
+    # retrieve voltage magnitude and angle.
+    vm = ps.buses[map.bus[i]].v0m
+    va = ps.buses[map.bus[i]].v0a
+    
+    # allocate initializing vector.
+    # NOTE: I would prefer not to allocate. Not sure how to do it more efficiently since
+    # I need to separate zvec and uvec.
+    xinit = zeros(Float64, device.dtype.diff_size + device.dtype.alg_size + device.dtype.ctrl_size)
+    # initial guess and initialization
+    initial_guess!(xinit, pview, pg, qg, vm, va, device.dtype)
+    rhs_fun!(f, x) = initialize_dynamics!(f, x, pview, pg, qg, vm, va, device.dtype)
+    sol = nlsolve(rhs_fun!, xinit, ftol=1e-12, iterations=30, autodiff = :forward)
+
+    # warning if not converged
+    if !sol.f_converged
+        println("Warning: initialization of device $(i) did not converge.")
+    end
+
+    xinit .= sol.zero
+    # copy to zvec and uvec
+    x[diff_ptr:diff_ptr+diff_size-1] .= xinit[1:diff_size]
+    y[alg_ptr:alg_ptr+alg_size-1] .= xinit[diff_size+1:diff_size+alg_size]
+    u[ctrl_ptr:ctrl_ptr+ctrl_size-1] .= xinit[diff_size+alg_size+1:diff_size+alg_size+ctrl_size]
+end
+
 function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
 
     z = dp.zvec
@@ -44,51 +99,23 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         fill_pvec!(@view(dp.pvec[device.par_ptr:device.par_ptr+device.dtype.par_size-1]), device.dtype)
     end
 
-    # TODO: i can do this generic but I need to ensure that generators are initialized before
-    # associated controllers (e.g., governor) such that these can retrieve torque and field voltage.
     map = ps.dynamic.map
+
+    # Initialize generators
     for (i, device) in enumerate(ps.dynamic.devices)
         if device.dtype isa AbstractGeneratorType
-            # retrieve pointers and sizes
-            diff_ptr = device.diff_ptr
-            alg_ptr = device.alg_ptr
-            ctrl_ptr = device.ctrl_ptr
-            par_ptr = device.par_ptr
-
-            diff_size = device.dtype.diff_size
-            alg_size = device.dtype.alg_size
-            ctrl_size = device.dtype.ctrl_size
-            par_size = device.dtype.par_size
-            # parameter view
-            pview = @view(p[par_ptr:par_ptr+par_size-1])
-            # find generator in static system and retrieve power injection.
-            gen = ps.gens[map.gen[i]]
-            pg = gen.psch
-            qg = gen.qsch
-            # retrieve voltage magnitude and angle.
-            vm = ps.buses[map.bus[i]].v0m
-            va = ps.buses[map.bus[i]].v0a
-            # allocate initializing vector.
-            # NOTE: I would prefer not to allocate. Not sure how to do it more efficiently since
-            # I need to separate zvec and uvec.
-            xinit = zeros(Float64, device.dtype.diff_size + device.dtype.alg_size + device.dtype.ctrl_size)
-            # initial guess and initialization
-            initial_guess!(xinit, pview, pg, qg, vm, va, device.dtype)
-            rhs_fun!(f, x) = initialize_dynamics!(f, x, pview, pg, qg, vm, va, device.dtype)
-            sol = nlsolve(rhs_fun!, xinit, ftol=1e-12, iterations=30, autodiff = :forward)
-
-            # warning if not converged
-            if !sol.f_converged
-                println("Warning: initialization of device $(i) did not converge.")
-            end
-
-            xinit .= sol.zero
-            # copy to zvec and uvec
-            x[diff_ptr:diff_ptr+diff_size-1] .= xinit[1:diff_size]
-            y[alg_ptr:alg_ptr+alg_size-1] .= xinit[diff_size+1:diff_size+alg_size]
-            u[ctrl_ptr:ctrl_ptr+ctrl_size-1] .= xinit[diff_size+alg_size+1:diff_size+alg_size+ctrl_size]
+            initialize_device(device, i, map, ps, z, y, u, p)
         end
     end
+
+    # Initialize controllers. Generator needs to be initialized before
+    # the controllers to set the initial power injection.
+    for (i, device) in enumerate(ps.dynamic.devices)
+        if device.dtype isa AbstractGenControlType
+            initialize_device(device, i, map, ps, z, y, u, p)
+        end
+    end
+
 end
 
 function rhs_fun!(f::AbstractArray, z::AbstractArray, u::AbstractArray, p::AbstractArray, sys::PowerSystem)

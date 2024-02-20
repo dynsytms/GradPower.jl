@@ -141,6 +141,7 @@ mutable struct PowerSystemDynamics
     ctrl_dim::Int64
     par_dim::Int64
     map::Union{Nothing,DynamicMap}
+    uvec_idx::Union{Nothing,Vector{Int64}}
     events::Union{Nothing, Vector{ContingencyEvent}}
 end
 
@@ -168,7 +169,7 @@ struct PowerFlowSolution
 end
 
 function PowerSystemDynamics()
-    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, Vector{ContingencyEvent}())
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, nothing, Vector{ContingencyEvent}())
     return psd
 end
 
@@ -228,7 +229,6 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
 
     # create dynamic map.
     dmap = DynamicMap(psd.num_devices - num_gen_devices + length(ps.gens) + length(ps.loads))
-    #dmap = DynamicMap(psd.num_devices + length(ps.loads))
 
     matched_gens = []
 
@@ -249,6 +249,8 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
         end
     end
 
+    # add controllers. We iterate dynamic devices again.
+
     # check if all static generators have a corresponding dynamic generator. if not,
     # we will add static negative loads.
     if length(matched_gens) != length(ps.gens)
@@ -256,14 +258,13 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
         for (i, gen) in enumerate(ps.gens)
             if !(i in matched_gens)
                 dmap.bus[psd.num_devices + 1] = gen.bus
-                #dmap.load[psd.num_devices + 1] = 0
-                #add_device!(psd, ZIPLoad(gen.bus, gen.id, -gen.psch, -gen.qsch, 0.0, 0.0, 0.0, 1.0, ps.buses[gen.bus].v0m, 0.0, 0.0))
                 dmap.gen[psd.num_devices + 1] = i
                 add_device!(psd, GenericGenerator(gen.bus, gen.id))
             end
         end
     end
 
+    # by default, add static loads to the dynamic system as ZIP loads.
     if add_loads
         for (i, load) in enumerate(ps.loads)
             dmap.load[psd.num_devices + 1] = i
@@ -283,6 +284,37 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
         dmap.alg_size[i] = device.dtype.alg_size
         dmap.ctrl_size[i] = device.dtype.ctrl_size
         dmap.par_size[i] = device.dtype.par_size
+    end
+
+    # create vector of control indexes. By default, no control is 0.
+    psd.uvec_idx = zeros(Int64, psd.ctrl_dim)
+
+    # iterate dynamic devices and assign control indexes.
+    for (i, device) in enumerate(psd.devices)
+        if device.dtype isa AbstractGovernorType
+            # find the corresponding generator.
+            bus_idx = device.dtype.bus
+            gov_id = device.dtype.id
+            dev_idx = 0
+            for (i, dev) in enumerate(psd.devices)
+                if dev.dtype isa AbstractGeneratorType && dmap.bus[i] == bus_idx && dev.dtype.id == gov_id
+                    dev_idx = i
+                    break
+                end
+            end
+            if dev_idx == 0
+                @warn "Generator not found for governor $i"
+            else
+                # index of generator frequency, w
+                w_idx = dmap.diff_ptr[dev_idx] + 4
+                # index of governor control, p_m
+                p_m_idx = psd.diff_dim + dmap.alg_ptr[i]
+                # assign control index to governor.
+                psd.uvec_idx[dmap.ctrl_ptr[i]] = w_idx
+                # assign control index to generator.
+                psd.uvec_idx[dmap.ctrl_ptr[dev_idx]] = p_m_idx
+            end
+        end
     end
 
     psd.map = dmap

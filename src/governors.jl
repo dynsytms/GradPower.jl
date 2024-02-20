@@ -6,7 +6,7 @@ mutable struct IEESGO <: AbstractGovernorType
     par_size::Int64
     # topology
     bus::Int64
-    id::Int64
+    id::String
     # parameters
     T1::Float64
     T2::Float64
@@ -22,13 +22,13 @@ mutable struct IEESGO <: AbstractGovernorType
 end
 
 function IEESGO(bus, id, T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin)
-    governor = IEESGO(5, 1, 0, 11, bus, id, T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin)
+    governor = IEESGO(5, 1, 1, 11, bus, id, T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin)
     return governor
 end
 
 function from_data_fields(::Type{IEESGO}, fields::Vector{SubString{String}})
     bus = parse(Int64, fields[1])
-    id = parse(Int64, fields[3])
+    id = String(fields[3])
     T1 = parse(Float64, fields[4])
     T2 = parse(Float64, fields[5])
     T3 = parse(Float64, fields[6])
@@ -98,5 +98,17 @@ function initialize_dynamics!(
     F[4] = (1/T5)*(K2*TP1 - TP2)
     F[5] = (1/T6)*(K3*TP2 - TP3)
     F[6] = TP1*(1 - K2) + TP2*(1 - K3) + TP3 - pg
+    return nothing
+end
+
+function initial_guess!(
+        x0::AbstractArray,
+        pvec::AbstractArray,
+        p::Float64,
+        q::Float64,
+        vm::Float64,
+        va::Float64,
+        dtype::IEESGO
+    )
     return nothing
 end
