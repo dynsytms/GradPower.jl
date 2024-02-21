@@ -294,13 +294,13 @@ end
 
 function set_functional!(ps::PowerSystem, cost::CostFunctional)
     @assert ps.dynamic != nothing "Dynamic system not initialized."
-    ps.dynamic.cost = cost
+    ps.dynamic.functional = cost
 end
 
 function set_functional!(ps::PowerSystem)
     @assert ps.dynamic != nothing "Dynamic system not initialized."
     # default cost functional is quadratic for all generators.
-    ps.dynamic.cost = QuadraticCost()
+    ps.dynamic.functional = QuadraticCost()
 end
 
 function DynamicProblem(ps::PowerSystem)

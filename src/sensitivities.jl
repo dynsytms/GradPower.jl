@@ -154,7 +154,7 @@ function adjoint(
         
         # assemble r.h. s
         if functional == true
-            rdiff!(rhs, traj[:, i], dp.uvec, dp.pvec, ps)
+            rdiff!(rhs, traj[:, i], dp.uvec, dp.pvec, ps, ps.dynamic.functional)
         end
         rhs .*= dt
         rhs .+= λ

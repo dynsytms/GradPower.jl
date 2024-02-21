@@ -79,6 +79,7 @@
         sys = GradPower.raw_to_grad(raw)
         psd = GradPower.PowerSystemDynamics(dyr_file)
         GradPower.set_dynamics!(sys, psd)
+        GradPower.set_functional!(sys)
 
         # power flow
         GradPower.build_network!(sys)
