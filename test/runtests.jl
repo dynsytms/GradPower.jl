@@ -19,3 +19,6 @@ end
     include("test_dynamics.jl")
     include("test_adjoint_event_offset.jl")
 end
+@testset "layout" begin
+    include("test_layout.jl")
+end

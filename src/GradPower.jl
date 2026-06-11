@@ -133,6 +133,10 @@ mutable struct DynamicProblem
     pvec::AbstractArray
 end
 
+# Phase 1 SoA layout (per-device-type tables). Included here so the
+# `layout` field of PowerSystemDynamics below can be typed against it.
+include("layout.jl")
+
 mutable struct PowerSystemDynamics
     devices::Vector{DynamicDevice}
     num_devices::Int64
@@ -143,6 +147,7 @@ mutable struct PowerSystemDynamics
     map::Union{Nothing,DynamicMap}
     uvec_idx::Union{Nothing,Vector{Int64}}
     events::Union{Nothing, Vector{ContingencyEvent}}
+    layout::Union{Nothing,SimulationLayout}
 end
 
 mutable struct PowerSystem
@@ -169,7 +174,7 @@ struct PowerFlowSolution
 end
 
 function PowerSystemDynamics()
-    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, nothing, Vector{ContingencyEvent}())
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, nothing, Vector{ContingencyEvent}(), nothing)
     return psd
 end
 
@@ -322,6 +327,11 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
 
     psd.map = dmap
     ps.dynamic = psd
+
+    # Phase 1: build SoA layout tables. Phase 2 will switch the hot loop in
+    # dynamics.jl to consume these; for now they coexist with the old
+    # heterogeneous device loop and are not used at runtime.
+    psd.layout = build_layout!(psd)
 end
 
 function DynamicProblem(ps::PowerSystem)
@@ -359,6 +369,16 @@ include("ad.jl")
 include("network.jl")
 include("pflow.jl")
 include("dynamics.jl")
+
+# Phase 1 SoA table builders. Included AFTER dynamics.jl so device structs
+# (Genrou, IEESGO, ZIPLoad, ...) are in scope. Each file defines an
+# `_build_*_table_impl(psd)` function that the matching stub in layout.jl
+# delegates to.
+include("tables/genrou.jl")
+include("tables/ieesgo.jl")
+include("tables/esdc1a.jl")
+include("tables/zipload.jl")
+
 include("sensitivities.jl")
 
 # Optimization model.
