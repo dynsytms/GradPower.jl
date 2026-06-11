@@ -69,7 +69,6 @@ function initialize_dynamics!(
         qg::Float64,
         vm::Float64,
         va::Float64,
-        w::Float64,
         dtype::IEESGO
 )
     T1 = pvec[1]
@@ -84,31 +83,49 @@ function initialize_dynamics!(
     pmax = pvec[10]
     pmin = pvec[11]
 
+    # Unknowns: 5 diff states + 1 alg state (p_m) + 1 ctrl/init unknown (pref).
     PF0 = x0[1]
     PLL = x0[2]
     TP1 = x0[3]
     TP2 = x0[4]
     TP3 = x0[5]
-    pref = x0[6]
+    p_m = x0[6]
+    pref = x0[7]
 
-    F[1] = (1.0/T1)*(K1*w - PF0)
-    F[2] = (1/T3)*((1.0 - (T2/T3))*PF0 - PLL)
+    # At steady state generator speed deviation w = 0.
+    w = 0.0
+
+    f[1] = (1.0/T1)*(K1*w - PF0)
+    f[2] = (1/T3)*((1.0 - (T2/T3))*PF0 - PLL)
     SatP = pref - (T2/T3)*PF0 - PLL
-    F[3] = (1/T4)*(SatP - TP1)
-    F[4] = (1/T5)*(K2*TP1 - TP2)
-    F[5] = (1/T6)*(K3*TP2 - TP3)
-    F[6] = TP1*(1 - K2) + TP2*(1 - K3) + TP3 - pg
+    f[3] = (1/T4)*(SatP - TP1)
+    f[4] = (1/T5)*(K2*TP1 - TP2)
+    f[5] = (1/T6)*(K3*TP2 - TP3)
+    # algebraic governor output equation: p_m = blend of TP1, TP2, TP3
+    f[6] = TP1*(1 - K2) + TP2*(1 - K3) + TP3 - p_m
+    # initialization constraint: governor output must equal generator electrical power
+    f[7] = p_m - pg
     return nothing
 end
 
 function initial_guess!(
         x0::AbstractArray,
         pvec::AbstractArray,
-        p::Float64,
-        q::Float64,
+        pg::Float64,
+        qg::Float64,
         vm::Float64,
         va::Float64,
         dtype::IEESGO
     )
+    K2 = pvec[8]
+    K3 = pvec[9]
+    pref = pg
+    x0[1] = 0.0            # PF0
+    x0[2] = 0.0            # PLL
+    x0[3] = pref           # TP1
+    x0[4] = K2*pref        # TP2
+    x0[5] = K2*K3*pref     # TP3
+    x0[6] = pg             # p_m
+    x0[7] = pref           # pref
     return nothing
 end

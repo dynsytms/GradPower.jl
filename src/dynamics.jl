@@ -50,6 +50,9 @@ function initialize_device(
         println("Warning: initialization of device $(i) did not converge.")
     end
 
+    # Verify residual at solution. xinit is reused as a scratch buffer here.
+    rhs_fun!(xinit, sol.zero)
+    @assert maximum(abs, xinit) < 1e-9 "Init residual $(maximum(abs, xinit)) exceeds 1e-9 for device $i of type $(typeof(device.dtype))"
     xinit .= sol.zero
     # copy to zvec and uvec
     x[diff_ptr:diff_ptr+diff_size-1] .= xinit[1:diff_size]

@@ -305,6 +305,9 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
             if dev_idx == 0
                 @warn "Generator not found for governor $i"
             else
+                # propagate the parent generator index so the governor's init
+                # routine can read pg/qg from the same static generator.
+                dmap.gen[i] = dmap.gen[dev_idx]
                 # index of generator frequency, w
                 w_idx = dmap.diff_ptr[dev_idx] + 4
                 # index of governor control, p_m

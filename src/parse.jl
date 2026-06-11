@@ -180,7 +180,9 @@ function mat_to_grad(mpc)
     # Convert the rest of the data from the input dictionary
     for gen in mpc["gen"]
         bus = busmap[gen["bus"]]
-        push!(gens, Gen(bus, " ", gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"]), gen["status"])
+        status_val = gen["status"]
+        @assert status_val == 0.0 || status_val == 1.0 "Gen status must be 0 or 1, got $status_val"
+        push!(gens, Gen(bus, " ", gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"], Bool(status_val)))
     end
     for branch in mpc["branch"]
         fr = busmap[branch["fbus"]]
