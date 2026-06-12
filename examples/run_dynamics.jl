@@ -10,6 +10,9 @@ using PProf
 raw_file = "data/2bus_33.raw"
 dyr_file = "data/2bus.dyr"
 
+raw_file = "examples/2bus.raw"
+dyr_file = "examples/2bus.dyr"
+
 #raw_file = "examples/ieee9_v33.raw"
 #dyr_file = "examples/ieee9bus.dyr"
 
@@ -32,3 +35,4 @@ event = GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
 # integrate dynamics
 tfinal = 1.0
 tvec, traj = GradPower.integrate!(dprob, sys, tfinal)
+print(traj[:,end])

@@ -1,0 +1,129 @@
+# Builder for ZIPLoadTable.
+#
+# Also publishes ZIPLOAD_JAC_NENTRIES — 4 entries per ZIPLoad device
+# (vr-row entries against vr/vi columns + vi-row entries against vr/vi
+# columns of the load's bus). Both constant-admittance and
+# constant-power contributions accumulate into these 4 slots.
+const ZIPLOAD_JAC_NENTRIES = 4
+
+#
+# This file is included from src/GradPower.jl AFTER both layout.jl (for the
+# ZIPLoadTable type) and dynamics.jl (which transitively includes
+# loads.jl for the ZIPLoad struct).
+#
+# The stub `build_zipload_table` defined in src/layout.jl delegates to
+# `_build_zipload_table_impl` below.
+
+"""
+    _build_zipload_table_impl(psd) -> ZIPLoadTable
+
+Scan `psd.devices` once and emit a struct-of-arrays table for every ZIPLoad.
+All vectors have length `n` = number of ZIPLoad devices.
+
+ZIPLoad has 0 diff / 0 alg / 0 ctrl / 9 params; it is purely algebraic via
+`cinject!` into the voltage rows. Hence only `bus` and `par_ptr` pointers
+are stored — no diff/alg/ctrl pointers.
+
+NOTE on snapshot timing: `build_layout!` runs at the END of `set_dynamics!`,
+which is BEFORE `initialize_dynamics!` mutates `dtype.v0mag`, `dtype.yreal`,
+`dtype.yimag` from the power-flow solution. At build time, `yreal` and
+`yimag` are typically still 0.0 (from the ZIPLoad constructor in
+`set_dynamics!`). The initial snapshot uses whatever is in the struct;
+`refresh_zipload_table!` re-snapshots after `initialize_dynamics!`.
+
+`jac_pos` is allocated as an `n × 0` Int32 matrix; `preallocate_jacobian`
+widens its second dimension.
+"""
+function _build_zipload_table_impl(psd)
+    # 1. Count ZIPLoads.
+    n = 0
+    for device in psd.devices
+        if device.dtype isa ZIPLoad
+            n += 1
+        end
+    end
+
+    # 2. Allocate global pointer vectors. ZIPLoad has no diff/alg/ctrl
+    #    state, so only `bus` and `par_ptr` are needed.
+    bus     = Vector{Int32}(undef, n)
+    par_ptr = Vector{Int32}(undef, n)
+
+    # 3. Allocate parameter vectors (9 ZIPLoad parameters).
+    pinj   = Vector{Float64}(undef, n)
+    qinj   = Vector{Float64}(undef, n)
+    α      = Vector{Float64}(undef, n)
+    β      = Vector{Float64}(undef, n)
+    γ      = Vector{Float64}(undef, n)
+    weight = Vector{Float64}(undef, n)
+    v0mag  = Vector{Float64}(undef, n)
+    yreal  = Vector{Float64}(undef, n)
+    yimag  = Vector{Float64}(undef, n)
+
+    # 4. jac_pos has 4 entries per ZIPLoad (vr-row and vi-row each have
+    #    entries against vr and vi columns of the same bus).
+    jac_pos = zeros(Int32, n, ZIPLOAD_JAC_NENTRIES)
+
+    # 5. Single pass over devices, fill row k for each ZIPLoad match.
+    k = 0
+    for device in psd.devices
+        device.dtype isa ZIPLoad || continue
+        k += 1
+        load = device.dtype
+
+        bus[k]     = Int32(load.bus)
+        par_ptr[k] = Int32(device.par_ptr)
+
+        pinj[k]   = load.pinj
+        qinj[k]   = load.qinj
+        α[k]      = load.α
+        β[k]      = load.β
+        γ[k]      = load.γ
+        weight[k] = load.weight
+        v0mag[k]  = load.v0mag
+        yreal[k]  = load.yreal
+        yimag[k]  = load.yimag
+    end
+
+    return ZIPLoadTable(n, bus, par_ptr,
+        pinj, qinj, α, β, γ, weight, v0mag, yreal, yimag,
+        jac_pos)
+end
+
+"""
+    refresh_zipload_table!(psd)
+
+Re-snapshot the ZIPLoad columns (`v0mag`, `yreal`, `yimag`) from the
+current `device.dtype` fields. Called by `initialize_dynamics!` AFTER
+the power-flow solution has been used to populate `yreal`/`yimag` from
+`pinj/(v0mag^2)`, so the SoA table reflects the live values the hot
+loop kernels will read.
+
+`build_layout!` runs at the end of `set_dynamics!`, BEFORE
+`initialize_dynamics!` populates these fields, so the initial snapshot
+is all zeros. Hot-loop kernels read from the table (not from `dp.pvec`),
+so the table must be refreshed before the first Newton iteration.
+
+Other ZIPLoad columns (`pinj`, `qinj`, `α`, `β`, `γ`, `weight`) are not
+mutated by `initialize_dynamics!` and don't need refreshing.
+"""
+function refresh_zipload_table!(psd)
+    table = psd.layout.zipload
+    table.n == 0 && return nothing
+    k = 0
+    for device in psd.devices
+        device.dtype isa ZIPLoad || continue
+        k += 1
+        load = device.dtype
+        table.v0mag[k] = load.v0mag
+        table.yreal[k] = load.yreal
+        table.yimag[k] = load.yimag
+    end
+    @assert k == table.n "refresh_zipload_table!: counted $k ZIPLoads, table.n == $(table.n)"
+    return nothing
+end
+
+# Register with the device registry.
+register_device!(:zipload;
+    table_type = ZIPLoadTable,
+    builder    = _build_zipload_table_impl,
+    class      = :load)

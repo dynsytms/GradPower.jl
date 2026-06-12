@@ -20,16 +20,68 @@ mutable struct Genrou <: AbstractGeneratorType
     T_q0p::Float64
     T_d0dp::Float64
     T_q0dp::Float64
+    S1::Float64
+    S2::Float64
+    # Initialization-derived: post-PF field voltage. Set by
+    # `extract_init_params!(::Genrou)` so attached exciters can read it
+    # during their own init. Not a Genrou parameter, not in pvec.
+    e_fd0::Float64
 end
 
-function Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp)
-    gen = Genrou(6, 4, 2, 12, bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp)
+function Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1=0.0, S2=0.0)
+    gen = Genrou(6, 4, 2, 14, bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2, 0.0)
     return gen
 end
 
 function GenericGenerator(bus, id)
     gen = Genrou(bus, id, 1.9266, 1.8442, 0.3812, 0.5469, 0.2889, 0.2443, 50.0, 0.0, 7.729, 0.859, 0.047, 0.068)
     return gen
+end
+
+# GENSAL — salient-pole synchronous generator.
+# GENSAL is GENROU with x_qp = x_dp and T_q0p = T_d0p. We dispatch on this
+# tag in the .dyr parser and immediately return a `Genrou` instance — no
+# separate kernel / table is needed.
+struct Gensal end
+
+function from_data_fields(::Type{Gensal}, fields::Vector{SubString{String}})
+    # PSS/E GENSAL field order: bus, 'GENSAL', id,
+    # T_d0p, T_d0dp, T_q0dp, H, D, x_d, x_q, x_dp, x_ddp, xl, S1, S2
+    bus    = parse(Int64, fields[1])
+    id     = String(fields[3])
+    T_d0p  = parse(Float64, fields[4])
+    T_d0dp = parse(Float64, fields[5])
+    T_q0dp = parse(Float64, fields[6])
+    H      = parse(Float64, fields[7])
+    D      = parse(Float64, fields[8])
+    x_d    = parse(Float64, fields[9])
+    x_q    = parse(Float64, fields[10])
+    x_dp   = parse(Float64, fields[11])
+    x_ddp  = parse(Float64, fields[12])
+    xl     = parse(Float64, fields[13])
+    S1     = length(fields) >= 15 ? parse(Float64, fields[14]) : 0.0
+    S2     = length(fields) >= 16 ? parse(Float64, fields[15]) : 0.0
+    # GENSAL substitutions: x_qp = x_dp, T_q0p = T_d0p.
+    Genrou(bus, id, x_d, x_q, x_dp, x_dp, x_ddp, xl, H, D, T_d0p, T_d0p, T_d0dp, T_q0dp, S1, S2)
+end
+
+# Quadratic open-circuit saturation model. Coefficients are derived once
+# from S1, S2 (sat values at E=1.0 and E=1.2); applied at runtime via
+# `_genrou_sat_se`.
+@inline function _genrou_sat_coefficients(s1::Real, s2::Real)
+    (s1 <= 0.0 || s2 <= 0.0) && return (0.0, 0.0)
+    e1 = 1.0
+    e2 = 1.2
+    a = sqrt(s1 * e1 / (s2 * e2))
+    a == 1.0 && return (0.0, 0.0)
+    sat_a = e2 - (e1 - e2) / (a - 1.0)
+    sat_b = s2 * e2 * (a - 1.0)^2 / (e1 - e2)^2
+    return sat_a, sat_b
+end
+
+@inline function _genrou_sat_se(psi::Real, sat_a::Real, sat_b::Real)
+    (sat_b == 0.0 || psi <= sat_a || psi == 0.0) && return 0.0
+    return sat_b * (psi - sat_a)^2 / psi
 end
 
 function from_data_fields(::Type{Genrou}, fields::Vector{SubString{String}})
@@ -53,7 +105,7 @@ function from_data_fields(::Type{Genrou}, fields::Vector{SubString{String}})
     S1 = length(fields) >= 17 ? parse(Float64, fields[16]) : 0.0
     S2 = length(fields) >= 18 ? parse(Float64, fields[17]) : 0.0
 
-    Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp)
+    Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2)
 end
                 
 function set_ratio!(dtype::Genrou, ratio::Float64)
@@ -80,6 +132,8 @@ function fill_pvec!(pvec::AbstractArray, dtype::Genrou)
     pvec[10] = dtype.T_q0p
     pvec[11] = dtype.T_d0dp
     pvec[12] = dtype.T_q0dp
+    pvec[13] = dtype.S1
+    pvec[14] = dtype.S2
 end
 
 function get_device_name(dtype::Genrou)
@@ -91,7 +145,7 @@ function get_bus(dtype::Genrou)
 end
 
 function get_param_names(dtype::Genrou)
-    return ["x_d", "x_q", "x_dp", "x_qp", "x_ddp", "xl", "H", "D", "T_d0p", "T_q0p", "T_d0dp", "T_q0dp"]
+    return ["x_d", "x_q", "x_dp", "x_qp", "x_ddp", "xl", "H", "D", "T_d0p", "T_q0p", "T_d0dp", "T_q0dp", "S1", "S2"]
 end
 
 function get_diff_names(dtype::Genrou)
@@ -174,6 +228,8 @@ function initialize_dynamics!(
     T_q0p = pvec[10]
     T_d0dp = pvec[11]
     T_q0dp = pvec[12]
+    S1 = pvec[13]
+    S2 = pvec[14]
     x_qdp = x_ddp
 
     e_qp = x0[1]
@@ -188,17 +244,22 @@ function initialize_dynamics!(
     i_d = x0[10]
     e_fd = x0[11]
     p_m = x0[12]
-    
+
     # Generator dynamics
-    psi_de = (x_ddp - xl) / (x_dp - xl) * e_qp + 
+    psi_de = (x_ddp - xl) / (x_dp - xl) * e_qp +
              (x_dp - x_ddp) / (x_dp - xl) * phi_1d
 
-    psi_qe = -(x_ddp - xl) / (x_qp - xl) * e_dp + 
+    psi_qe = -(x_ddp - xl) / (x_qp - xl) * e_dp +
              (x_qp - x_ddp) / (x_qp - xl) * phi_2q
 
+    # Open-circuit saturation (quadratic): adds -Se*psi_de to the e_qp eq.
+    sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
+    psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
+    Se = _genrou_sat_se(psi2, sat_a, sat_b)
+
     # Machine states
-    f[1] = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp) * (-e_qp + i_d * 
-           (x_dp - xl) + phi_1d) / ((x_dp - xl)^2.0)) * (x_d - x_dp)) / T_d0p
+    f[1] = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp) * (-e_qp + i_d *
+           (x_dp - xl) + phi_1d) / ((x_dp - xl)^2.0)) * (x_d - x_dp) - Se*psi_de) / T_d0p
     f[2] = (-e_dp + (i_q - (-x_qdp + x_qp) * 
            (e_dp + i_q * (x_qp - xl) + phi_2q) / ((x_qp - xl)^2.0)) * 
            (x_q - x_qp)) / T_q0p
@@ -247,83 +308,6 @@ function cinject!(
     end
 end
 
-function rhs_fun!(
-        f_diff::AbstractArray,
-        f_alg::AbstractArray,
-        x::AbstractArray,
-        y::AbstractArray,
-        u::AbstractArray,
-        p::AbstractArray,
-        v::AbstractArray,
-        dtype::Genrou
-)
-    @inbounds begin
-        # parameters
-        x_d = p[1]
-        x_q = p[2]
-        x_dp = p[3]
-        x_qp = p[4]
-        x_ddp = p[5]
-        xl = p[6]
-        H = p[7]
-        D = p[8]
-        T_d0p = p[9]
-        T_q0p = p[10]
-        T_d0dp = p[11]
-        T_q0dp = p[12]
-        x_qdp = x_ddp
-
-        # states
-        e_qp = x[1]
-        e_dp = x[2]
-        phi_1d = x[3]
-        phi_2q = x[4]
-        w = x[5]
-        delta = x[6]
-        v_q = y[1]
-        v_d = y[2]
-        i_q = y[3]
-        i_d = y[4]
-
-        # control
-        e_fd = u[1]
-        p_m = u[2]
-
-        # voltage
-        vr = v[1]
-        vi = v[2]
-
-        tmech = (p_m - D*w)/(1.0 + w)
-
-        # auxiliary variables
-        psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
-                (x_dp - x_ddp)/(x_dp - xl)*phi_1d
-
-        psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
-                (x_qp - x_ddp)/(x_qp - xl)*phi_2q
-
-        # equations
-        f_diff[1] = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp)*(-e_qp + i_d*(x_dp - xl)
-                    + phi_1d)/((x_dp - xl)^2))*(x_d - x_dp))/T_d0p
-        f_diff[2] = (-e_dp + (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl)
-                    + phi_2q)/((x_qp - xl)^2))*(x_q - x_qp))/T_q0p
-        f_diff[3] = ( e_qp - i_d*(x_dp - xl) - phi_1d)/T_d0dp
-        f_diff[4] = (-e_dp - i_q*(x_qp - xl) - phi_2q)/T_q0dp
-        f_diff[5] = (tmech - psi_de*i_q + psi_qe*i_d)/(2.0*H)
-        f_diff[6] = 2.0*π*60.0*w
-
-        # Stator currents
-        f_alg[1] = i_d - ((x_ddp - xl)/(x_dp - xl)*e_qp +
-                (x_dp - x_ddp)/(x_dp - xl)*phi_1d - v_q)/x_ddp
-        f_alg[2] = i_q - (-(x_qdp - xl)/(x_qp - xl)*e_dp +
-                (x_qp - x_qdp)/(x_qp - xl)*phi_2q + v_d)/x_qdp
-        
-        sd, cd = sincos(delta)
-        f_alg[3] = v_d - (vr*sd - vi*cd)
-        f_alg[4] = v_q - (vr*cd + vi*sd)
-    end
-end
-
 function rhs_alg!(
         f_alg::AbstractArray,
         x::AbstractArray,
@@ -369,8 +353,6 @@ function rhs_alg!(
         vr = v[1]
         vi = v[2]
 
-        tmech = (p_m - D*w)/(1.0 + w)
-
         # auxiliary variables
         psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
                 (x_dp - x_ddp)/(x_dp - xl)*phi_1d
@@ -412,6 +394,8 @@ function rhs_diff!(
         T_q0p = p[10]
         T_d0dp = p[11]
         T_q0dp = p[12]
+        S1 = p[13]
+        S2 = p[14]
         x_qdp = x_ddp
 
         # states
@@ -434,8 +418,6 @@ function rhs_diff!(
         vr = v[1]
         vi = v[2]
 
-        tmech = (p_m - D*w)/(1.0 + w)
-
         # auxiliary variables
         psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
                 (x_dp - x_ddp)/(x_dp - xl)*phi_1d
@@ -443,14 +425,19 @@ function rhs_diff!(
         psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
                 (x_qp - x_ddp)/(x_qp - xl)*phi_2q
 
+        # Open-circuit saturation
+        sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
+        psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
+        Se = _genrou_sat_se(psi2, sat_a, sat_b)
+
         # equations
         f_diff[1] = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp)*(-e_qp + i_d*(x_dp - xl)
-                    + phi_1d)/((x_dp - xl)^2))*(x_d - x_dp))/T_d0p
+                    + phi_1d)/((x_dp - xl)^2))*(x_d - x_dp) - Se*psi_de)/T_d0p
         f_diff[2] = (-e_dp + (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl)
                     + phi_2q)/((x_qp - xl)^2))*(x_q - x_qp))/T_q0p
         f_diff[3] = ( e_qp - i_d*(x_dp - xl) - phi_1d)/T_d0dp
         f_diff[4] = (-e_dp - i_q*(x_qp - xl) - phi_2q)/T_q0dp
-        f_diff[5] = (tmech - psi_de*i_q + psi_qe*i_d)/(2.0*H)
+        f_diff[5] = (p_m - D*w - psi_de*i_q + psi_qe*i_d)/(2.0*H)
         f_diff[6] = 2.0*π*60.0*w
     end
 end
@@ -483,9 +470,11 @@ function preallocate_jacobian!(
     exciter = false
     governor = false
 
-    # First row
+    # First row — includes saturation cross-couplings ∂/∂e_dp and ∂/∂phi_2q
+    # (these enter via Se(psi2), psi2 = sqrt(psi_de² + psi_qe²), even when
+    # S1/S2 are 0 the slot is always reserved so jac_pos[k,:] is full).
     row = dp
-    cols = exciter ? [e_qp, phi_1d, ctrl_ptr, i_d] : [e_qp, phi_1d, i_d]
+    cols = exciter ? [e_qp, e_dp, phi_1d, phi_2q, ctrl_ptr, i_d] : [e_qp, e_dp, phi_1d, phi_2q, i_d]
     append!(coord_list[row], cols)
 
     # Second row
@@ -539,285 +528,3 @@ function preallocate_jacobian!(
     append!(coord_list[row], cols)
 end
 
-function rhs_jac!(
-    jac::AbstractMatrix,
-    x::AbstractArray,
-    y::AbstractArray,
-    u::AbstractArray,
-    p::AbstractArray,
-    v::AbstractArray,
-    idx_dev::Vector{Int},
-    dtype::Genrou
-    )
-
-        dp = idx_dev[1]
-        ap = idx_dev[2]
-        dev = idx_dev[3]
-        pp = idx_dev[4]
-        bus = idx_dev[5]
-
-        # parameters
-        x_d = p[1]
-        x_q = p[2]
-        x_dp = p[3]
-        x_qp = p[4]
-        x_ddp = p[5]
-        xl = p[6]
-        H = p[7]
-        D = p[8]
-        T_d0p = p[9]
-        T_q0p = p[10]
-        T_d0dp = p[11]
-        T_q0dp = p[12]
-        x_qdp = x_ddp
-
-        # states
-        e_qp = x[1]
-        e_dp = x[2]
-        phi_1d = x[3]
-        phi_2q = x[4]
-        w = x[5]
-        delta = x[6]
-        v_q = y[1]
-        v_d = y[2]
-        i_q = y[3]
-        i_d = y[4]
-
-        # control
-        e_fd = u[1]
-        p_m = u[2]
-
-        # voltage
-        vr = v[1]
-        vi = v[2]
-    
-        # indexes
-        e_qp_idx = dp + 0
-        e_dp_idx = dp + 1
-        phi_1d_idx = dp + 2
-        phi_2q_idx = dp + 3
-        w_idx = dp + 4
-        delta_idx = dp + 5
-        v_q_idx = ap + 0
-        v_d_idx = ap + 1
-        i_q_idx = ap + 2
-        i_d_idx = ap + 3
-        vr_idx = dev + 2*(bus - 1) + 1
-        vi_idx = dev + 2*(bus - 1) + 2
-
-    psi_de = (x_ddp - xl) / (x_dp - xl) * e_qp + 
-             (x_dp - x_ddp) / (x_dp - xl) * phi_1d
-
-    psi_qe = -(x_ddp - xl) / (x_qp - xl) * e_dp + 
-             (x_qp - x_ddp) / (x_qp - xl) * phi_2q
-
-    row = 0
-    col = 0
-    val = 0.0
-
-    # row 1
-    row = dp
-    
-    col = e_qp_idx
-    val = (-(x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) - 1)/T_d0p
-    jac[row, col] = val
-
-    col = phi_1d_idx
-    val = (x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0)/T_d0p
-    jac[row, col] = val
-    
-    if false
-        col = efd_idx
-        val = 1/T_d0p
-        jac[row, col] = val
-        col = i_d_idx
-        val = -(x_d - x_dp)*(-(-x_ddp + x_dp)*(x_dp - xl)^(-1.0) + 1)/T_d0p
-        jac[row, col] = val
-    else
-        col = i_d_idx
-        val = -(x_d - x_dp)*(-(-x_ddp + x_dp)*(x_dp - xl)^(-1.0) + 1)/T_d0p
-        jac[row, col] = val
-    end
-
-    # second row
-    row = dp + 1
-    col = e_dp_idx
-    val = (-(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) - 1)/T_q0p
-    jac[row, col] = val
-    col = phi_2q_idx
-    val = -(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0)/T_q0p
-    jac[row, col] = val
-    col = i_q_idx
-    val = (x_q - x_qp)*(-(-x_qdp + x_qp)*(x_qp - xl)^(-1.0) + 1)/T_q0p
-    jac[row, col] = val
-
-    # Third row
-    row = dp + 2
-    col = e_qp_idx
-    val = 1.0 / T_d0dp
-    jac[row, col] = val
-    col = phi_1d_idx
-    val = -1.0 / T_d0dp
-    jac[row, col] = val
-    col = i_d_idx
-    val = (-x_dp + xl) / T_d0dp
-    jac[row, col] = val
-
-    # Fourth row
-    row = dp + 3
-    col = e_dp_idx
-    val = -1.0 / T_q0dp
-    jac[row, col] = val
-    col = phi_2q_idx
-    val = -1.0 / T_q0dp
-    jac[row, col] = val
-    col = i_q_idx
-    val = (-x_qp + xl) / T_q0dp
-    jac[row, col] = val
-
-    # Fifth row
-    row = dp + 4
-    col = e_qp_idx
-    val = -0.5 * i_q * (x_ddp - xl) / (H * (x_dp - xl))
-    jac[row, col] = val
-    col = e_dp_idx
-    val = 0.5 * i_d * (-x_ddp + xl) / (H * (x_qp - xl))
-    jac[row, col] = val
-    col = phi_1d_idx
-    val = -0.5 * i_q * (-x_ddp + x_dp) / (H * (x_dp - xl))
-    jac[row, col] = val
-    col = phi_2q_idx
-    val = 0.5 * i_d * (-x_ddp + x_qp) / (H * (x_qp - xl))
-    jac[row, col] = val
-    col = w_idx
-    val = 0.5 * (-D / (w + 1.0) - (-D * w + p_m) / (w + 1.0)^2.0) / H
-    jac[row, col] = val
-
-    if false # Replace with appropriate condition
-        col = i_q_idx
-        val = 0.5 * (-e_qp * (x_ddp - xl) / (x_dp - xl) - phi_1d * (-x_ddp + x_dp) / (x_dp - xl)) / H
-        jac[row, col] = val
-
-        col = i_d_idx
-        val = 0.5 * (e_dp * (-x_ddp + xl) / (x_qp - xl) + phi_2q * (-x_ddp + x_qp) / (x_qp - xl)) / H
-        jac[row, col] = val
-
-        col = pm_idx
-        val = 0.5 / (H * (w + 1))
-        jac[row, col] = val
-    else
-        col = i_q_idx
-        val = 0.5 * (-e_qp * (x_ddp - xl) / (x_dp - xl) - phi_1d * (-x_ddp + x_dp) / (x_dp - xl)) / H
-        jac[row, col] = val
-
-        col = i_d_idx
-        val = 0.5 * (e_dp * (-x_ddp + xl) / (x_qp - xl) + phi_2q * (-x_ddp + x_qp) / (x_qp - xl)) / H
-        jac[row, col] = val
-    end
-
-    # Sixth row
-    row = dp + 5
-    col = w_idx
-    val = 120.0 * π # Using π for Pi in Julia
-    jac[row, col] = val
-
-    # Algebraic first
-    row = ap
-    col = e_qp_idx
-    val = -(x_ddp - xl) / (x_ddp * (x_dp - xl))
-    jac[row, col] = val
-
-    col = phi_1d_idx
-    val = -(-x_ddp + x_dp) / (x_ddp * (x_dp - xl))
-    jac[row, col] = val
-
-    col = v_q_idx
-    val = 1 / x_ddp
-    jac[row, col] = val
-
-    col = i_d_idx
-    val = 1.0
-    jac[row, col] = val
-
-    # Algebraic second
-    row = ap + 1
-    col = e_dp_idx
-    val = -(-x_qdp + xl) / (x_qdp * (x_qp - xl))
-    jac[row, col] = val
-
-    col = phi_2q_idx
-    val = -(-x_qdp + x_qp) / (x_qdp * (x_qp - xl))
-    jac[row, col] = val
-
-    col = v_d_idx
-    val = -1 / x_qdp
-    jac[row, col] = val
-
-    col = i_q_idx
-    val = 1.0
-    jac[row, col] = val
-
-    # Algebraic third
-    row = ap + 2
-    col = delta_idx
-    val = -vr * cos(delta) - vi * sin(delta)
-    jac[row, col] = val
-
-    col = v_d_idx
-    val = 1.0
-    jac[row, col] = val
-
-    col = vr_idx
-    val = -sin(delta)
-    jac[row, col] = val
-
-    col = vi_idx
-    val = cos(delta)
-    jac[row, col] = val
-
-    # Algebraic fourth
-    row = ap + 3
-    col = delta_idx
-    val = vr * sin(delta) - vi * cos(delta)
-    jac[row, col] = val
-
-    col = v_q_idx
-    val = 1.0
-    jac[row, col] = val
-
-    col = vr_idx
-    val = -cos(delta)
-    jac[row, col] = val
-
-    col = vi_idx
-    val = -sin(delta)
-    jac[row, col] = val
-
-    # Power injection
-    row = dev + 2 * (bus - 1) + 1
-    col = delta_idx
-    val = i_d * cos(delta) - i_q * sin(delta)
-    jac[row, col] = val
-
-    col = i_q_idx
-    val = cos(delta)
-    jac[row, col] = val
-
-    col = i_d_idx
-    val = sin(delta)
-    jac[row, col] = val
-
-    # Power injection
-    row = dev + 2 * (bus - 1) + 2
-    col = delta_idx
-    val = i_d * sin(delta) + i_q * cos(delta)
-    jac[row, col] = val
-
-    col = i_q_idx
-    val = sin(delta)
-    jac[row, col] = val
-
-    col = i_d_idx
-    val = -cos(delta)
-    jac[row, col] = val
-end

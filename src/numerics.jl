@@ -102,9 +102,15 @@ function newton_step!(
             @assert false "Jacobian verification passed"
         end
         
-        # Solve the linear system
-        fact = klu(J0)
-        klu!(fact, J0)
+        # Solve. First iter does full symbolic+numeric factor (refresh
+        # ordering — dt may have changed, or z drifted enough to invalidate
+        # the prior pivot order). Subsequent iters reuse the symbolic and
+        # only re-do numeric, which is ~3× cheaper.
+        if i == 1
+            fact = klu(J0)
+        else
+            klu!(fact, J0)
+        end
         ldiv!(dx,fact,f0)
 
         # Update the state

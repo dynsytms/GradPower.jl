@@ -1,6 +1,112 @@
 include("generators.jl")
 include("loads.jl")
 include("governors.jl")
+include("exciters.jl")
+include("static_gen.jl")
+
+function initialize_device(
+        device::DynamicDevice,
+        i::Int64,
+        map::DynamicMap,
+        ps::PowerSystem,
+        x::AbstractArray,
+        y::AbstractArray,
+        u::AbstractArray,
+        p::AbstractArray
+    )
+
+    # retrieve pointers and sizes
+    diff_ptr = device.diff_ptr
+    alg_ptr = device.alg_ptr
+    ctrl_ptr = device.ctrl_ptr
+    par_ptr = device.par_ptr
+
+    diff_size = device.dtype.diff_size
+    alg_size = device.dtype.alg_size
+    ctrl_size = device.dtype.ctrl_size
+    par_size = device.dtype.par_size
+    
+    # parameter view
+    pview = @view(p[par_ptr:par_ptr+par_size-1])
+    
+    # find generator in static system and retrieve power injection.
+    gen = ps.gens[map.gen[i]]
+    pg = gen.psch
+    qg = gen.qsch
+    
+    # retrieve voltage magnitude and angle.
+    vm = ps.buses[map.bus[i]].v0m
+    va = ps.buses[map.bus[i]].v0a
+    
+    # allocate initializing vector.
+    # NOTE: I would prefer not to allocate. Not sure how to do it more efficiently since
+    # I need to separate zvec and uvec.
+    xinit = zeros(Float64, device.dtype.diff_size + device.dtype.alg_size + device.dtype.ctrl_size)
+    # initial guess and initialization
+    initial_guess!(xinit, pview, pg, qg, vm, va, device.dtype)
+    rhs_fun!(f, x) = initialize_dynamics!(f, x, pview, pg, qg, vm, va, device.dtype)
+    sol = nlsolve(rhs_fun!, xinit, ftol=1e-12, iterations=30, autodiff = :forward)
+
+    # warning if not converged
+    if !sol.f_converged
+        println("Warning: initialization of device $(i) did not converge.")
+    end
+
+    # Verify residual at solution. xinit is reused as a scratch buffer here.
+    rhs_fun!(xinit, sol.zero)
+    @assert maximum(abs, xinit) < 1e-9 "Init residual $(maximum(abs, xinit)) exceeds 1e-9 for device $i of type $(typeof(device.dtype))"
+    xinit .= sol.zero
+    # copy to zvec and uvec
+    x[diff_ptr:diff_ptr+diff_size-1] .= xinit[1:diff_size]
+    y[alg_ptr:alg_ptr+alg_size-1] .= xinit[diff_size+1:diff_size+alg_size]
+    u[ctrl_ptr:ctrl_ptr+ctrl_size-1] .= xinit[diff_size+alg_size+1:diff_size+alg_size+ctrl_size]
+
+    # Per-device post-init hook: governors / exciters may have
+    # initialization-derived parameters (pref, vref) whose converged values
+    # come out of nlsolve as extra unknowns past the diff/alg/ctrl slots.
+    # `extract_init_params!` is the no-op default; concrete devices override.
+    extract_init_params!(device.dtype, sol.zero, p, par_ptr)
+end
+
+# Default no-op. Concrete devices (IEESGO, etc.) override to capture
+# extra unknowns from `sol.zero` into per-device fields AND mirror into
+# the shared pvec slot so the kernel SoA snapshot is correct.
+extract_init_params!(::AbstractDeviceType, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int) = nothing
+
+# Default no-op set_ratio!. Devices whose parameters live on the
+# machine base (Genrou, TGOV1) override.
+set_ratio!(::AbstractDeviceType, ratio::Float64) = nothing
+
+# IEESGO: pref is the 7th unknown (after 5 diff + 1 alg + 1 ctrl = 6;
+# initial_guess fills it at slot 7). Store on the device struct AND in
+# pvec slot 12 so kernels reading from SoA see the correct value.
+function extract_init_params!(dtype::IEESGO, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int)
+    dtype.pref = sol_zero[7]
+    p[par_ptr + 11] = dtype.pref   # slot 12, zero-based offset 11
+    return nothing
+end
+
+# Genrou: stash post-PF e_fd (the 11th unknown — diff 6, alg 4, then
+# ctrl[1]=e_fd, ctrl[2]=p_m) so attached exciters can read it during
+# their own init. Not mirrored into pvec; e_fd is not a Genrou parameter.
+function extract_init_params!(dtype::Genrou, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int)
+    dtype.e_fd0 = sol_zero[11]
+    return nothing
+end
+
+# TGOV1: pref is the 4th unknown (after 2 diff + 1 alg + 1 ctrl). Slot 8 in pvec.
+function extract_init_params!(dtype::TGOV1, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int)
+    dtype.pref = sol_zero[4]
+    p[par_ptr + 7] = dtype.pref    # slot 8, zero-based offset 7
+    return nothing
+end
+
+# SEXS: vref is the 3rd unknown (2 diff + 1 init slot). Slot 7 in pvec.
+function extract_init_params!(dtype::SEXS, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int)
+    dtype.vref = sol_zero[3]
+    p[par_ptr + 6] = dtype.vref    # slot 7, zero-based offset 6
+    return nothing
+end
 
 function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
 
@@ -44,110 +150,144 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         fill_pvec!(@view(dp.pvec[device.par_ptr:device.par_ptr+device.dtype.par_size-1]), device.dtype)
     end
 
-    # TODO: i can do this generic but I need to ensure that generators are initialized before
-    # associated controllers (e.g., governor) such that these can retrieve torque and field voltage.
     map = ps.dynamic.map
+
+    # Initialize generators
     for (i, device) in enumerate(ps.dynamic.devices)
         if device.dtype isa AbstractGeneratorType
-            # retrieve pointers and sizes
-            diff_ptr = device.diff_ptr
-            alg_ptr = device.alg_ptr
-            ctrl_ptr = device.ctrl_ptr
-            par_ptr = device.par_ptr
-
-            diff_size = device.dtype.diff_size
-            alg_size = device.dtype.alg_size
-            ctrl_size = device.dtype.ctrl_size
-            par_size = device.dtype.par_size
-            # parameter view
-            pview = @view(p[par_ptr:par_ptr+par_size-1])
-            # find generator in static system and retrieve power injection.
-            gen = ps.gens[map.gen[i]]
-            pg = gen.psch
-            qg = gen.qsch
-            # retrieve voltage magnitude and angle.
-            vm = ps.buses[map.bus[i]].v0m
-            va = ps.buses[map.bus[i]].v0a
-            # allocate initializing vector.
-            # NOTE: I would prefer not to allocate. Not sure how to do it more efficiently since
-            # I need to separate zvec and uvec.
-            xinit = zeros(Float64, device.dtype.diff_size + device.dtype.alg_size + device.dtype.ctrl_size)
-            # initial guess and initialization
-            initial_guess!(xinit, pview, pg, qg, vm, va, device.dtype)
-            rhs_fun!(f, x) = initialize_dynamics!(f, x, pview, pg, qg, vm, va, device.dtype)
-            sol = nlsolve(rhs_fun!, xinit, ftol=1e-12, iterations=30, autodiff = :forward)
-
-            # warning if not converged
-            if !sol.f_converged
-                println("Warning: initialization of device $(i) did not converge.")
-            end
-
-            xinit .= sol.zero
-            # copy to zvec and uvec
-            x[diff_ptr:diff_ptr+diff_size-1] .= xinit[1:diff_size]
-            y[alg_ptr:alg_ptr+alg_size-1] .= xinit[diff_size+1:diff_size+alg_size]
-            u[ctrl_ptr:ctrl_ptr+ctrl_size-1] .= xinit[diff_size+alg_size+1:diff_size+alg_size+ctrl_size]
+            initialize_device(device, i, map, ps, z, y, u, p)
         end
+    end
+
+    # Initialize StaticGenerators: aggregate P, Q from their gen_idxs into
+    # device.p0, device.q0; populate alg state(s) (q for PV; p,q for SLACK).
+    for (i, device) in enumerate(ps.dynamic.devices)
+        device.dtype isa StaticGenerator || continue
+        sg = device.dtype
+        psum = 0.0
+        qsum = 0.0
+        for gi in sg.gen_idxs
+            psum += ps.gens[gi].psch
+            qsum += ps.gens[gi].qsch
+        end
+        sg.p0 = psum
+        sg.q0 = qsum
+        if sg.bus_type == 2          # PV: alg state is q
+            y[device.alg_ptr] = qsum
+        elseif sg.bus_type == 3      # SLACK: alg states are p, q
+            y[device.alg_ptr]     = psum
+            y[device.alg_ptr + 1] = qsum
+        end
+        # mirror p0, q0 into pvec so the kernel reads correct values
+        p[device.par_ptr]     = psum
+        p[device.par_ptr + 1] = qsum
+    end
+
+    # Pre-controller hook: stash each Genrou's post-PF e_fd0 onto any
+    # attached SEXS's `vref` slot (used as scratch in `initial_guess!`
+    # / `initialize_dynamics!`; `extract_init_params!(::SEXS)`
+    # overwrites it with the converged vref after the controller solve).
+    for (i, device) in enumerate(ps.dynamic.devices)
+        device.dtype isa SEXS || continue
+        # Match to the Genrou by (bus, id).
+        gen_id = _normalize_id(device.dtype.id)
+        for cand in ps.dynamic.devices
+            if cand.dtype isa Genrou &&
+               cand.dtype.bus == device.dtype.bus &&
+               _normalize_id(cand.dtype.id) == gen_id
+                device.dtype.vref = cand.dtype.e_fd0
+                break
+            end
+        end
+    end
+
+    # Initialize controllers. Generator needs to be initialized before
+    # the controllers to set the initial power injection.
+    for (i, device) in enumerate(ps.dynamic.devices)
+        if device.dtype isa AbstractGenControlType
+            initialize_device(device, i, map, ps, z, y, u, p)
+        end
+    end
+
+    # Re-snapshot ZIPLoad table columns now that the power-flow solution
+    # has populated v0mag/yreal/yimag on the device structs. Batched
+    # kernels read from the table, so the snapshot must reflect post-init
+    # values, not the build-time zeros. IEESGO has the same need for
+    # `pref` (init-derived parameter).
+    if ps.dynamic.layout !== nothing
+        refresh_zipload_table!(ps.dynamic)
+        refresh_ieesgo_table!(ps.dynamic)
+        refresh_tgov1_table!(ps.dynamic)
+        refresh_sexs_table!(ps.dynamic)
+        refresh_static_gen_table!(ps.dynamic)
     end
 end
 
 function rhs_fun!(f::AbstractArray, z::AbstractArray, u::AbstractArray, p::AbstractArray, sys::PowerSystem)
-    map = sys.dynamic.map
+    # Batched kernels are the sole hot path. The function barrier
+    # specializes on the concrete `PowerSystemDynamics`/`Network`/
+    # `SimulationLayout` types — the `Union{Nothing,...}` fields on
+    # `PowerSystem` would otherwise force every `getproperty` to box,
+    # costing ~2.2 KiB per call. The barrier resolves the Unions once
+    # at the entry, then dispatches to the batched implementation.
+    dyn  = sys.dynamic::PowerSystemDynamics
+    net  = sys.network::Network
+    L    = dyn.layout::SimulationLayout
+    _rhs_fun_batched!(f, z, u, p, dyn, net.ybus_real, L)
+end
 
-    diff_dim = sys.dynamic.diff_dim
-    alg_dim = sys.dynamic.alg_dim
-    ctrl_dim = sys.dynamic.ctrl_dim
-    par_dim = sys.dynamic.par_dim
+@noinline function _rhs_fun_batched!(f::AbstractArray, z::AbstractArray, u::AbstractArray,
+                                    p::AbstractArray, dyn::PowerSystemDynamics,
+                                    ybus::SparseMatrixCSC, L::SimulationLayout)
+    diff_dim = dyn.diff_dim
+    alg_dim  = dyn.alg_dim
+    net_ptr  = diff_dim + alg_dim
+    v  = @view z[net_ptr+1:end]
+    fv = @view f[net_ptr+1:end]
+    mul!(fv, ybus, v, -1.0, 0.0)
 
-    x = @view z[1:diff_dim]
-    y = @view z[diff_dim+1:diff_dim+alg_dim]
-    v = @view z[diff_dim+alg_dim+1:end]
+    # Apply cross-device control routing: u[i] ← z[uvec_idx[i]] for
+    # each wired ctrl slot. uvec_idx[i] == 0 means "not wired" (slot
+    # stays at its init value of 0). Without this, controllers
+    # (governor p_m, exciter e_fd) read stale init values throughout
+    # the integration — Genrou's p_m would be frozen at t=0.
+    _apply_uvec_routing!(u, z, dyn.uvec_idx)
 
-    # network balance
-    #f[diff_dim+alg_dim+1:end] .= -sys.network.ybus_real*v
-    fv = @view f[diff_dim+alg_dim+1:end]
-    mul!(fv, sys.network.ybus_real, v, -1.0, 0.0)
+    genrou_residual_batch!(f, z, u, p, L.genrou, diff_dim, net_ptr)
+    ieesgo_residual_batch!(f, z, p, L.ieesgo, diff_dim)
+    tgov1_residual_batch!(f, z, p, L.tgov1, diff_dim)
+    sexs_residual_batch!(f, z, p, L.sexs)
+    zipload_residual_batch!(f, z, p, L.zipload, net_ptr)
+    static_gen_residual_batch!(f, z, p, L.static_gen)
 
-    @inbounds for (i, device) in enumerate(sys.dynamic.devices)
-        bus = map.bus[i]
+    _apply_events_fun!(f, v, dyn.events, net_ptr)
+    return nothing
+end
 
-        # retrieve pointers and sizes from map
-        diff_ptr = map.diff_ptr[i]
-        alg_ptr = map.alg_ptr[i]
-        ctrl_ptr = map.ctrl_ptr[i]
-        par_ptr = map.par_ptr[i]
-
-        diff_size = map.diff_size[i]
-        alg_size = map.alg_size[i]
-        ctrl_size = map.ctrl_size[i]
-        par_size = map.par_size[i]
-
-        # retrieve local views
-        diff = @view x[diff_ptr:diff_ptr+diff_size-1]
-        alg = @view y[alg_ptr:alg_ptr+alg_size-1]
-        ctrl = @view u[ctrl_ptr:ctrl_ptr+ctrl_size-1]
-        par = @view p[par_ptr:par_ptr+par_size-1]
-        vloc = @view v[2*bus-1:2*bus]
-
-        f_diff = @view f[diff_ptr:diff_ptr+diff_size-1]
-        f_alg = @view f[diff_dim+alg_ptr:diff_dim+alg_ptr+alg_size-1]
-        f_net = @view f[diff_dim+alg_dim+2*(bus-1)+1:diff_dim+alg_dim+2*(bus-1)+2]
-
-        # call rhs function
-        cinject!(f_net, diff, alg, ctrl, par, vloc, device.dtype)
-        rhs_fun!(f_diff, f_alg, diff, alg, ctrl, par, vloc, device.dtype)
+@inline function _apply_uvec_routing!(u::AbstractArray, z::AbstractArray,
+                                       uvec_idx::Vector{Int64})
+    @inbounds for i in eachindex(uvec_idx)
+        src = uvec_idx[i]
+        if src != 0
+            u[i] = z[src]
+        end
     end
+    return nothing
+end
 
-    @inbounds for (i, event) in enumerate(sys.dynamic.events)
+@inline function _apply_events_fun!(f::AbstractArray, v::AbstractArray,
+                                     events::Vector{ContingencyEvent}, net_ptr::Int)
+    @inbounds for event in events
         if event.status
             bus = event.bus
             vr = v[2*(bus-1)+1]
             vi = v[2*(bus-1)+2]
             yfault = 1.0/event.rfault
-            f[diff_dim+alg_dim+2*(bus-1)+1] -= yfault*vr
-            f[diff_dim+alg_dim+2*(bus-1)+2] -= yfault*vi
+            f[net_ptr+2*(bus-1)+1] -= yfault*vr
+            f[net_ptr+2*(bus-1)+2] -= yfault*vi
         end
     end
+    return nothing
 end
 
 # NOTE: TODO: Implement different objective types using multiple dispatch.
@@ -264,8 +404,11 @@ function integrate!(
     # allocate temporary vectors
     zold = zeros(Float64, system_size)
     verbose && println("Integrating from t = 0 s to t = $tf s with dt = $dt s.")
-    # newton parameters
-    ftol = 1e-9
+    # newton parameters — use tight tolerance (1e-10). Looser tolerance
+    # leaves residual algebraic state error that gets amplified through
+    # fault transients (gen i_q/i_d off by ~1e-2 if tol is 1e-9, vs
+    # ~1e-10 with tol=1e-10).
+    ftol = 1e-10
     max_iter = 30
 
     # initial condition
@@ -287,17 +430,17 @@ function integrate!(
     # time loop
     for k in 1:nsteps
         verbose && println("Time-stepping. t = $(tvec[k]) s.")
-        newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false)
+        newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol)
         traj[:,k+1] .= zold
         
         if k == step_on
             activate!(events[1])
             verbose && println("Event activated at t = $ton s. Fault at bus $(events[1].bus).")
-            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false)
+            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol)
         elseif k == step_off
             deactivate!(events[1])
             verbose && println("Event deactivated at t = $toff s.")
-            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false)
+            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol)
         end
 
     end
@@ -340,31 +483,6 @@ function initialize_dynamics!(
     @warn "initialize_dynamics! not implemented for device type $(dtype)"
 end
 
-function rhs_fun!(
-        f_diff::AbstractArray,
-        f_alg::AbstractArray,
-        x::AbstractArray,
-        y::AbstractArray,
-        u::AbstractArray,
-        p::AbstractArray,
-        v::AbstractArray,
-        dtype::AbstractDeviceType
-)
-    @warn "rhs_fun! not implemented for device type $(dtype)"
-end
-
-function cinject!(
-        f::AbstractArray,
-        x::AbstractArray,
-        y::AbstractArray,
-        u::AbstractArray,
-        p::AbstractArray,
-        v::AbstractArray,
-        dtype::AbstractDeviceType
-)
-    @warn "cinject! not implemented for device type $(dtype)"
-end
-
 function preallocate_jacobian(ps::PowerSystem)
     diff_dim = ps.dynamic.diff_dim
     alg_dim = ps.dynamic.alg_dim
@@ -399,8 +517,15 @@ function preallocate_jacobian(ps::PowerSystem)
         end
     end
 
-    # iterate over devices
+    # Per-device sparsity contribution (Genrou + ZIPLoad) — setup-time
+    # only, runs once. Genrou and ZIPLoad each provide a
+    # `preallocate_jacobian!(coord_list, ..., dtype)` method that pushes
+    # their (row, col) entries into the coord_list.
     for (i, device) in enumerate(ps.dynamic.devices)
+        device.dtype isa IEESGO         && continue  # IEESGO sparsity comes from the batched preallocator below
+        device.dtype isa TGOV1          && continue  # TGOV1 too
+        device.dtype isa SEXS           && continue  # SEXS too
+        device.dtype isa StaticGenerator && continue # StaticGenerator too
         bus = map.bus[i]
         diff_ptr = map.diff_ptr[i]
         alg_ptr = diff_dim + map.alg_ptr[i]
@@ -408,6 +533,19 @@ function preallocate_jacobian(ps::PowerSystem)
         ctrl_ptr = map.ctrl_ptr[i]
         preallocate_jacobian!(coord_list, diff_ptr, alg_ptr, ctrl_ptr, volt_ptr, device.dtype)
     end
+
+    # IEESGO governor rows: no per-device `preallocate_jacobian!(::IEESGO)`
+    # exists — its sparsity comes from the batched preallocator that
+    # reads the SoA table directly.
+    L = ps.dynamic.layout::SimulationLayout
+    ieesgo_preallocate!(coord_list, L.ieesgo, diff_dim)
+    tgov1_preallocate!(coord_list, L.tgov1, diff_dim)
+    sexs_preallocate!(coord_list, L.sexs)
+    static_gen_preallocate!(coord_list, L.static_gen)
+
+    # Cross-device coupling sparsity: GENROU's swing eq reads governor p_m.
+    # The legacy per-device GENROU preallocator can't see wiring; add it here.
+    genrou_coupling_preallocate!(coord_list, L.genrou)
 
     # form coordinate lists (row, col, data)
     row = Int[]
@@ -422,6 +560,19 @@ function preallocate_jacobian(ps::PowerSystem)
 
     data = zeros(length(row))
     Jsp = sparse(row, col, data, sys_dim, sys_dim)
+
+    # Now that J's sparsity is final, precompute every batched kernel's
+    # nzval positions. These caches let the hot loop do
+    # `nz[table.jac_pos[k, slot]] = val` without per-iteration row
+    # search. Filled in once here per simulation setup.
+    net_ptr = diff_dim + alg_dim
+    genrou_jac_positions!(L.genrou, Jsp, diff_dim, net_ptr)
+    ieesgo_jac_positions!(L.ieesgo, Jsp, diff_dim)
+    tgov1_jac_positions!(L.tgov1, Jsp, diff_dim)
+    sexs_jac_positions!(L.sexs, Jsp)
+    zipload_jac_positions!(L.zipload, Jsp, net_ptr)
+    static_gen_jac_positions!(L.static_gen, Jsp)
+
     return Jsp
 end
 
@@ -433,7 +584,7 @@ function preallocate_jacobian!(
     volt_ptr::Int,
     dtype::AbstractDeviceType
 )
-    @warn "preallocate_jacobian! not implemented for $(dtype)"
+    error("preallocate_jacobian! not implemented for $(dtype) — either add a per-device sparsity contribution or route through a batched preallocator.")
 end
 
 
@@ -444,81 +595,46 @@ function rhs_jac!(
     p::AbstractArray,
     sys::PowerSystem)
 
-    diff_dim = sys.dynamic.diff_dim
-    alg_dim = sys.dynamic.alg_dim
-    ctrl_dim = sys.dynamic.ctrl_dim
-    nbus = length(sys.buses)
-    adj = sys.network.adjacency
-    map = sys.dynamic.map
-    
-    x = @view z[1:diff_dim]
-    y = @view z[diff_dim+1:diff_dim+alg_dim]
-    v = @view z[diff_dim+alg_dim+1:end]
+    # Batched kernels are the sole hot path. See `rhs_fun!`
+    # for the function-barrier rationale (Union field unboxing).
+    dyn = sys.dynamic::PowerSystemDynamics
+    net = sys.network::Network
+    L = dyn.layout::SimulationLayout
+    _rhs_jac_batched!(jac, z, u, p, dyn, net.ybus_real, L)
+end
 
-    # total system size
-    current_injection_jacobian!(jac, sys.network.ybus_real, diff_dim + alg_dim)
+@noinline function _rhs_jac_batched!(jac::AbstractMatrix, z::AbstractArray, u::AbstractArray,
+                                    p::AbstractArray, dyn::PowerSystemDynamics,
+                                    ybus::SparseMatrixCSC, L::SimulationLayout)
+    diff_dim = dyn.diff_dim
+    alg_dim  = dyn.alg_dim
+    net_ptr  = diff_dim + alg_dim
 
-    # index vector
-    idx_dev = Array{Int}(undef, 7)
-    
-    # iterate over devices
-    for (i, device) in enumerate(sys.dynamic.devices)
-        bus = map.bus[i]
-        diff_ptr = map.diff_ptr[i]
-        alg_ptr = map.alg_ptr[i]
-        ctrl_ptr = map.ctrl_ptr[i]
-        par_ptr = map.par_ptr[i]
-        
-        diff_size = map.diff_size[i]
-        alg_size = map.alg_size[i]
-        ctrl_size = map.ctrl_size[i]
-        par_size = map.par_size[i]
-        
-        diff = @view x[diff_ptr:diff_ptr+diff_size-1]
-        alg = @view y[alg_ptr:alg_ptr+alg_size-1]
-        ctrl = @view u[ctrl_ptr:ctrl_ptr+ctrl_size-1]
-        par = @view p[par_ptr:par_ptr+par_size-1]
-        vloc = @view v[2*bus-1:2*bus]
+    current_injection_jacobian!(jac, ybus, net_ptr)
+    genrou_jacobian_batch!(jac, z, u, p, L.genrou, diff_dim, net_ptr)
+    ieesgo_jacobian_batch!(jac, p, L.ieesgo, diff_dim)
+    tgov1_jacobian_batch!(jac, p, L.tgov1, diff_dim)
+    sexs_jacobian_batch!(jac, z, p, L.sexs)
+    zipload_jacobian_batch!(jac, z, p, L.zipload, net_ptr)
+    static_gen_jacobian_batch!(jac, z, p, L.static_gen)
 
-        idx_dev[1] = diff_ptr
-        idx_dev[2] = diff_dim + alg_ptr
-        idx_dev[3] = alg_dim + diff_dim
-        idx_dev[4] = par_ptr
-        idx_dev[5] = bus
-        idx_dev[6] = ctrl_ptr
+    _apply_events_jac!(jac, dyn.events, net_ptr)
+    return nothing
+end
 
-        rhs_jac!(jac, diff, alg, ctrl, par, vloc, idx_dev, device.dtype)
-    end
-
-    # iterate events
-    # TODO: move this to its own function. Define different events (bus fault, line fault, etc.)
-    @inbounds for (i, event) in enumerate(sys.dynamic.events)
+@inline function _apply_events_jac!(jac::AbstractMatrix,
+                                     events::Vector{ContingencyEvent}, net_ptr::Int)
+    @inbounds for event in events
         if event.status
-            #println("Event is activated")
             bus = event.bus
-            vr = v[2*(bus-1)+1]
-            vi = v[2*(bus-1)+2]
             yfault = 1.0/event.rfault
-
-            ptr1 = diff_dim+alg_dim+2*(bus-1)+1
-            ptr2 = diff_dim+alg_dim+2*(bus-1)+2
+            ptr1 = net_ptr+2*(bus-1)+1
+            ptr2 = net_ptr+2*(bus-1)+2
             jac[ptr1, ptr1] += -yfault
             jac[ptr2, ptr2] += -yfault
         end
     end
-end
-
-function rhs_jac!(
-    jac::AbstractMatrix,
-    x::AbstractArray,
-    y::AbstractArray,
-    u::AbstractArray,
-    p::AbstractArray,
-    v::AbstractArray,
-    idx_dev::Vector{Int},
-    dtype::AbstractDeviceType
-)
-    @warn "rhs_jac! not implemented for $(dtype)"
+    return nothing
 end
 
 

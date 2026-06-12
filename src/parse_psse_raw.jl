@@ -416,6 +416,20 @@ function ThreeTransformerRaw(line::String, line2::String, line3::String, line4::
     return transraw
 end
 
+mutable struct SwitchedShuntRaw
+    busn::Int64
+    status::Int64
+    binit::Float64
+end
+
+function SwitchedShuntRaw(line::String)
+    parts = split(strip(line, '\n'), ',')
+    busn = parse(Int64, parts[1])
+    status = length(parts) > 3 ? parse(Int64, parts[4]) : 0
+    binit = length(parts) > 9 ? parse(Float64, parts[10]) : 0.0
+    return SwitchedShuntRaw(busn, status, binit)
+end
+
 mutable struct PsystemRaw
     baseMVA::Float64
     buses::Array{BusRaw, 1}
@@ -425,6 +439,7 @@ mutable struct PsystemRaw
     gens::Array{GenRaw, 1}
     transformers::Array{TransformerRaw, 1}
     transthree::Array{ThreeTransformerRaw, 1}
+    switched_shunts::Array{SwitchedShuntRaw, 1}
 end
 
 function PsystemRaw(line::String)
@@ -436,7 +451,8 @@ function PsystemRaw(line::String)
     gens = []
     transformers = []
     transthree = []
-    sys = PsystemRaw(baseMVA, buses, loads, shunts, branches, gens, transformers, transthree)
+    switched_shunts = []
+    sys = PsystemRaw(baseMVA, buses, loads, shunts, branches, gens, transformers, transthree, switched_shunts)
     return sys
 end
 
@@ -531,6 +547,26 @@ function add_transformers!(sys::PsystemRaw, f::IOStream)
     end
 end
 
+function add_switched_shunts!(sys::PsystemRaw, f::IOStream)
+    # Skip section headers (areas, DC links, FACTS, etc.) until we hit switched shunts or EOF.
+    while !eof(f)
+        line = readline(f)
+        if occursin("BEGIN SWITCHED SHUNT DATA", line)
+            break
+        end
+    end
+    while !eof(f)
+        line = readline(f)
+        if occursin("END OF SWITCHED SHUNT DATA", line)
+            break
+        elseif isempty(strip(line))
+            continue
+        else
+            push!(sys.switched_shunts, SwitchedShuntRaw(line))
+        end
+    end
+end
+
 function read_psse_raw(filename::String)
     f = open(filename, "r")
     sys = PsystemRaw(readline(f))
@@ -542,6 +578,7 @@ function read_psse_raw(filename::String)
     add_gens!(sys, f)
     add_branches!(sys, f)
     add_transformers!(sys, f)
+    add_switched_shunts!(sys, f)
     close(f)
     return sys
 end
