@@ -82,6 +82,40 @@ function _build_zipload_table_impl(psd)
         jac_pos)
 end
 
+"""
+    refresh_zipload_table!(psd)
+
+Re-snapshot the ZIPLoad columns (`v0mag`, `yreal`, `yimag`) from the
+current `device.dtype` fields. Called by `initialize_dynamics!` AFTER
+the power-flow solution has been used to populate `yreal`/`yimag` from
+`pinj/(v0mag^2)`, so the SoA table reflects the live values the hot
+loop kernels will read.
+
+This is Phase 2.0c (ROADMAP §3): `build_layout!` runs at the end of
+`set_dynamics!`, BEFORE `initialize_dynamics!` populates these fields,
+so the initial snapshot is all zeros. Hot-loop kernels in Phase 2.1 read
+from the table (not from `dp.pvec`), so the table must be refreshed
+before the first Newton iteration.
+
+Other ZIPLoad columns (`pinj`, `qinj`, `α`, `β`, `γ`, `weight`) are not
+mutated by `initialize_dynamics!` and don't need refreshing.
+"""
+function refresh_zipload_table!(psd)
+    table = psd.layout.zipload
+    table.n == 0 && return nothing
+    k = 0
+    for device in psd.devices
+        device.dtype isa ZIPLoad || continue
+        k += 1
+        load = device.dtype
+        table.v0mag[k] = load.v0mag
+        table.yreal[k] = load.yreal
+        table.yimag[k] = load.yimag
+    end
+    @assert k == table.n "refresh_zipload_table!: counted $k ZIPLoads, table.n == $(table.n)"
+    return nothing
+end
+
 # Phase 1.5: register with the device registry.
 register_device!(:zipload;
     table_type = ZIPLoadTable,

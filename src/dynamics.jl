@@ -119,6 +119,13 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         end
     end
 
+    # Phase 2.0c: re-snapshot ZIPLoad table columns now that the
+    # power-flow solution has populated v0mag/yreal/yimag on the device
+    # structs. Phase 2.1 batched kernels read from the table, so the
+    # snapshot must reflect post-init values, not the build-time zeros.
+    if ps.dynamic.layout !== nothing
+        refresh_zipload_table!(ps.dynamic)
+    end
 end
 
 function rhs_fun!(f::AbstractArray, z::AbstractArray, u::AbstractArray, p::AbstractArray, sys::PowerSystem)

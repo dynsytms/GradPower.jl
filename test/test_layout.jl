@@ -166,6 +166,34 @@ end
     @test n_total == ps.dynamic.num_devices
 end
 
+@testset "layout 2.0c: ZIPLoad table refreshed after initialize_dynamics!" begin
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus.dyr"))
+    L = ps.dynamic.layout
+
+    # At build_layout! time (end of set_dynamics!) yreal/yimag are still 0
+    # because they require the PF solution. v0mag IS set at build time via
+    # the ZIPLoad constructor reading ps.buses[load.bus].v0m.
+    @test all(L.zipload.yreal .== 0.0)
+    @test all(L.zipload.yimag .== 0.0)
+
+    # initialize_dynamics! mutates ZIPLoad device structs from PF solution,
+    # then refresh_zipload_table! must mirror those into the SoA columns.
+    dp = GradPower.DynamicProblem(ps)
+    GradPower.initialize_dynamics!(dp, ps)
+
+    # Every ZIPLoad must now have a populated v0mag (= bus voltage magnitude)
+    # and a yreal corresponding to pinj/v0mag^2 (the load admittance).
+    for k in 1:L.zipload.n
+        @test L.zipload.v0mag[k] > 0.0
+        # yreal/yimag should match the device's struct values (refresh is faithful).
+        load_devs = [d for d in ps.dynamic.devices if d.dtype isa GradPower.ZIPLoad]
+        @test L.zipload.v0mag[k] ≈ load_devs[k].dtype.v0mag
+        @test L.zipload.yreal[k] ≈ load_devs[k].dtype.yreal
+        @test L.zipload.yimag[k] ≈ load_devs[k].dtype.yimag
+    end
+end
+
 @testset "layout 1.5: registry shape and dispatcher type-stability" begin
     ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
                    joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
