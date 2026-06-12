@@ -1,10 +1,8 @@
-# Phase 1 acceptance test for ROADMAP.md §5 Phase 1.
+# Acceptance test for per-device-type SoA tables.
 #
 # Asserts that the per-device-type SoA tables (GenrouTable, IEESGOTable,
 # ESDC1ATable, ZIPLoadTable) built at the end of `set_dynamics!` faithfully
-# mirror the data in the heterogeneous `psd.devices` vector. In Phase 1 the
-# tables are built but not used by the hot loop; this test fixes the contract
-# that Phase 2 will rely on.
+# mirror the data in the heterogeneous `psd.devices` vector.
 #
 # Cases exercised:
 #   - 2bus      (1 GENROU, 1 ZIPLoad, 0 IEESGO, 0 ESDC1A)
@@ -13,8 +11,7 @@
 # An IEESGO-populated case is synthesized in-test by manually adding 3 IEESGOs
 # to the ieee9 psd before `set_dynamics!`. ESDC1A's populated path is NOT
 # exercised here: `src/exciters.jl` is untracked and `AbstractExciterType` is
-# not defined in the module, so no live case can instantiate ESDC1A. Phase 2/3
-# will add coverage once exciters are wired in.
+# not defined in the module, so no live case can instantiate ESDC1A.
 
 @testset "layout: table existence and counts" begin
     ps = from_psse(joinpath(@__DIR__, "..", "examples", "2bus.raw"),
@@ -87,9 +84,8 @@ end
         @test L.zipload.yreal[k]  ≈ z.yreal
         @test L.zipload.yimag[k]  ≈ z.yimag
     end
-    # ROADMAP §5b note: yreal/yimag are 0 at build_layout! time (set_dynamics!
-    # snapshot), populated by initialize_dynamics! afterwards. Phase 2 will
-    # decide whether to re-snapshot post-init or read live from dp.pvec.
+    # yreal/yimag are 0 at build_layout! time (set_dynamics! snapshot),
+    # populated by initialize_dynamics! afterwards via refresh_zipload_table!.
     @test all(L.zipload.yreal .== 0.0)
     @test all(L.zipload.yimag .== 0.0)
 end
@@ -121,10 +117,10 @@ end
     L = ps.dynamic.layout
     @test L.ieesgo.n == 3
     @test L.genrou.n == 3
-    # Phase 1.5b: the off-by-one is fixed by `wire_controls!`. With an
-    # IEESGO attached, `pm_idx` is populated (slot 2 = `ctrl_ptr + 1`) and
-    # `efd_idx` stays 0 (no exciter wired). Both sides of the wiring now
-    # mirror `uvec_idx` correctly.
+    # Wiring fixed via `wire_controls!`. With an IEESGO attached,
+    # `pm_idx` is populated (slot 2 = `ctrl_ptr + 1`) and `efd_idx`
+    # stays 0 (no exciter wired). Both sides of the wiring mirror
+    # `uvec_idx` correctly.
     for k in 1:L.genrou.n
         cp = L.genrou.ctrl_ptr[k]
         @test L.genrou.has_exc[k] == false                # no exciter in this synthetic case
@@ -250,19 +246,19 @@ end
     end
 end
 
-@testset "layout: jac_pos shape (Phase 2.1 populates per-kernel)" begin
+@testset "layout: jac_pos shape (populated per-kernel)" begin
     ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
                    joinpath(@__DIR__, "..", "examples", "ieee9bus.dyr"))
     L = ps.dynamic.layout
-    # Phase 2.1 A2.0: GENROU jac_pos has GENROU_JAC_NENTRIES per device.
-    # Phase 2.1 (IEESGO): IEESGO jac_pos has IEESGO_JAC_NENTRIES per device.
+    # GENROU jac_pos has GENROU_JAC_NENTRIES per device.
+    # IEESGO jac_pos has IEESGO_JAC_NENTRIES per device.
     @test size(L.genrou.jac_pos, 2)  == GradPower.GENROU_JAC_NENTRIES
     @test size(L.genrou.jac_pos, 1)  == L.genrou.n
     @test size(L.ieesgo.jac_pos, 2)  == GradPower.IEESGO_JAC_NENTRIES
     @test size(L.ieesgo.jac_pos, 1)  == L.ieesgo.n
     @test size(L.zipload.jac_pos, 2) == GradPower.ZIPLOAD_JAC_NENTRIES
     @test size(L.zipload.jac_pos, 1) == L.zipload.n
-    # Remaining kernels: still Phase 1 contract (empty n×0).
+    # Remaining kernels: empty n×0 placeholder.
     @test size(L.esdc1a.jac_pos, 2)  == 0
     @test length(L.net_jac_pos)      == 0
 end

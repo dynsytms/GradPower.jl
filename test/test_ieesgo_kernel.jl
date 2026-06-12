@@ -1,4 +1,4 @@
-# Phase 2.1: IEESGO kernel acceptance test.
+# IEESGO kernel acceptance test.
 #
 # The legacy `rhs_fun!`/`rhs_jac!`/`cinject!` methods don't exist for
 # IEESGO — the heterogeneous loop hits `@warn` fallbacks and IEESGO's
@@ -10,7 +10,7 @@
 #       the kernel writes (no `jac_pos == 0` zombies).
 #   (3) Built into J via the new `ieesgo_preallocate!` hook.
 
-@testset "Phase 2.1: IEESGO residual ≈ 0 at z0 after init" begin
+@testset "IEESGO residual ≈ 0 at z0 after init" begin
     ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
                    joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
     GradPower.build_network!(ps)
@@ -42,7 +42,7 @@
     @test max_alg  < 1e-9
 end
 
-@testset "Phase 2.1: IEESGO Jacobian sparsity is complete" begin
+@testset "IEESGO Jacobian sparsity is complete" begin
     ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
                    joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
     GradPower.build_network!(ps)

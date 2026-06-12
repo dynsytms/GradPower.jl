@@ -1,6 +1,5 @@
 # StaticGenerator — aggregated representation of a bus's active static
-# generators that lack a dynamic machine model. Mirrors uqgrid's
-# uqgrid/models/static_gen_imp.py:
+# generators that lack a dynamic machine model.
 #   - PV (bus type 2):    Q is unknown (alg state); P is the parameter.
 #                         Voltage-regulation residual: vr^2 + vi^2 = vset^2.
 #   - SLACK (bus type 3): P and Q are both unknown (alg states).
@@ -12,7 +11,7 @@
 #   f[vr] += (p*vr + q*vi) / vm2
 #   f[vi] += (p*vi - q*vr) / vm2
 # with vm2 saturated at 0.2 for numerical stability — same threshold as
-# ZIPLoad and uqgrid.
+# ZIPLoad.
 #
 # A StaticGenerator is bound to ONE bus and aggregates one or more static
 # generators at that bus. `gen_idxs` indexes into ps.gens.

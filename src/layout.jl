@@ -1,11 +1,10 @@
-# Phase 1 + Phase 1.5 of ROADMAP.md: per-device-type SoA tables.
-# The hot loop in src/dynamics.jl will (Phase 2) consume these tables
-# INSTEAD of iterating over psd.devices.
+# Per-device-type SoA tables. The hot loop in src/dynamics.jl consumes
+# these tables INSTEAD of iterating over psd.devices.
 #
-# Phase 1.5 change: SimulationLayout now holds a NamedTuple of concrete table
-# types so adding a new device class is one registry entry + one tables/*.jl
-# file, with no edits to layout.jl or rhs_fun!. The hot-loop dispatcher
-# (Phase 2) walks the NamedTuple via @generated for full specialization.
+# SimulationLayout holds a NamedTuple of concrete table types so adding
+# a new device class is one registry entry + one tables/*.jl file, with
+# no edits to layout.jl or rhs_fun!. The hot-loop dispatcher walks the
+# NamedTuple via @generated for full specialization.
 #
 # This file is included BEFORE PowerSystemDynamics is defined (so its
 # `layout::Union{Nothing,SimulationLayout}` field is well-typed). The
@@ -13,7 +12,7 @@
 # that PowerSystemDynamics does not need to exist at this point.
 
 # ------------------------------------------------------------------------
-# Phase 1.5: device registry
+# Device registry
 #
 # Build-time metadata only. The hot loop NEVER reads from this Dict —
 # it reads the NamedTuple stored in SimulationLayout.tables, which is
@@ -77,8 +76,7 @@ struct GenrouTable
     # control coupling resolved by set_dynamics!
     has_gov::Vector{Bool};  pm_idx::Vector{Int32}
     has_exc::Vector{Bool};  efd_idx::Vector{Int32}
-    # Phase 2: precomputed J.nzval positions, filled by preallocate_jacobian.
-    # In Phase 1 we allocate zeros(Int32, n, 0) (empty second dim).
+    # Precomputed J.nzval positions, filled by preallocate_jacobian.
     jac_pos::Matrix{Int32}
 end
 
@@ -94,12 +92,12 @@ struct IEESGOTable
     K1::Vector{Float64}; K2::Vector{Float64}; K3::Vector{Float64}
     pmax::Vector{Float64}; pmin::Vector{Float64}
     # Init-derived parameter (filled during initialize_dynamics! and
-    # refreshed via refresh_ieesgo_table!). Phase 2.1 kernel reads it
+    # refreshed via refresh_ieesgo_table!). The kernel reads it
     # from the table, NOT from the device struct.
     pref::Vector{Float64}
     # control coupling
     w_idx::Vector{Int32}     # global z-index of the generator's `w` state this governor reads
-    # Phase 2: precomputed J.nzval positions, filled by preallocate_jacobian.
+    # Precomputed J.nzval positions, filled by preallocate_jacobian.
     jac_pos::Matrix{Int32}
 end
 
@@ -143,7 +141,7 @@ struct ESDC1ATable
     Tf::Vector{Float64}; Ke::Vector{Float64}; Te::Vector{Float64}
     Tr::Vector{Float64}; Ae::Vector{Float64}; Be::Vector{Float64}
     vref::Vector{Float64}
-    # Phase 2: precomputed J.nzval positions, filled by preallocate_jacobian.
+    # Precomputed J.nzval positions, filled by preallocate_jacobian.
     jac_pos::Matrix{Int32}
 end
 
@@ -155,28 +153,27 @@ struct ZIPLoadTable
     α::Vector{Float64}; β::Vector{Float64}; γ::Vector{Float64}
     weight::Vector{Float64}; v0mag::Vector{Float64}
     yreal::Vector{Float64}; yimag::Vector{Float64}
-    # Phase 2: precomputed J.nzval positions, filled by preallocate_jacobian.
+    # Precomputed J.nzval positions, filled by preallocate_jacobian.
     jac_pos::Matrix{Int32}
 end
 
 # ------------------------------------------------------------------------
-# Phase 1.5: SimulationLayout is now a NamedTuple of concrete tables.
+# SimulationLayout — NamedTuple of concrete tables.
 #
-# Performance guardrails (ROADMAP.md §3 Phase 1.5):
+# Performance guardrails:
 #   - `tables` must be a NamedTuple of CONCRETE table types so Julia
 #     specializes per-field; no boxing, no dynamic dispatch in hot loop.
 #   - Never store as Vector{AbstractTable} or Dict{Symbol,Any}.
-#   - The hot-loop dispatcher (Phase 2) uses @generated to unroll the
-#     iteration so the compiler sees every kernel call site concretely.
+#   - The hot-loop dispatcher uses @generated to unroll the iteration
+#     so the compiler sees every kernel call site concretely.
 #
 # Back-compat: existing code reads `layout.genrou`, `layout.ieesgo`, etc.
-# A `getproperty` overload forwards those names to `getfield(layout.tables, name)`
-# so test_layout.jl and any other Phase 1 consumer keeps working.
+# A `getproperty` overload forwards those names to `getfield(layout.tables, name)`.
 # ------------------------------------------------------------------------
 
 struct SimulationLayout{T<:NamedTuple}
     tables::T
-    # Phase 2: network admittance entries' positions in J.nzval
+    # Network admittance entries' positions in J.nzval
     net_jac_pos::Vector{Int32}
 end
 
@@ -203,16 +200,14 @@ Base.propertynames(L::SimulationLayout) =
 # Iterates DEVICE_ORDER (stable across runs), calls each registered
 # builder against `psd`, and packs results into a NamedTuple. This runs
 # once per `set_dynamics!` call; the hot loop reads the NamedTuple
-# millions of times via the @generated dispatcher (Phase 2).
+# millions of times via the @generated dispatcher.
 # ------------------------------------------------------------------------
 
 """
     build_layout!(psd) -> SimulationLayout
 
 Scans psd.devices and builds one SoA table per registered device type.
-Called as the final step of `set_dynamics!`. The old heterogeneous
-device loop in src/dynamics.jl is unchanged in Phase 1; this layout
-is built but not used by the hot loop until Phase 2.
+Called as the final step of `set_dynamics!`.
 
 The `psd` parameter is a `PowerSystemDynamics`; type annotation is
 omitted because this file is included before that struct is defined.
@@ -228,14 +223,13 @@ function build_layout!(psd)
         push!(pairs, name => entry.builder(psd))
     end
     tables = NamedTuple(pairs)
-    net_jac_pos = Int32[]  # Phase 2 will populate
+    net_jac_pos = Int32[]  # populated by preallocate_jacobian
     return SimulationLayout(tables, net_jac_pos)
 end
 
 # ------------------------------------------------------------------------
-# Phase 1.5 stub dispatcher — used only by the test/test_layout.jl
-# type-stability + zero-allocation gate. Phase 2 will replace this with
-# real per-kernel residual / jacobian dispatch.
+# Stub dispatcher — used only by the test/test_layout.jl
+# type-stability + zero-allocation gate.
 #
 # `_dispatch_count_n(tables)` returns the total device count across all
 # tables, computed by visiting each table once. The visit is unrolled by

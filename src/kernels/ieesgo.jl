@@ -1,6 +1,5 @@
-# Phase 2.1 (ROADMAP §3 Phase 2.1): IEESGO batched residual & Jacobian.
+# IEESGO batched residual & Jacobian.
 #
-# Math: port of uqgrid/uqgrid/models/ieesgo_imp.py (residual + jacobian).
 # IEESGO has 5 diff states (PF0, PLL, TP1, TP2, TP3) + 1 alg state (p_m).
 # Residual:
 #   F[dp+0] = (1/T1)(K1·w − PF0)
@@ -15,7 +14,7 @@
 # behavior that wasn't there; there is no Julia-side parity to assert.
 # Acceptance is f(z0) ≈ 0 after `initialize_dynamics!`.
 
-# 15 Jacobian entries per IEESGO device (matches uqgrid sparsity):
+# 15 Jacobian entries per IEESGO device:
 #   row dp+0:   d/d{PF0, w}         → 2 entries
 #   row dp+1:   d/d{PF0, PLL}       → 2 entries
 #   row dp+2:   d/d{PF0, PLL, TP1}  → 3 entries

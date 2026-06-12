@@ -16,13 +16,12 @@ include("test_case9data.jl")
     include("test_matpower_parser.jl")
 end
 @testset "dynamic" begin
-    # NOTE (Phase 2.2): AD-using tests are temporarily skipped.
+    # NOTE: AD-using tests are temporarily skipped.
     # `src/ad.jl` (jacp_vec!, jacpt_vec!, tlm, adjoint) still iterates
     # devices and dispatches on legacy per-device `rhs_diff!`/`rhs_alg!`/
-    # `cinject!` methods. After Phase 2.2 legacy removal, this path
-    # works only for devices that still carry those shims (Genrou,
-    # ZIPLoad) and is broken for IEESGO. Re-enable once `src/ad.jl` is
-    # rewritten to AD over the batched kernels.
+    # `cinject!` methods. This path works only for devices that still
+    # carry those shims (Genrou, ZIPLoad) and is broken for IEESGO.
+    # Re-enable once `src/ad.jl` is rewritten to AD over the batched kernels.
     @info "Skipping test_dynamics.jl and test_adjoint_event_offset.jl pending ad.jl rewrite"
     # include("test_dynamics.jl")
     # include("test_adjoint_event_offset.jl")

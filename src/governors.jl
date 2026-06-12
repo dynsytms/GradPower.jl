@@ -188,9 +188,9 @@ function fill_pvec!(pvec::AbstractArray, dtype::TGOV1)
     pvec[8] = dtype.pref
 end
 
-# Apply mbase/sbase scaling. uqgrid (parse.py:573-576) scales R/VMAX/VMIN by
-# sbase/mbase and DT by mbase/sbase. With `ratio = mbase/sbase` here, that
-# means dividing R/VMAX/VMIN by ratio and multiplying DT by ratio.
+# Apply mbase/sbase scaling: R/VMAX/VMIN scale by sbase/mbase and DT by
+# mbase/sbase. With `ratio = mbase/sbase` here, that means dividing
+# R/VMAX/VMIN by ratio and multiplying DT by ratio.
 function set_ratio!(dtype::TGOV1, ratio::Float64)
     dtype.R    = dtype.R    / ratio
     dtype.VMAX = dtype.VMAX / ratio

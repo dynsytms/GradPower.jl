@@ -32,8 +32,7 @@ function from_data_fields(::Type{ESDC1A}, fields::Vector{SubString{String}})
     bus = parse(Int64, fields[1])
     id = String(fields[3])
 
-    # Match the Python uqgrid reference parser, which currently ignores the
-    # parsed ESDC1A DYR parameters and instantiates this fixed model.
+    # Ignore the parsed ESDC1A DYR parameters and instantiate a fixed model.
     ESDC1A(bus, id, 20.0, 1.0, 0.7, 0.7, 7.0, 0.5, 20.4, 0.006, 0.9)
 end
 
@@ -198,7 +197,6 @@ end
 # SEXS — Simplified Excitation System
 # ===========================
 #
-# Math: uqgrid/uqgrid/models/sexs_imp.py.
 # States: 2 diff (x1, e_fd). No alg.
 # Residual (vref is initialization-derived parameter):
 #   F[dp+0] = (-x1 + (1 - TA_TB)·(vref - vm)) / TB

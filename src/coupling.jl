@@ -1,9 +1,7 @@
-# Phase 1.5b of ROADMAP.md: device coupling graph.
+# Device coupling graph.
 #
-# Replaces the hand-matched governor wiring in src/GradPower.jl:289-318
-# with a generic `wire_controls!` that uses traits to find each
-# controller's target and resolve which ctrl slots / state indices to
-# wire together.
+# Generic `wire_controls!` that uses traits to find each controller's
+# target and resolve which ctrl slots / state indices to wire together.
 #
 # The traits below are the contract; any new controller type (TGOV1, SEXS,
 # PSS, ...) drops in by adding three method definitions and registering
@@ -102,10 +100,8 @@ consumes_signals(::Type{SEXS}) = ()
 # (`attaches_to !== nothing`), find its target by (bus, id), then walk
 # its produced and consumed signals to populate `uvec_idx`.
 #
-# This replaces the hand-coded governor block in src/GradPower.jl and
-# fixes the off-by-one bug (Phase 2.0a) by construction: the target ctrl
-# slot is looked up via `produces_signals(...).target_ctrl_offset` instead
-# of being hard-coded.
+# The target ctrl slot is looked up via
+# `produces_signals(...).target_ctrl_offset` instead of being hard-coded.
 # ------------------------------------------------------------------------
 
 """

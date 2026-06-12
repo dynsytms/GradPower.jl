@@ -1,16 +1,12 @@
-# Phase 2.1 (ROADMAP §3 Phase 2.1) — A2.0 parity test.
+# Parity test for batched GENROU kernels.
 #
-# Asserts that the new batched GENROU kernels (`genrou_residual_batch!`,
+# Asserts that the batched GENROU kernels (`genrou_residual_batch!`,
 # `genrou_jacobian_batch!`, `genrou_jac_positions!`) produce numerically
 # identical output to the legacy heterogeneous loop in
 # `src/dynamics.jl::rhs_fun!` / `rhs_jac!` for GENROU contributions on
 # the existing validation cases.
-#
-# This test is the design-of-A2.0 acceptance gate. Other Phase 2.1
-# kernels (IEESGO, ESDC1A, ZIPLoad, network) will land with their own
-# parity tests cloned from this one.
 
-@testset "Phase 2.1 A2.0: GENROU residual batched kernel parity" begin
+@testset "GENROU residual batched kernel parity" begin
     cases = [
         ("ieee9 no governor", "examples/ieee9_v33.raw", "examples/ieee9bus.dyr"),
         ("ieee9 with governor", "examples/ieee9_v33.raw", "examples/ieee9bus_gov.dyr"),
@@ -78,7 +74,7 @@
     end
 end
 
-@testset "Phase 2.1 A2.0: GENROU Jacobian batched kernel parity" begin
+@testset "GENROU Jacobian batched kernel parity" begin
     cases = [
         ("ieee9 no governor", "examples/ieee9_v33.raw", "examples/ieee9bus.dyr"),
         ("ieee9 with governor", "examples/ieee9_v33.raw", "examples/ieee9bus_gov.dyr"),

@@ -1,7 +1,7 @@
-# Phase 2.1 (ROADMAP §3 Phase 2) — A2.0: GENROU batched residual & Jacobian.
+# GENROU batched residual & Jacobian.
 #
 # This file establishes the pattern that IEESGO / ESDC1A / ZIPLoad kernels
-# will follow:
+# follow:
 #   * `genrou_residual_batch!(f, z, u, table)` — flat `@inbounds for i in 1:n`
 #     over a `GenrouTable` (SoA), reading parameters from SoA columns and
 #     writing scattered global rows of `f` / network voltage rows.
@@ -101,9 +101,8 @@ independent of `PowerSystem`. Caller:
         p_m  = u[cp + 1]
 
         # ----- auxiliary -----
-        # Swing eq follows uqgrid convention: f5 = (Pm - D*w - psi_de*iq + psi_qe*id)/(2H).
-        # No 1/(1+w) factor on tmech — historical PSS/E form omitted to match the
-        # Python reference implementation.
+        # Swing eq: f5 = (Pm - D*w - psi_de*iq + psi_qe*id)/(2H).
+        # No 1/(1+w) factor on tmech — historical PSS/E form omitted.
         psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
                  (x_dp  - x_ddp)/(x_dp - xl)*phi_1d
         psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
@@ -432,9 +431,9 @@ cleared them.
         sd, cd = sincos(delta)
 
         # ----- saturation contributions to row dp (e_qp eq) -----
-        # Mirrors uqgrid/models/genrou_imp.py:776-803. Slots J_GR_R1_edp /
-        # J_GR_R1_phi2q are always allocated; when saturation is off (S2≤0
-        # or psi2 ≤ sat_a) Se=dSe_dpsi=0 and the increments collapse to 0.
+        # Slots J_GR_R1_edp / J_GR_R1_phi2q are always allocated; when
+        # saturation is off (S2≤0 or psi2 ≤ sat_a) Se=dSe_dpsi=0 and the
+        # increments collapse to 0.
         psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
                  (x_dp  - x_ddp)/(x_dp - xl)*phi_1d
         psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +

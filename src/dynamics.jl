@@ -61,7 +61,7 @@ function initialize_device(
     y[alg_ptr:alg_ptr+alg_size-1] .= xinit[diff_size+1:diff_size+alg_size]
     u[ctrl_ptr:ctrl_ptr+ctrl_size-1] .= xinit[diff_size+alg_size+1:diff_size+alg_size+ctrl_size]
 
-    # Per-device post-init hook (Phase 2.1): governors / exciters may have
+    # Per-device post-init hook: governors / exciters may have
     # initialization-derived parameters (pref, vref) whose converged values
     # come out of nlsolve as extra unknowns past the diff/alg/ctrl slots.
     # `extract_init_params!` is the no-op default; concrete devices override.
@@ -161,7 +161,6 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
 
     # Initialize StaticGenerators: aggregate P, Q from their gen_idxs into
     # device.p0, device.q0; populate alg state(s) (q for PV; p,q for SLACK).
-    # Mirrors uqgrid initialize_system: static_generator branch (dynamics.py:877).
     for (i, device) in enumerate(ps.dynamic.devices)
         device.dtype isa StaticGenerator || continue
         sg = device.dtype
@@ -210,11 +209,11 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         end
     end
 
-    # Phase 2.0c: re-snapshot ZIPLoad table columns now that the
-    # power-flow solution has populated v0mag/yreal/yimag on the device
-    # structs. Phase 2.1 batched kernels read from the table, so the
-    # snapshot must reflect post-init values, not the build-time zeros.
-    # IEESGO has the same need for `pref` (init-derived parameter).
+    # Re-snapshot ZIPLoad table columns now that the power-flow solution
+    # has populated v0mag/yreal/yimag on the device structs. Batched
+    # kernels read from the table, so the snapshot must reflect post-init
+    # values, not the build-time zeros. IEESGO has the same need for
+    # `pref` (init-derived parameter).
     if ps.dynamic.layout !== nothing
         refresh_zipload_table!(ps.dynamic)
         refresh_ieesgo_table!(ps.dynamic)
@@ -225,8 +224,8 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
 end
 
 function rhs_fun!(f::AbstractArray, z::AbstractArray, u::AbstractArray, p::AbstractArray, sys::PowerSystem)
-    # Phase 2.2: batched kernels are the sole hot path. The function
-    # barrier specializes on the concrete `PowerSystemDynamics`/`Network`/
+    # Batched kernels are the sole hot path. The function barrier
+    # specializes on the concrete `PowerSystemDynamics`/`Network`/
     # `SimulationLayout` types — the `Union{Nothing,...}` fields on
     # `PowerSystem` would otherwise force every `getproperty` to box,
     # costing ~2.2 KiB per call. The barrier resolves the Unions once
@@ -405,10 +404,10 @@ function integrate!(
     # allocate temporary vectors
     zold = zeros(Float64, system_size)
     verbose && println("Integrating from t = 0 s to t = $tf s with dt = $dt s.")
-    # newton parameters — match uqgrid's default (newton_tol=1e-10).
-    # Looser tolerance leaves residual algebraic state error that gets
-    # amplified through fault transients (gen i_q/i_d off by ~1e-2 if
-    # tol is 1e-9, vs ~1e-10 with tol=1e-10).
+    # newton parameters — use tight tolerance (1e-10). Looser tolerance
+    # leaves residual algebraic state error that gets amplified through
+    # fault transients (gen i_q/i_d off by ~1e-2 if tol is 1e-9, vs
+    # ~1e-10 with tol=1e-10).
     ftol = 1e-10
     max_iter = 30
 
@@ -596,7 +595,7 @@ function rhs_jac!(
     p::AbstractArray,
     sys::PowerSystem)
 
-    # Phase 2.2: batched kernels are the sole hot path. See `rhs_fun!`
+    # Batched kernels are the sole hot path. See `rhs_fun!`
     # for the function-barrier rationale (Union field unboxing).
     dyn = sys.dynamic::PowerSystemDynamics
     net = sys.network::Network

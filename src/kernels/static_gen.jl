@@ -1,5 +1,4 @@
-# StaticGenerator batched residual & Jacobian. Math:
-# uqgrid/uqgrid/models/static_gen_imp.py.
+# StaticGenerator batched residual & Jacobian.
 #
 # Three bus-type variants share the current-injection equations into the
 # voltage rows; PV adds one alg state (q), SLACK adds two (p, q) and pins
@@ -174,8 +173,7 @@ end
         ii_num = pp_val*vi - qq_val*vr
 
         # ∂I_r/∂vr, ∂I_r/∂vi, ∂I_i/∂vr, ∂I_i/∂vi from current-injection
-        # block; uses unsaturated form only when vm2_raw > vm2_tld
-        # (matches uqgrid).
+        # block; uses unsaturated form only when vm2_raw > vm2_tld.
         if vm2_raw > vm2_tld
             vm4 = vm2*vm2
             dir_dvr = pp_val/vm2 - 2.0*vr*ir_num/vm4

@@ -83,10 +83,10 @@ function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
     raw = read_psse_raw(raw_file)
     sys = raw_to_grad(raw)
     if dyr_file !== nothing
-        # Mirror uqgrid (io/parse.py:407): drop GENROU/GENSAL dynamic rows
-        # whose (bus, id) doesn't reference an active static generator.
-        # The raw_to_grad pass has already filtered status==0 gens, so the
-        # static `sys.gens` is exactly the active set.
+        # Drop GENROU/GENSAL dynamic rows whose (bus, id) doesn't
+        # reference an active static generator. The raw_to_grad pass has
+        # already filtered status==0 gens, so the static `sys.gens` is
+        # exactly the active set.
         active = Set{Tuple{Int64,String}}()
         for gen in sys.gens
             push!(active, (sys.buses[gen.bus].i, _normalize_id(gen.id)))
@@ -246,7 +246,6 @@ function raw_to_grad(raw::PsystemRaw)
 
         # CW==1 with NOMV1 ≠ baseKV(from-bus): rescale impedance by
         # (NOMV1/baseKV_fr)^2 so it lands on the system-base zbase.
-        # Mirrors uqgrid io/parse.py.
         zbase_ratio = 1.0
         if tran.CW == 1 && tran.NOMV1 > 0.0
             zbase_ratio = (tran.NOMV1 / buses[fr].baseKV)^2.0
@@ -264,7 +263,7 @@ function raw_to_grad(raw::PsystemRaw)
 
         tap = volt1/volt2
         # MAG2 enters as the branch's line-charging susceptance (π-equivalent
-        # convention puts MAG2/2 on each end). Mirrors uqgrid io/parse.py:70.
+        # convention puts MAG2/2 on each end).
         mag_sh = abs(tran.MAG2) > 0.0 ? tran.MAG2 : 0.0
         push!(branches, Branch(fr, to, tran.ckt, r12, x12, mag_sh, tap, tran.ANG1))
 
@@ -273,7 +272,7 @@ function raw_to_grad(raw::PsystemRaw)
         end
     end
 
-    # Three-winding transformers — star-point decomposition (per uqgrid io/parse.py:82).
+    # Three-winding transformers — star-point decomposition.
     # Adds a synthetic dummy bus at the star point + three two-winding sub-branches.
     # Per-winding service status from the encoded status field (0–4).
     if !isempty(raw.transthree)
@@ -362,15 +361,15 @@ function raw_to_grad(raw::PsystemRaw)
         bus = busmap[gen.busn]
         push!(gens, Gen(bus, gen.name, gen.pg/baseMVA, gen.qg/baseMVA, gen.mbase, gen.status))
         # PV/SLACK buses: voltage setpoint comes from the generator's vs field,
-        # not the bus's flat-start magnitude. Mirrors uqgrid io/parse.py:189.
+        # not the bus's flat-start magnitude.
         bt = buses[bus].type
         if bt == 2 || bt == 3
             buses[bus].v0m = gen.vs
         end
     end
 
-    # Downgrade PV (type=2) buses to PQ (type=1) when no active gen remains —
-    # mirrors uqgrid io/parse.py:195. SLACK (type=3) stays as-is by convention.
+    # Downgrade PV (type=2) buses to PQ (type=1) when no active gen remains.
+    # SLACK (type=3) stays as-is by convention.
     for (idx, bus) in enumerate(buses)
         if bus.type == 2 && !(idx in buses_with_active_gen)
             bus.type = 1

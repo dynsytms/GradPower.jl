@@ -1,9 +1,6 @@
-# Phase 2.1 acceptance gate: batched rhs_fun! / rhs_jac! hot loop is
-# heap-quiet.
+# Acceptance gate: batched rhs_fun! / rhs_jac! hot loop is heap-quiet.
 #
-# Pre-Phase-2.1, the legacy heterogeneous loop allocated one `idx_dev`
-# array per device per Newton iteration (O(devices) heap traffic). The
-# batched kernels read from precomputed SoA tables and write to
+# The batched kernels read from precomputed SoA tables and write to
 # precomputed J.nzval positions — the per-device-type kernels themselves
 # are verified to be 0-alloc in isolation.
 #
@@ -11,10 +8,9 @@
 # cost (~48 B / ~144 B respectively) per call from re-boxing
 # `net.ybus_real` across the `Union{Nothing,Network}` split on
 # `PowerSystem.network`. This is independent of system size — it does
-# NOT scale with device count, which is what the legacy loop did. The
-# remaining boxing is removable by demoting `network`/`dynamic` from
-# `Union{Nothing,...}` to concretely-typed (architectural change tracked
-# in ROADMAP §3 Phase 4 cleanup).
+# NOT scale with device count. The remaining boxing is removable by
+# demoting `network`/`dynamic` from `Union{Nothing,...}` to
+# concretely-typed.
 #
 # The acceptance gate is therefore: per-call allocation is a small
 # O(1) constant that does NOT scale with system size. The 256-byte
@@ -30,7 +26,7 @@ function _alloc_rhs_jac!(J, dp, ps)
     GradPower.rhs_jac!(J, dp.zvec, dp.uvec, dp.pvec, ps)
 end
 
-@testset "Phase 2.1 gate: rhs_fun!/rhs_jac! O(1) heap traffic" begin
+@testset "rhs_fun!/rhs_jac! O(1) heap traffic" begin
     cases = [
         ("2bus_IEESGO",  "examples/2bus.raw",       "examples/2bus_IEESGO.dyr"),
         ("ieee9 no gov", "examples/ieee9_v33.raw",  "examples/ieee9bus.dyr"),
@@ -96,7 +92,7 @@ function _measure_kernel_allocs(ps, dp)
     return a_g, a_i, a_z
 end
 
-@testset "Phase 2.1 gate: per-type residual kernels are 0-alloc" begin
+@testset "per-type residual kernels are 0-alloc" begin
     ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
                    joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
     GradPower.build_network!(ps)

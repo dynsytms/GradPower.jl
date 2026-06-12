@@ -1,4 +1,4 @@
-# Phase 2.1 (ROADMAP §3 Phase 2.1): ZIPLoad batched residual & Jacobian.
+# ZIPLoad batched residual & Jacobian.
 #
 # ZIPLoad is purely algebraic — contributes only to the network voltage
 # rows via `cinject!`. No diff/alg states. Math is the verbatim
@@ -130,7 +130,6 @@ end
 
         # ---- constant-power contribution (depends on v_m²) ----
         # Residual: f[vr] -= (1-α)(pl·vr - ql·vi)/vm², f[vi] -= (1-α)(ql·vr + pl·vi)/vm².
-        # Derivatives match uqgrid/uqgrid/models/load_imp.py:107-110, 119-122.
         if vm2 > vm2_tld
             inv_vm4 = 1.0 / (vm2 * vm2)
             d_vr_vr_p = (1.0 - α) * ((pl*vr - ql*vi) * 2.0 * vr - pl * vm2) * inv_vm4

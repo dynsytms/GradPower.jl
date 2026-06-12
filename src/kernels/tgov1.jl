@@ -1,4 +1,4 @@
-# TGOV1 batched residual & Jacobian. Math: uqgrid/uqgrid/models/tgov1_imp.py.
+# TGOV1 batched residual & Jacobian.
 #
 # States: 2 diff (x1, x2) + 1 alg (p_m). Pref is init-derived (stored in pvec[8]).
 # Residual:

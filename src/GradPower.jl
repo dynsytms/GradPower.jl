@@ -133,7 +133,7 @@ mutable struct DynamicProblem
     pvec::AbstractArray
 end
 
-# Phase 1 SoA layout (per-device-type tables). Included here so the
+# SoA layout (per-device-type tables). Included here so the
 # `layout` field of PowerSystemDynamics below can be typed against it.
 include("layout.jl")
 
@@ -270,9 +270,8 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics;
     # add controllers. We iterate dynamic devices again.
 
     # For every active static gen not covered by a dynamic machine model,
-    # inject a StaticGenerator (constant pinj + PV/SLACK voltage regulation),
-    # mirroring uqgrid io/parse.py:703. Aggregate one StaticGenerator per
-    # bus across all unmatched gens on that bus.
+    # inject a StaticGenerator (constant pinj + PV/SLACK voltage regulation).
+    # Aggregate one StaticGenerator per bus across all unmatched gens on that bus.
     if add_static_gen_stubs && length(matched_gens) != length(ps.gens)
         matched_set = Set(matched_gens)
         by_bus = Dict{Int64,Vector{Int64}}()
@@ -328,17 +327,14 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics;
     # create vector of control indexes. By default, no control is 0.
     psd.uvec_idx = zeros(Int64, psd.ctrl_dim)
 
-    # Phase 1.5b: trait-driven wiring replaces the prior hand-coded
-    # governor block. Each controller type declares attaches_to /
+    # Trait-driven wiring: each controller type declares attaches_to /
     # produces_signals / consumes_signals in src/coupling.jl (or in its
-    # own kernel file once Phase 3 adds more types). This also fixes the
-    # off-by-one bug from Phase 1 (p_m used to land in the e_fd slot).
+    # own kernel file).
     wire_controls!(psd, dmap)
 
     # Apply mbase/sbase scaling to controllers that need it (e.g. TGOV1's
-    # R/VMAX/VMIN/DT). uqgrid does this in its parser. `set_ratio!` has
-    # a no-op default; only devices whose parameters live on machine base
-    # override (defined alongside the device struct).
+    # R/VMAX/VMIN/DT). `set_ratio!` has a no-op default; only devices whose
+    # parameters live on machine base override (defined alongside the device struct).
     for (i, device) in enumerate(psd.devices)
         device.dtype isa AbstractGenControlType || continue
         gen_idx = dmap.gen[i]
@@ -350,9 +346,7 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics;
     psd.map = dmap
     ps.dynamic = psd
 
-    # Phase 1: build SoA layout tables. Phase 2 will switch the hot loop in
-    # dynamics.jl to consume these; for now they coexist with the old
-    # heterogeneous device loop and are not used at runtime.
+    # Build SoA layout tables consumed by the hot loop in dynamics.jl.
     psd.layout = build_layout!(psd)
 
     # SEXS needs ps.busmap to resolve its bus into a global voltage index;
@@ -399,10 +393,10 @@ include("network.jl")
 include("pflow.jl")
 include("dynamics.jl")
 
-# Phase 1 SoA table builders. Included AFTER dynamics.jl so device structs
+# SoA table builders. Included AFTER dynamics.jl so device structs
 # (Genrou, IEESGO, ZIPLoad, ...) are in scope. Each file defines an
 # `_build_*_table_impl(psd)` function and registers itself with
-# DEVICE_REGISTRY (Phase 1.5).
+# DEVICE_REGISTRY.
 include("tables/genrou.jl")
 include("tables/ieesgo.jl")
 include("tables/tgov1.jl")
@@ -411,20 +405,17 @@ include("tables/esdc1a.jl")
 include("tables/zipload.jl")
 include("tables/static_gen.jl")
 
-# Phase 1.5b: device coupling graph. Defines `attaches_to`,
-# `produces_signals`, `consumes_signals` traits + `wire_controls!`
-# replacing the hand-coded governor wiring in set_dynamics!.
-# Must be included AFTER tables/*.jl since the trait definitions
-# reference concrete device types (Genrou, IEESGO).
+# Device coupling graph. Defines `attaches_to`, `produces_signals`,
+# `consumes_signals` traits + `wire_controls!`. Must be included AFTER
+# tables/*.jl since the trait definitions reference concrete device
+# types (Genrou, IEESGO).
 include("coupling.jl")
 
-# Phase 2.1: batched per-device-type kernels. Each kernel file owns
+# Batched per-device-type kernels. Each kernel file owns
 # `<dev>_residual_batch!`, `<dev>_jacobian_batch!`, and
 # `<dev>_jac_positions!` (the position-precomputation helper that
 # `preallocate_jacobian` calls once after building the sparsity pattern).
-# Phase 2 cuts over `rhs_fun!`/`rhs_jac!` in dynamics.jl to call these
-# instead of the heterogeneous loop. Until that cutover, both paths
-# coexist and the parity test in test/test_parity.jl asserts agreement.
+# `rhs_fun!`/`rhs_jac!` in dynamics.jl call these.
 include("kernels/genrou.jl")
 include("kernels/ieesgo.jl")
 include("kernels/tgov1.jl")

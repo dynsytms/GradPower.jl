@@ -1,4 +1,4 @@
-# Phase 1 of ROADMAP.md (agent A1.3): builder for ESDC1ATable.
+# Builder for ESDC1ATable.
 #
 # This file is included from src/GradPower.jl AFTER layout.jl (for the
 # ESDC1ATable type). Note: as of this writing, src/exciters.jl (which
@@ -26,8 +26,8 @@ ESDC1A has 3 diff states (vr1, vr2, e_fd), 0 alg states, 0 ctrl, and 10
 parameters (Ka, Ta, Kf, Tf, Ke, Te, Tr, Ae, Be, vref). Parameter order
 matches the field order of ESDC1ATable in src/layout.jl.
 
-`jac_pos` is allocated as an `n × 0` Int32 matrix; Phase 2 widens its
-second dimension via `preallocate_jacobian`.
+`jac_pos` is allocated as an `n × 0` Int32 matrix; `preallocate_jacobian`
+widens its second dimension.
 """
 function _build_esdc1a_table_impl(psd)
     # 1. Count ESDC1A exciters (duck-typed).
@@ -56,7 +56,7 @@ function _build_esdc1a_table_impl(psd)
     Be   = Vector{Float64}(undef, n)
     vref = Vector{Float64}(undef, n)
 
-    # 4. Phase 2 will fill jac_pos's second dim; Phase 1 leaves it empty.
+    # 4. `preallocate_jacobian` fills jac_pos's second dim; leave it empty here.
     jac_pos = Matrix{Int32}(undef, n, 0)
 
     # 5. Single pass over devices, fill row k for each ESDC1A match.
@@ -89,7 +89,7 @@ function _build_esdc1a_table_impl(psd)
         jac_pos)
 end
 
-# Phase 1.5: register with the device registry.
+# Register with the device registry.
 register_device!(:esdc1a;
     table_type = ESDC1ATable,
     builder    = _build_esdc1a_table_impl,

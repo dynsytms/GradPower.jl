@@ -1,4 +1,4 @@
-# SEXS batched residual & Jacobian. Math: uqgrid/uqgrid/models/sexs_imp.py.
+# SEXS batched residual & Jacobian.
 #
 # States: 2 diff (x1, e_fd). No alg. Reads vm = sqrt(vr^2 + vi^2) at its bus.
 # Residual:

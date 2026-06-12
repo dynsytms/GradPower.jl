@@ -1,8 +1,8 @@
-# Phase 1 of ROADMAP.md (agent A1.4): builder for ZIPLoadTable.
+# Builder for ZIPLoadTable.
 #
-# Phase 2.1: also publishes ZIPLOAD_JAC_NENTRIES — 4 entries per ZIPLoad
-# device (vr-row entries against vr/vi columns + vi-row entries against
-# vr/vi columns of the load's bus). Both constant-admittance and
+# Also publishes ZIPLOAD_JAC_NENTRIES — 4 entries per ZIPLoad device
+# (vr-row entries against vr/vi columns + vi-row entries against vr/vi
+# columns of the load's bus). Both constant-admittance and
 # constant-power contributions accumulate into these 4 slots.
 const ZIPLOAD_JAC_NENTRIES = 4
 
@@ -28,12 +28,11 @@ NOTE on snapshot timing: `build_layout!` runs at the END of `set_dynamics!`,
 which is BEFORE `initialize_dynamics!` mutates `dtype.v0mag`, `dtype.yreal`,
 `dtype.yimag` from the power-flow solution. At build time, `yreal` and
 `yimag` are typically still 0.0 (from the ZIPLoad constructor in
-`set_dynamics!`). Phase 1 snapshots whatever is in the struct now; Phase 2
-will decide whether to re-snapshot post-init or to read live values from
-`dp.pvec` in the hot loop.
+`set_dynamics!`). The initial snapshot uses whatever is in the struct;
+`refresh_zipload_table!` re-snapshots after `initialize_dynamics!`.
 
-`jac_pos` is allocated as an `n × 0` Int32 matrix; Phase 2 widens its
-second dimension via `preallocate_jacobian`.
+`jac_pos` is allocated as an `n × 0` Int32 matrix; `preallocate_jacobian`
+widens its second dimension.
 """
 function _build_zipload_table_impl(psd)
     # 1. Count ZIPLoads.
@@ -60,8 +59,8 @@ function _build_zipload_table_impl(psd)
     yreal  = Vector{Float64}(undef, n)
     yimag  = Vector{Float64}(undef, n)
 
-    # 4. Phase 2.1: jac_pos has 4 entries per ZIPLoad (vr-row and vi-row
-    #    each have entries against vr and vi columns of the same bus).
+    # 4. jac_pos has 4 entries per ZIPLoad (vr-row and vi-row each have
+    #    entries against vr and vi columns of the same bus).
     jac_pos = zeros(Int32, n, ZIPLOAD_JAC_NENTRIES)
 
     # 5. Single pass over devices, fill row k for each ZIPLoad match.
@@ -99,11 +98,10 @@ the power-flow solution has been used to populate `yreal`/`yimag` from
 `pinj/(v0mag^2)`, so the SoA table reflects the live values the hot
 loop kernels will read.
 
-This is Phase 2.0c (ROADMAP §3): `build_layout!` runs at the end of
-`set_dynamics!`, BEFORE `initialize_dynamics!` populates these fields,
-so the initial snapshot is all zeros. Hot-loop kernels in Phase 2.1 read
-from the table (not from `dp.pvec`), so the table must be refreshed
-before the first Newton iteration.
+`build_layout!` runs at the end of `set_dynamics!`, BEFORE
+`initialize_dynamics!` populates these fields, so the initial snapshot
+is all zeros. Hot-loop kernels read from the table (not from `dp.pvec`),
+so the table must be refreshed before the first Newton iteration.
 
 Other ZIPLoad columns (`pinj`, `qinj`, `α`, `β`, `γ`, `weight`) are not
 mutated by `initialize_dynamics!` and don't need refreshing.
@@ -124,7 +122,7 @@ function refresh_zipload_table!(psd)
     return nothing
 end
 
-# Phase 1.5: register with the device registry.
+# Register with the device registry.
 register_device!(:zipload;
     table_type = ZIPLoadTable,
     builder    = _build_zipload_table_impl,

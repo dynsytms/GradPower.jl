@@ -1,14 +1,14 @@
-# Phase 1 of ROADMAP.md (agent A1.1): builder for GenrouTable.
+# Builder for GenrouTable.
 #
-# Phase 2.1: also publishes GENROU_JAC_NENTRIES — the fixed count of
-# (row, col) Jacobian entries each GENROU device contributes. The order
-# is defined by `genrou_jac_positions!` / `genrou_jacobian_batch!` in
+# Also publishes GENROU_JAC_NENTRIES — the fixed count of (row, col)
+# Jacobian entries each GENROU device contributes. The order is defined
+# by `genrou_jac_positions!` / `genrou_jacobian_batch!` in
 # src/kernels/genrou.jl; both must agree on the slot-to-entry mapping.
 
 # 42 entries: 6 diff rows (3+3+3+3+8+1) + 4 alg rows (4+4+4+4) + 2 net rows (3+3).
 # Row tallies (one-based diff row k):
 #   diff[1]: 3, diff[2]: 3, diff[3]: 3, diff[4]: 3, diff[5]: 7+(1 if gov), diff[6]: 1
-#   With governor wiring the Phase 2.1 batched kernel writes the w_idx coupling
+#   With governor wiring the batched kernel writes the w_idx coupling
 #   directly via the d_pm column entry. Today GENROU has no exciter wiring
 #   active in tracked cases; we reserve no slot for e_fd (0 entries) and a
 #   single optional slot for p_m → see GENROU_JAC_PM_COL_SLOT below.
@@ -33,8 +33,8 @@ Control coupling fields (`has_gov`, `pm_idx`, `has_exc`, `efd_idx`) are
 resolved from `psd.uvec_idx`, which `set_dynamics!` populates BEFORE
 `build_layout!` is called.
 
-`jac_pos` is allocated as an `n × 0` Int32 matrix; Phase 2 widens its
-second dimension via `preallocate_jacobian`.
+`jac_pos` is allocated as an `n × 0` Int32 matrix; `preallocate_jacobian`
+widens its second dimension.
 """
 function _build_genrou_table_impl(psd)
     # 1. Count generators. Using `isa Genrou` for narrowness — when GENSAL
@@ -76,12 +76,12 @@ function _build_genrou_table_impl(psd)
     pm_idx  = Vector{Int32}(undef, n)
     efd_idx = Vector{Int32}(undef, n)
 
-    # 5. Phase 2.1 (A2.0): jac_pos has a fixed 42 entries per Genrou device
-    #    (the count of nonzero (row, col) entries the GENROU Jacobian
-    #    writes — see src/kernels/genrou.jl GENROU_JAC_NENTRIES).
-    #    Allocated zero-filled; populated by `genrou_jac_positions!` when
+    # 5. jac_pos has a fixed count of entries per Genrou device — the
+    #    count of nonzero (row, col) entries the GENROU Jacobian writes
+    #    (see src/kernels/genrou.jl GENROU_JAC_NENTRIES). Allocated
+    #    zero-filled; populated by `genrou_jac_positions!` when
     #    `preallocate_jacobian` runs. Zero is a "not yet populated"
-    #    sentinel — Phase 2.5 batched Jacobian will @assert against it.
+    #    sentinel — the batched Jacobian @asserts against it.
     jac_pos = zeros(Int32, n, GENROU_JAC_NENTRIES)
 
     # 6. Single pass over devices, fill row k for each Genrou match.
@@ -152,8 +152,8 @@ function fix_genrou_bus_idx!(psd, ps)
     return nothing
 end
 
-# Phase 1.5: register with the device registry so build_layout! picks
-# up Genrou without layout.jl having to know about it.
+# Register with the device registry so build_layout! picks up Genrou
+# without layout.jl having to know about it.
 register_device!(:genrou;
     table_type = GenrouTable,
     builder    = _build_genrou_table_impl,

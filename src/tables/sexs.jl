@@ -49,8 +49,7 @@ function _build_sexs_table_impl(psd)
         EMAX[k]  = exc.EMAX
 
         # Map the exciter's `.bus` (raw PSS/E bus number) to the internal
-        # 1-based bus index, then compute vr's global z-index. uqgrid uses
-        # 0-based internal bus indices; Julia uses 1-based.
+        # 1-based bus index, then compute vr's global z-index.
         internal_bus = haskey(psd.layout === nothing ? Dict{Int,Int}() : Dict{Int,Int}(), 0) ? 0 : Int(exc.bus)
         # psd doesn't carry busmap; we resolve via ps.busmap at refresh time.
         vr_idx[k] = Int32(net_ptr + 2*(internal_bus - 1) + 1)

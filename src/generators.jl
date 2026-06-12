@@ -38,10 +38,10 @@ function GenericGenerator(bus, id)
     return gen
 end
 
-# GENSAL — salient-pole synchronous generator. Math (uqgrid/models/gensal_imp.py):
+# GENSAL — salient-pole synchronous generator.
 # GENSAL is GENROU with x_qp = x_dp and T_q0p = T_d0p. We dispatch on this
 # tag in the .dyr parser and immediately return a `Genrou` instance — no
-# separate kernel / table is needed (option (a) of the Phase 3 plan).
+# separate kernel / table is needed.
 struct Gensal end
 
 function from_data_fields(::Type{Gensal}, fields::Vector{SubString{String}})
@@ -65,9 +65,9 @@ function from_data_fields(::Type{Gensal}, fields::Vector{SubString{String}})
     Genrou(bus, id, x_d, x_q, x_dp, x_dp, x_ddp, xl, H, D, T_d0p, T_d0p, T_d0dp, T_q0dp, S1, S2)
 end
 
-# Quadratic open-circuit saturation model from uqgrid/models/genrou_imp.py:9.
-# Coefficients are derived once from S1, S2 (sat values at E=1.0 and E=1.2);
-# applied at runtime via `_genrou_sat_se`.
+# Quadratic open-circuit saturation model. Coefficients are derived once
+# from S1, S2 (sat values at E=1.0 and E=1.2); applied at runtime via
+# `_genrou_sat_se`.
 @inline function _genrou_sat_coefficients(s1::Real, s2::Real)
     (s1 <= 0.0 || s2 <= 0.0) && return (0.0, 0.0)
     e1 = 1.0

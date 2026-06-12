@@ -1,4 +1,4 @@
-# Phase 1 of ROADMAP.md (agent A1.2): builder for IEESGOTable.
+# Builder for IEESGOTable.
 #
 # This file is included from src/GradPower.jl AFTER both layout.jl (for the
 # IEESGOTable type) and dynamics.jl (which transitively includes
@@ -17,10 +17,10 @@ governor. All vectors have length `n` = number of IEESGO devices.
 `k` reads. This is resolved from `psd.uvec_idx[ctrl_ptr]`, which
 `set_dynamics!` populates BEFORE `build_layout!` is called. If a governor
 has no matching generator (orphan in `.dyr`), `psd.uvec_idx[ctrl_ptr] == 0`
-and `w_idx[k] = 0`; Phase 2 kernels are expected to skip these.
+and `w_idx[k] = 0`; kernels skip these.
 
-`jac_pos` is allocated as an `n × 0` Int32 matrix; Phase 2 widens its
-second dimension via `preallocate_jacobian`.
+`jac_pos` is allocated as an `n × 0` Int32 matrix; `preallocate_jacobian`
+widens its second dimension.
 """
 function _build_ieesgo_table_impl(psd)
     # 1. Count IEESGO governors.
@@ -57,8 +57,8 @@ function _build_ieesgo_table_impl(psd)
     # 4. Control-coupling vector: global z-index of generator's w state.
     w_idx = Vector{Int32}(undef, n)
 
-    # 5. Phase 2.1: jac_pos has 16 entries per IEESGO device. See
-    #    src/kernels/ieesgo.jl IEESGO_JAC_NENTRIES.
+    # 5. jac_pos has IEESGO_JAC_NENTRIES entries per IEESGO device. See
+    #    src/kernels/ieesgo.jl.
     jac_pos = zeros(Int32, n, IEESGO_JAC_NENTRIES)
 
     # 6. Single pass over devices, fill row k for each IEESGO match.
@@ -119,7 +119,7 @@ function refresh_ieesgo_table!(psd)
     return nothing
 end
 
-# Phase 1.5: register with the device registry.
+# Register with the device registry.
 register_device!(:ieesgo;
     table_type = IEESGOTable,
     builder    = _build_ieesgo_table_impl,
