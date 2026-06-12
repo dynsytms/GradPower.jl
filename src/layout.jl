@@ -92,6 +92,10 @@ struct IEESGOTable
     T4::Vector{Float64}; T5::Vector{Float64}; T6::Vector{Float64}
     K1::Vector{Float64}; K2::Vector{Float64}; K3::Vector{Float64}
     pmax::Vector{Float64}; pmin::Vector{Float64}
+    # Init-derived parameter (filled during initialize_dynamics! and
+    # refreshed via refresh_ieesgo_table!). Phase 2.1 kernel reads it
+    # from the table, NOT from the device struct.
+    pref::Vector{Float64}
     # control coupling
     w_idx::Vector{Int32}     # global z-index of the generator's `w` state this governor reads
     # Phase 2: precomputed J.nzval positions, filled by preallocate_jacobian.

@@ -50,12 +50,16 @@ function _build_ieesgo_table_impl(psd)
     K3   = Vector{Float64}(undef, n)
     pmax = Vector{Float64}(undef, n)
     pmin = Vector{Float64}(undef, n)
+    # pref is filled with 0 at build time; refresh_ieesgo_table! mirrors
+    # the post-init value from initialize_dynamics!.
+    pref = zeros(Float64, n)
 
     # 4. Control-coupling vector: global z-index of generator's w state.
     w_idx = Vector{Int32}(undef, n)
 
-    # 5. Phase 2 will fill jac_pos's second dim; Phase 1 leaves it empty.
-    jac_pos = Matrix{Int32}(undef, n, 0)
+    # 5. Phase 2.1: jac_pos has 16 entries per IEESGO device. See
+    #    src/kernels/ieesgo.jl IEESGO_JAC_NENTRIES.
+    jac_pos = zeros(Int32, n, IEESGO_JAC_NENTRIES)
 
     # 6. Single pass over devices, fill row k for each IEESGO match.
     uvec = psd.uvec_idx
@@ -90,8 +94,29 @@ function _build_ieesgo_table_impl(psd)
     end
 
     return IEESGOTable(n, bus, diff_ptr, alg_ptr, ctrl_ptr, par_ptr,
-        T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin,
+        T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin, pref,
         w_idx, jac_pos)
+end
+
+"""
+    refresh_ieesgo_table!(psd)
+
+Re-snapshot the `pref` column from device structs after
+`initialize_dynamics!` has converged. Mirror of `refresh_zipload_table!`
+in src/tables/zipload.jl. Called from `initialize_dynamics!` after the
+controller-init loop.
+"""
+function refresh_ieesgo_table!(psd)
+    table = psd.layout.ieesgo
+    table.n == 0 && return nothing
+    k = 0
+    for device in psd.devices
+        device.dtype isa IEESGO || continue
+        k += 1
+        table.pref[k] = device.dtype.pref
+    end
+    @assert k == table.n
+    return nothing
 end
 
 # Phase 1.5: register with the device registry.

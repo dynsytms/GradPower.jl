@@ -19,10 +19,16 @@ mutable struct IEESGO <: AbstractGovernorType
     K3::Float64
     pmax::Float64
     pmin::Float64
+    # initialization-derived parameter — set by initialize_dynamics! from the
+    # generator's post-PF Pe. Used by the residual kernel as `pref` in the
+    # SatP term. Stored in slot 12 of pvec so the kernel can read SoA.
+    pref::Float64
 end
 
 function IEESGO(bus, id, T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin)
-    governor = IEESGO(5, 1, 1, 11, bus, id, T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin)
+    # par_size is 12 now (11 parsed + pref filled during init). pref starts at
+    # 0; `initialize_dynamics!` writes the converged value back.
+    governor = IEESGO(5, 1, 1, 12, bus, id, T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin, 0.0)
     return governor
 end
 
@@ -55,6 +61,7 @@ function fill_pvec!(pvec::AbstractArray, dtype::IEESGO)
     pvec[9] = dtype.K3
     pvec[10] = dtype.pmax
     pvec[11] = dtype.pmin
+    pvec[12] = dtype.pref
 end
 
 function get_device_name(dtype::IEESGO)

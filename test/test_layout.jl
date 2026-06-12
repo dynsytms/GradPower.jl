@@ -250,13 +250,19 @@ end
     end
 end
 
-@testset "layout: jac_pos is empty (Phase 1 contract; Phase 2 populates)" begin
+@testset "layout: jac_pos shape (Phase 2.1 populates per-kernel)" begin
     ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
                    joinpath(@__DIR__, "..", "examples", "ieee9bus.dyr"))
     L = ps.dynamic.layout
-    @test size(L.genrou.jac_pos, 2)  == 0
-    @test size(L.ieesgo.jac_pos, 2)  == 0
+    # Phase 2.1 A2.0: GENROU jac_pos has GENROU_JAC_NENTRIES per device.
+    # Phase 2.1 (IEESGO): IEESGO jac_pos has IEESGO_JAC_NENTRIES per device.
+    @test size(L.genrou.jac_pos, 2)  == GradPower.GENROU_JAC_NENTRIES
+    @test size(L.genrou.jac_pos, 1)  == L.genrou.n
+    @test size(L.ieesgo.jac_pos, 2)  == GradPower.IEESGO_JAC_NENTRIES
+    @test size(L.ieesgo.jac_pos, 1)  == L.ieesgo.n
+    @test size(L.zipload.jac_pos, 2) == GradPower.ZIPLOAD_JAC_NENTRIES
+    @test size(L.zipload.jac_pos, 1) == L.zipload.n
+    # Remaining kernels: still Phase 1 contract (empty n×0).
     @test size(L.esdc1a.jac_pos, 2)  == 0
-    @test size(L.zipload.jac_pos, 2) == 0
     @test length(L.net_jac_pos)      == 0
 end

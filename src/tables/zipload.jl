@@ -1,5 +1,12 @@
 # Phase 1 of ROADMAP.md (agent A1.4): builder for ZIPLoadTable.
 #
+# Phase 2.1: also publishes ZIPLOAD_JAC_NENTRIES — 4 entries per ZIPLoad
+# device (vr-row entries against vr/vi columns + vi-row entries against
+# vr/vi columns of the load's bus). Both constant-admittance and
+# constant-power contributions accumulate into these 4 slots.
+const ZIPLOAD_JAC_NENTRIES = 4
+
+#
 # This file is included from src/GradPower.jl AFTER both layout.jl (for the
 # ZIPLoadTable type) and dynamics.jl (which transitively includes
 # loads.jl for the ZIPLoad struct).
@@ -53,8 +60,9 @@ function _build_zipload_table_impl(psd)
     yreal  = Vector{Float64}(undef, n)
     yimag  = Vector{Float64}(undef, n)
 
-    # 4. Phase 2 will fill jac_pos's second dim; Phase 1 leaves it empty.
-    jac_pos = Matrix{Int32}(undef, n, 0)
+    # 4. Phase 2.1: jac_pos has 4 entries per ZIPLoad (vr-row and vi-row
+    #    each have entries against vr and vi columns of the same bus).
+    jac_pos = zeros(Int32, n, ZIPLOAD_JAC_NENTRIES)
 
     # 5. Single pass over devices, fill row k for each ZIPLoad match.
     k = 0

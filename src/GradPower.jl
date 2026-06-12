@@ -146,7 +146,7 @@ mutable struct PowerSystemDynamics
     par_dim::Int64
     map::Union{Nothing,DynamicMap}
     uvec_idx::Union{Nothing,Vector{Int64}}
-    events::Union{Nothing, Vector{ContingencyEvent}}
+    events::Vector{ContingencyEvent}
     layout::Union{Nothing,SimulationLayout}
 end
 
@@ -361,6 +361,17 @@ include("tables/zipload.jl")
 # Must be included AFTER tables/*.jl since the trait definitions
 # reference concrete device types (Genrou, IEESGO).
 include("coupling.jl")
+
+# Phase 2.1: batched per-device-type kernels. Each kernel file owns
+# `<dev>_residual_batch!`, `<dev>_jacobian_batch!`, and
+# `<dev>_jac_positions!` (the position-precomputation helper that
+# `preallocate_jacobian` calls once after building the sparsity pattern).
+# Phase 2 cuts over `rhs_fun!`/`rhs_jac!` in dynamics.jl to call these
+# instead of the heterogeneous loop. Until that cutover, both paths
+# coexist and the parity test in test/test_parity.jl asserts agreement.
+include("kernels/genrou.jl")
+include("kernels/ieesgo.jl")
+include("kernels/zipload.jl")
 
 include("sensitivities.jl")
 

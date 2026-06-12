@@ -1,5 +1,21 @@
 # Phase 1 of ROADMAP.md (agent A1.1): builder for GenrouTable.
 #
+# Phase 2.1: also publishes GENROU_JAC_NENTRIES — the fixed count of
+# (row, col) Jacobian entries each GENROU device contributes. The order
+# is defined by `genrou_jac_positions!` / `genrou_jacobian_batch!` in
+# src/kernels/genrou.jl; both must agree on the slot-to-entry mapping.
+
+# 42 entries: 6 diff rows (3+3+3+3+8+1) + 4 alg rows (4+4+4+4) + 2 net rows (3+3).
+# Row tallies (one-based diff row k):
+#   diff[1]: 3, diff[2]: 3, diff[3]: 3, diff[4]: 3, diff[5]: 7+(1 if gov), diff[6]: 1
+#   With governor wiring the Phase 2.1 batched kernel writes the w_idx coupling
+#   directly via the d_pm column entry. Today GENROU has no exciter wiring
+#   active in tracked cases; we reserve no slot for e_fd (0 entries) and a
+#   single optional slot for p_m → see GENROU_JAC_PM_COL_SLOT below.
+const GENROU_JAC_NENTRIES = 42  # excludes optional pm/efd columns
+const GENROU_JAC_PM_COL_SLOT = 0  # 0 = not allocated; Phase 3 may turn on
+
+#
 # This file is included from src/GradPower.jl AFTER both layout.jl (for the
 # GenrouTable type) and dynamics.jl (which transitively includes
 # generators.jl for the Genrou struct).
@@ -58,8 +74,13 @@ function _build_genrou_table_impl(psd)
     pm_idx  = Vector{Int32}(undef, n)
     efd_idx = Vector{Int32}(undef, n)
 
-    # 5. Phase 2 will fill jac_pos's second dim; Phase 1 leaves it empty.
-    jac_pos = Matrix{Int32}(undef, n, 0)
+    # 5. Phase 2.1 (A2.0): jac_pos has a fixed 42 entries per Genrou device
+    #    (the count of nonzero (row, col) entries the GENROU Jacobian
+    #    writes — see src/kernels/genrou.jl GENROU_JAC_NENTRIES).
+    #    Allocated zero-filled; populated by `genrou_jac_positions!` when
+    #    `preallocate_jacobian` runs. Zero is a "not yet populated"
+    #    sentinel — Phase 2.5 batched Jacobian will @assert against it.
+    jac_pos = zeros(Int32, n, GENROU_JAC_NENTRIES)
 
     # 6. Single pass over devices, fill row k for each Genrou match.
     uvec = psd.uvec_idx
