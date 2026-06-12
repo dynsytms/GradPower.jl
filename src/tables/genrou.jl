@@ -106,3 +106,10 @@ function _build_genrou_table_impl(psd)
         T_d0p, T_q0p, T_d0dp, T_q0dp,
         has_gov, pm_idx, has_exc, efd_idx, jac_pos)
 end
+
+# Phase 1.5: register with the device registry so build_layout! picks
+# up Genrou without layout.jl having to know about it.
+register_device!(:genrou;
+    table_type = GenrouTable,
+    builder    = _build_genrou_table_impl,
+    class      = :generator)

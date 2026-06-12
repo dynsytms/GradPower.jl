@@ -88,3 +88,9 @@ function _build_esdc1a_table_impl(psd)
         Ka, Ta, Kf, Tf, Ke, Te, Tr, Ae, Be, vref,
         jac_pos)
 end
+
+# Phase 1.5: register with the device registry.
+register_device!(:esdc1a;
+    table_type = ESDC1ATable,
+    builder    = _build_esdc1a_table_impl,
+    class      = :exciter)

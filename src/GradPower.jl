@@ -294,36 +294,12 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
     # create vector of control indexes. By default, no control is 0.
     psd.uvec_idx = zeros(Int64, psd.ctrl_dim)
 
-    # iterate dynamic devices and assign control indexes.
-    for (i, device) in enumerate(psd.devices)
-        if device.dtype isa AbstractGovernorType
-            # find the corresponding generator.
-            bus_idx = device.dtype.bus
-            gov_id = device.dtype.id
-            dev_idx = 0
-            for (i, dev) in enumerate(psd.devices)
-                if dev.dtype isa AbstractGeneratorType && dmap.bus[i] == bus_idx && dev.dtype.id == gov_id
-                    dev_idx = i
-                    break
-                end
-            end
-            if dev_idx == 0
-                @warn "Generator not found for governor $i"
-            else
-                # propagate the parent generator index so the governor's init
-                # routine can read pg/qg from the same static generator.
-                dmap.gen[i] = dmap.gen[dev_idx]
-                # index of generator frequency, w
-                w_idx = dmap.diff_ptr[dev_idx] + 4
-                # index of governor control, p_m
-                p_m_idx = psd.diff_dim + dmap.alg_ptr[i]
-                # assign control index to governor.
-                psd.uvec_idx[dmap.ctrl_ptr[i]] = w_idx
-                # assign control index to generator.
-                psd.uvec_idx[dmap.ctrl_ptr[dev_idx]] = p_m_idx
-            end
-        end
-    end
+    # Phase 1.5b: trait-driven wiring replaces the prior hand-coded
+    # governor block. Each controller type declares attaches_to /
+    # produces_signals / consumes_signals in src/coupling.jl (or in its
+    # own kernel file once Phase 3 adds more types). This also fixes the
+    # off-by-one bug from Phase 1 (p_m used to land in the e_fd slot).
+    wire_controls!(psd, dmap)
 
     psd.map = dmap
     ps.dynamic = psd
@@ -372,12 +348,19 @@ include("dynamics.jl")
 
 # Phase 1 SoA table builders. Included AFTER dynamics.jl so device structs
 # (Genrou, IEESGO, ZIPLoad, ...) are in scope. Each file defines an
-# `_build_*_table_impl(psd)` function that the matching stub in layout.jl
-# delegates to.
+# `_build_*_table_impl(psd)` function and registers itself with
+# DEVICE_REGISTRY (Phase 1.5).
 include("tables/genrou.jl")
 include("tables/ieesgo.jl")
 include("tables/esdc1a.jl")
 include("tables/zipload.jl")
+
+# Phase 1.5b: device coupling graph. Defines `attaches_to`,
+# `produces_signals`, `consumes_signals` traits + `wire_controls!`
+# replacing the hand-coded governor wiring in set_dynamics!.
+# Must be included AFTER tables/*.jl since the trait definitions
+# reference concrete device types (Genrou, IEESGO).
+include("coupling.jl")
 
 include("sensitivities.jl")
 

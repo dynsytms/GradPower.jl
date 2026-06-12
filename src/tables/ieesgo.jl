@@ -93,3 +93,9 @@ function _build_ieesgo_table_impl(psd)
         T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin,
         w_idx, jac_pos)
 end
+
+# Phase 1.5: register with the device registry.
+register_device!(:ieesgo;
+    table_type = IEESGOTable,
+    builder    = _build_ieesgo_table_impl,
+    class      = :governor)

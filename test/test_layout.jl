@@ -121,17 +121,17 @@ end
     L = ps.dynamic.layout
     @test L.ieesgo.n == 3
     @test L.genrou.n == 3
-    # NOTE: the existing `set_dynamics!` wiring at src/GradPower.jl:289-318
-    # routes `p_m` to the generator's e_fd ctrl slot (off-by-one), so the
-    # GENROU-side `has_gov`/`pm_idx` arrays currently mirror that bug. The
-    # IEESGO side (`w_idx`) is correctly populated. Phase 2 fixes the wiring.
-    # For Phase 1, we just assert the layout faithfully mirrors uvec_idx as-is.
+    # Phase 1.5b: the off-by-one is fixed by `wire_controls!`. With an
+    # IEESGO attached, `pm_idx` is populated (slot 2 = `ctrl_ptr + 1`) and
+    # `efd_idx` stays 0 (no exciter wired). Both sides of the wiring now
+    # mirror `uvec_idx` correctly.
     for k in 1:L.genrou.n
         cp = L.genrou.ctrl_ptr[k]
-        @test L.genrou.has_exc[k] == (ps.dynamic.uvec_idx[cp] != 0)
-        @test L.genrou.has_gov[k] == (ps.dynamic.uvec_idx[cp + 1] != 0)
-        @test L.genrou.efd_idx[k] == Int32(ps.dynamic.uvec_idx[cp])
-        @test L.genrou.pm_idx[k]  == Int32(ps.dynamic.uvec_idx[cp + 1])
+        @test L.genrou.has_exc[k] == false                # no exciter in this synthetic case
+        @test L.genrou.has_gov[k] == true                 # IEESGO wired
+        @test L.genrou.efd_idx[k] == 0                    # e_fd slot stays 0
+        @test L.genrou.pm_idx[k]  == Int32(ps.dynamic.uvec_idx[cp + 1])  # p_m slot populated
+        @test L.genrou.pm_idx[k]  != 0                    # ...and nonzero
     end
 
     gov_devs = [d for d in ps.dynamic.devices if d.dtype isa GradPower.IEESGO]
@@ -164,6 +164,62 @@ end
     L = ps.dynamic.layout
     n_total = L.genrou.n + L.ieesgo.n + L.esdc1a.n + L.zipload.n
     @test n_total == ps.dynamic.num_devices
+end
+
+@testset "layout 1.5: registry shape and dispatcher type-stability" begin
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    L = ps.dynamic.layout
+
+    # Registry round-trip: every device class in DEVICE_ORDER is reachable
+    # in L.tables and has the expected concrete type.
+    @test issubset(GradPower.DEVICE_ORDER, propertynames(L.tables))
+    for name in GradPower.DEVICE_ORDER
+        entry = GradPower.DEVICE_REGISTRY[name]
+        @test getproperty(L.tables, name) isa entry.table_type
+    end
+
+    # Tables is a concrete NamedTuple of concrete types (the load-bearing
+    # invariant for hot-loop specialization).
+    T = typeof(L.tables)
+    @test T <: NamedTuple
+    @test isconcretetype(T)
+
+    # Back-compat: L.genrou must still work via getproperty forward.
+    @test L.genrou === L.tables.genrou
+    @test L.ieesgo === L.tables.ieesgo
+
+    # Type-stability + zero-allocation of the @generated dispatcher.
+    # Wrap in a function so @allocated doesn't measure global-binding boxing.
+    alloc_check(L) = (tables = L.tables; @allocated GradPower._dispatch_count_n(tables))
+    alloc_check(L)  # warmup
+    @test alloc_check(L) == 0
+
+    # Sanity: total matches sum of n's.
+    @test GradPower._dispatch_count_n(L.tables) ==
+        L.genrou.n + L.ieesgo.n + L.esdc1a.n + L.zipload.n
+end
+
+@testset "layout 1.5b: wire_controls! fixes governor off-by-one" begin
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    L = ps.dynamic.layout
+    @test L.genrou.n == 3
+    @test L.ieesgo.n == 3
+    # Every generator should have a wired p_m (slot 2) and no exciter.
+    for k in 1:L.genrou.n
+        @test L.genrou.has_gov[k] == true
+        @test L.genrou.pm_idx[k]  != 0
+        @test L.genrou.has_exc[k] == false
+        @test L.genrou.efd_idx[k] == 0
+        cp = L.genrou.ctrl_ptr[k]
+        @test ps.dynamic.uvec_idx[cp]     == 0                # e_fd slot empty
+        @test ps.dynamic.uvec_idx[cp + 1] == L.genrou.pm_idx[k]  # p_m wired
+    end
+    # IEESGOs all wired to generator w states (nonzero w_idx).
+    for k in 1:L.ieesgo.n
+        @test L.ieesgo.w_idx[k] != 0
+    end
 end
 
 @testset "layout: jac_pos is empty (Phase 1 contract; Phase 2 populates)" begin

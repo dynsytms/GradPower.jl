@@ -81,3 +81,9 @@ function _build_zipload_table_impl(psd)
         pinj, qinj, α, β, γ, weight, v0mag, yreal, yimag,
         jac_pos)
 end
+
+# Phase 1.5: register with the device registry.
+register_device!(:zipload;
+    table_type = ZIPLoadTable,
+    builder    = _build_zipload_table_impl,
+    class      = :load)
