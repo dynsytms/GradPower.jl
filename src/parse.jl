@@ -244,9 +244,17 @@ function raw_to_grad(raw::PsystemRaw)
             volt2 = tran.WINDV2
         end
 
+        # CW==1 with NOMV1 ≠ baseKV(from-bus): rescale impedance by
+        # (NOMV1/baseKV_fr)^2 so it lands on the system-base zbase.
+        # Mirrors uqgrid io/parse.py.
+        zbase_ratio = 1.0
+        if tran.CW == 1 && tran.NOMV1 > 0.0
+            zbase_ratio = (tran.NOMV1 / buses[fr].baseKV)^2.0
+        end
+
         if tran.CZ == 1
-            r12 = tran.r*(volt2)^2.0
-            x12 = tran.x*(volt2)^2.0
+            r12 = tran.r*(volt2)^2.0*zbase_ratio
+            x12 = tran.x*(volt2)^2.0*zbase_ratio
         elseif tran.CZ == 2
             r12 = tran.r*(baseMVA/tran.sbase12)*(volt2)^2.0
             x12 = tran.x*(baseMVA/tran.sbase12)*(volt2)^2.0
