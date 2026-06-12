@@ -405,8 +405,11 @@ function integrate!(
     # allocate temporary vectors
     zold = zeros(Float64, system_size)
     verbose && println("Integrating from t = 0 s to t = $tf s with dt = $dt s.")
-    # newton parameters
-    ftol = 1e-9
+    # newton parameters — match uqgrid's default (newton_tol=1e-10).
+    # Looser tolerance leaves residual algebraic state error that gets
+    # amplified through fault transients (gen i_q/i_d off by ~1e-2 if
+    # tol is 1e-9, vs ~1e-10 with tol=1e-10).
+    ftol = 1e-10
     max_iter = 30
 
     # initial condition
@@ -428,17 +431,17 @@ function integrate!(
     # time loop
     for k in 1:nsteps
         verbose && println("Time-stepping. t = $(tvec[k]) s.")
-        newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false)
+        newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol)
         traj[:,k+1] .= zold
         
         if k == step_on
             activate!(events[1])
             verbose && println("Event activated at t = $ton s. Fault at bus $(events[1].bus).")
-            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false)
+            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol)
         elseif k == step_off
             deactivate!(events[1])
             verbose && println("Event deactivated at t = $toff s.")
-            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false)
+            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol)
         end
 
     end

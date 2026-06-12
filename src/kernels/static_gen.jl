@@ -129,15 +129,18 @@ end
         f[vr_idx] += (pp_val*vr + qq_val*vi) / vm2
         f[vi_idx] += (pp_val*vi - qq_val*vr) / vm2
 
-        # Alg-row residuals.
+        # Alg-row residuals. Use `=` not `+=`: alg rows are not zeroed
+        # before this kernel runs (only network rows are zeroed by the
+        # ybus*v mul!), and Newton reuses f across iterations — `+=` would
+        # accumulate stale residual from previous iterations.
         if bt == SG_PV
             vset = p[pp + 2]
-            f[ap] += vr*vr + vi*vi - vset*vset
+            f[ap] = vr*vr + vi*vi - vset*vset
         elseif bt == SG_SLACK
             vset = p[pp + 2]
             aset = p[pp + 3]
-            f[ap]     += vr - vset*cos(aset)
-            f[ap + 1] += vi - vset*sin(aset)
+            f[ap]     = vr - vset*cos(aset)
+            f[ap + 1] = vi - vset*sin(aset)
         end
     end
     return nothing
