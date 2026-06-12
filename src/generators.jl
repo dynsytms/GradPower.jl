@@ -20,16 +20,37 @@ mutable struct Genrou <: AbstractGeneratorType
     T_q0p::Float64
     T_d0dp::Float64
     T_q0dp::Float64
+    S1::Float64
+    S2::Float64
 end
 
-function Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp)
-    gen = Genrou(6, 4, 2, 12, bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp)
+function Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1=0.0, S2=0.0)
+    gen = Genrou(6, 4, 2, 14, bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2)
     return gen
 end
 
 function GenericGenerator(bus, id)
     gen = Genrou(bus, id, 1.9266, 1.8442, 0.3812, 0.5469, 0.2889, 0.2443, 50.0, 0.0, 7.729, 0.859, 0.047, 0.068)
     return gen
+end
+
+# Quadratic open-circuit saturation model from uqgrid/models/genrou_imp.py:9.
+# Coefficients are derived once from S1, S2 (sat values at E=1.0 and E=1.2);
+# applied at runtime via `_genrou_sat_se`.
+@inline function _genrou_sat_coefficients(s1::Real, s2::Real)
+    (s1 <= 0.0 || s2 <= 0.0) && return (0.0, 0.0)
+    e1 = 1.0
+    e2 = 1.2
+    a = sqrt(s1 * e1 / (s2 * e2))
+    a == 1.0 && return (0.0, 0.0)
+    sat_a = e2 - (e1 - e2) / (a - 1.0)
+    sat_b = s2 * e2 * (a - 1.0)^2 / (e1 - e2)^2
+    return sat_a, sat_b
+end
+
+@inline function _genrou_sat_se(psi::Real, sat_a::Real, sat_b::Real)
+    (sat_b == 0.0 || psi <= sat_a || psi == 0.0) && return 0.0
+    return sat_b * (psi - sat_a)^2 / psi
 end
 
 function from_data_fields(::Type{Genrou}, fields::Vector{SubString{String}})
@@ -53,7 +74,7 @@ function from_data_fields(::Type{Genrou}, fields::Vector{SubString{String}})
     S1 = length(fields) >= 17 ? parse(Float64, fields[16]) : 0.0
     S2 = length(fields) >= 18 ? parse(Float64, fields[17]) : 0.0
 
-    Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp)
+    Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2)
 end
                 
 function set_ratio!(dtype::Genrou, ratio::Float64)
@@ -80,6 +101,8 @@ function fill_pvec!(pvec::AbstractArray, dtype::Genrou)
     pvec[10] = dtype.T_q0p
     pvec[11] = dtype.T_d0dp
     pvec[12] = dtype.T_q0dp
+    pvec[13] = dtype.S1
+    pvec[14] = dtype.S2
 end
 
 function get_device_name(dtype::Genrou)
@@ -91,7 +114,7 @@ function get_bus(dtype::Genrou)
 end
 
 function get_param_names(dtype::Genrou)
-    return ["x_d", "x_q", "x_dp", "x_qp", "x_ddp", "xl", "H", "D", "T_d0p", "T_q0p", "T_d0dp", "T_q0dp"]
+    return ["x_d", "x_q", "x_dp", "x_qp", "x_ddp", "xl", "H", "D", "T_d0p", "T_q0p", "T_d0dp", "T_q0dp", "S1", "S2"]
 end
 
 function get_diff_names(dtype::Genrou)
@@ -174,6 +197,8 @@ function initialize_dynamics!(
     T_q0p = pvec[10]
     T_d0dp = pvec[11]
     T_q0dp = pvec[12]
+    S1 = pvec[13]
+    S2 = pvec[14]
     x_qdp = x_ddp
 
     e_qp = x0[1]
@@ -188,17 +213,22 @@ function initialize_dynamics!(
     i_d = x0[10]
     e_fd = x0[11]
     p_m = x0[12]
-    
+
     # Generator dynamics
-    psi_de = (x_ddp - xl) / (x_dp - xl) * e_qp + 
+    psi_de = (x_ddp - xl) / (x_dp - xl) * e_qp +
              (x_dp - x_ddp) / (x_dp - xl) * phi_1d
 
-    psi_qe = -(x_ddp - xl) / (x_qp - xl) * e_dp + 
+    psi_qe = -(x_ddp - xl) / (x_qp - xl) * e_dp +
              (x_qp - x_ddp) / (x_qp - xl) * phi_2q
 
+    # Open-circuit saturation (quadratic): adds -Se*psi_de to the e_qp eq.
+    sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
+    psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
+    Se = _genrou_sat_se(psi2, sat_a, sat_b)
+
     # Machine states
-    f[1] = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp) * (-e_qp + i_d * 
-           (x_dp - xl) + phi_1d) / ((x_dp - xl)^2.0)) * (x_d - x_dp)) / T_d0p
+    f[1] = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp) * (-e_qp + i_d *
+           (x_dp - xl) + phi_1d) / ((x_dp - xl)^2.0)) * (x_d - x_dp) - Se*psi_de) / T_d0p
     f[2] = (-e_dp + (i_q - (-x_qdp + x_qp) * 
            (e_dp + i_q * (x_qp - xl) + phi_2q) / ((x_qp - xl)^2.0)) * 
            (x_q - x_qp)) / T_q0p
@@ -333,6 +363,8 @@ function rhs_diff!(
         T_q0p = p[10]
         T_d0dp = p[11]
         T_q0dp = p[12]
+        S1 = p[13]
+        S2 = p[14]
         x_qdp = x_ddp
 
         # states
@@ -362,9 +394,14 @@ function rhs_diff!(
         psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
                 (x_qp - x_ddp)/(x_qp - xl)*phi_2q
 
+        # Open-circuit saturation
+        sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
+        psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
+        Se = _genrou_sat_se(psi2, sat_a, sat_b)
+
         # equations
         f_diff[1] = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp)*(-e_qp + i_d*(x_dp - xl)
-                    + phi_1d)/((x_dp - xl)^2))*(x_d - x_dp))/T_d0p
+                    + phi_1d)/((x_dp - xl)^2))*(x_d - x_dp) - Se*psi_de)/T_d0p
         f_diff[2] = (-e_dp + (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl)
                     + phi_2q)/((x_qp - xl)^2))*(x_q - x_qp))/T_q0p
         f_diff[3] = ( e_qp - i_d*(x_dp - xl) - phi_1d)/T_d0dp
@@ -402,9 +439,11 @@ function preallocate_jacobian!(
     exciter = false
     governor = false
 
-    # First row
+    # First row — includes saturation cross-couplings ∂/∂e_dp and ∂/∂phi_2q
+    # (these enter via Se(psi2), psi2 = sqrt(psi_de² + psi_qe²), even when
+    # S1/S2 are 0 the slot is always reserved so jac_pos[k,:] is full).
     row = dp
-    cols = exciter ? [e_qp, phi_1d, ctrl_ptr, i_d] : [e_qp, phi_1d, i_d]
+    cols = exciter ? [e_qp, e_dp, phi_1d, phi_2q, ctrl_ptr, i_d] : [e_qp, e_dp, phi_1d, phi_2q, i_d]
     append!(coord_list[row], cols)
 
     # Second row

@@ -121,8 +121,8 @@ function read_psse_dyr(dyr_filename)
             dev = split(strip(data[ptr]), r"\s+")
         end
 
-        if length(dev) == 0
-            # Empty
+        if length(dev) == 0 || isempty(dev[1])
+            # Blank line — split("") yields [""] not [], so check both.
             ptr = ptr + 1
         elseif startswith(dev[1], "//")
             # Comment

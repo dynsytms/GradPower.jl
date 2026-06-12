@@ -74,6 +74,8 @@ independent of `PowerSystem`. Caller:
         T_q0p  = p[pp + 9]
         T_d0dp = p[pp + 10]
         T_q0dp = p[pp + 11]
+        S1     = p[pp + 12]
+        S2     = p[pp + 13]
         x_qdp  = x_ddp
 
         # ----- states (global z vector) -----
@@ -107,8 +109,13 @@ independent of `PowerSystem`. Caller:
         psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
                   (x_qp  - x_ddp)/(x_qp - xl)*phi_2q
 
+        # Quadratic open-circuit saturation: adds -Se*psi_de to the e_qp eq.
+        sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
+        psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
+        Se = _genrou_sat_se(psi2, sat_a, sat_b)
+
         # ----- diff residuals -----
-        f[dp]     = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp)*(-e_qp + i_d*(x_dp - xl) + phi_1d)/((x_dp - xl)^2)) * (x_d - x_dp)) / T_d0p
+        f[dp]     = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp)*(-e_qp + i_d*(x_dp - xl) + phi_1d)/((x_dp - xl)^2)) * (x_d - x_dp) - Se*psi_de) / T_d0p
         f[dp + 1] = (-e_dp +        (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl) + phi_2q)/((x_qp - xl)^2)) * (x_q - x_qp)) / T_q0p
         f[dp + 2] = ( e_qp - i_d*(x_dp - xl) - phi_1d) / T_d0dp
         f[dp + 3] = (-e_dp - i_q*(x_qp - xl) - phi_2q) / T_q0dp
@@ -139,10 +146,14 @@ end
 # carries the J.nzval indices for one device's Jacobian entries).
 # MUST agree with `genrou_jac_positions!` AND `genrou_jacobian_batch!`.
 
-# Diff row 1 (df1/d{e_qp, phi_1d, i_d})
+# Diff row 1 (df1/d{e_qp, phi_1d, i_d, e_dp, phi_2q})
+# e_dp and phi_2q columns are present whenever saturation is on (S2>0); the
+# slot is allocated always, written to 0 when saturation is off.
 const J_GR_R1_eqp   = 1
 const J_GR_R1_phi1d = 2
 const J_GR_R1_id    = 3
+const J_GR_R1_edp   = 44
+const J_GR_R1_phi2q = 45
 # Diff row 2 (df2/d{e_dp, phi_2q, i_q})
 const J_GR_R2_edp   = 4
 const J_GR_R2_phi2q = 5
@@ -198,7 +209,7 @@ const J_GR_NI_id    = 42
 const J_GR_R5_pm    = 43
 
 # Sanity check: must match GENROU_JAC_NENTRIES declared in tables/genrou.jl.
-@assert J_GR_R5_pm == GENROU_JAC_NENTRIES "Slot table out of sync with GENROU_JAC_NENTRIES"
+@assert J_GR_R1_phi2q == GENROU_JAC_NENTRIES "Slot table out of sync with GENROU_JAC_NENTRIES"
 
 """
     genrou_coupling_preallocate!(coord_list, table::GenrouTable)
@@ -264,6 +275,8 @@ function genrou_jac_positions!(
         table.jac_pos[k, J_GR_R1_eqp]   = _find_pos(J, rows, dp,     e_qp_idx)
         table.jac_pos[k, J_GR_R1_phi1d] = _find_pos(J, rows, dp,     phi_1d_idx)
         table.jac_pos[k, J_GR_R1_id]    = _find_pos(J, rows, dp,     i_d_idx)
+        table.jac_pos[k, J_GR_R1_edp]   = _find_pos(J, rows, dp,     e_dp_idx)
+        table.jac_pos[k, J_GR_R1_phi2q] = _find_pos(J, rows, dp,     phi_2q_idx)
         # Diff row 2
         table.jac_pos[k, J_GR_R2_edp]   = _find_pos(J, rows, dp + 1, e_dp_idx)
         table.jac_pos[k, J_GR_R2_phi2q] = _find_pos(J, rows, dp + 1, phi_2q_idx)
@@ -321,11 +334,14 @@ function genrou_jac_positions!(
         end
     end
 
-    # Sanity gate: every non-optional slot must be populated. The single
-    # optional column (J_GR_R5_pm) is allowed to be zero when has_gov is
-    # false, so check column-wise excluding that slot.
+    # Sanity gate: every always-present slot must be populated. Only the
+    # optional governor cross-coupling column (J_GR_R5_pm) is allowed to
+    # be 0 when has_gov is false; all other slots (including saturation
+    # cross-cols 44, 45 which are always allocated whether S2>0 or not)
+    # must be nonzero.
     @inbounds for k in 1:n
-        for slot in 1:(GENROU_JAC_NENTRIES - 1)
+        for slot in 1:GENROU_JAC_NENTRIES
+            slot == J_GR_R5_pm && continue
             @assert table.jac_pos[k, slot] != 0 "GENROU jac_pos[$k, $slot] is zero — sparsity pattern mismatch"
         end
         if table.has_gov[k]
@@ -389,6 +405,8 @@ cleared them.
         T_q0p  = p[pp + 9]
         T_d0dp = p[pp + 10]
         T_q0dp = p[pp + 11]
+        S1     = p[pp + 12]
+        S2     = p[pp + 13]
         x_qdp  = x_ddp
 
         # ----- states -----
@@ -403,10 +421,45 @@ cleared them.
 
         sd, cd = sincos(delta)
 
+        # ----- saturation contributions to row dp (e_qp eq) -----
+        # Mirrors uqgrid/models/genrou_imp.py:776-803. Slots J_GR_R1_edp /
+        # J_GR_R1_phi2q are always allocated; when saturation is off (S2≤0
+        # or psi2 ≤ sat_a) Se=dSe_dpsi=0 and the increments collapse to 0.
+        psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
+                 (x_dp  - x_ddp)/(x_dp - xl)*phi_1d
+        psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
+                  (x_qp  - x_ddp)/(x_qp - xl)*phi_2q
+        sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
+        psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
+        Se = _genrou_sat_se(psi2, sat_a, sat_b)
+        if sat_b == 0.0 || psi2 <= sat_a || psi2 == 0.0
+            dSe_dpsi = 0.0
+        else
+            g = psi2 - sat_a
+            dSe_dpsi = sat_b * (2.0 * g * psi2 - g * g) / (psi2 * psi2)
+        end
+        dpsi_dpsi_de = psi2 == 0.0 ? 0.0 : psi_de / psi2
+        dpsi_dpsi_qe = psi2 == 0.0 ? 0.0 : psi_qe / psi2
+        dpsi_de_deqp   = (x_ddp - xl) / (x_dp - xl)
+        dpsi_de_phi1d  = (x_dp - x_ddp) / (x_dp - xl)
+        dpsi_qe_dedp   = -(x_ddp - xl) / (x_qp - xl)
+        dpsi_qe_phi2q  = (x_qp - x_ddp) / (x_qp - xl)
+        dSe_dpsi_de = dSe_dpsi * dpsi_dpsi_de
+        dSe_dpsi_qe = dSe_dpsi * dpsi_dpsi_qe
+        # d(-Se*psi_de)/d*: chain rule via psi_de and psi_qe (both feed psi2 → Se).
+        dT_dpsi_de = -(dSe_dpsi_de * psi_de + Se)
+        dT_dpsi_qe = -(dSe_dpsi_qe * psi_de)
+        dT_deqp_sat   = dT_dpsi_de * dpsi_de_deqp / T_d0p
+        dT_dphi1d_sat = dT_dpsi_de * dpsi_de_phi1d / T_d0p
+        dT_dedp_sat   = dT_dpsi_qe * dpsi_qe_dedp / T_d0p
+        dT_dphi2q_sat = dT_dpsi_qe * dpsi_qe_phi2q / T_d0p
+
         # ===== diff row 1 =====
-        nz[table.jac_pos[k, J_GR_R1_eqp]]   = (-(x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) - 1) / T_d0p
-        nz[table.jac_pos[k, J_GR_R1_phi1d]] =  (x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) / T_d0p
+        nz[table.jac_pos[k, J_GR_R1_eqp]]   = (-(x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) - 1) / T_d0p + dT_deqp_sat
+        nz[table.jac_pos[k, J_GR_R1_phi1d]] =  (x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) / T_d0p + dT_dphi1d_sat
         nz[table.jac_pos[k, J_GR_R1_id]]    = -(x_d - x_dp)*(-(-x_ddp + x_dp)*(x_dp - xl)^(-1.0) + 1) / T_d0p
+        nz[table.jac_pos[k, J_GR_R1_edp]]   = dT_dedp_sat
+        nz[table.jac_pos[k, J_GR_R1_phi2q]] = dT_dphi2q_sat
 
         # ===== diff row 2 =====
         nz[table.jac_pos[k, J_GR_R2_edp]]   = (-(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) - 1) / T_q0p

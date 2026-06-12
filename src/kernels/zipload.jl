@@ -129,18 +129,20 @@ end
         d_vi_vi_a = -α * yreal
 
         # ---- constant-power contribution (depends on v_m²) ----
+        # Residual: f[vr] -= (1-α)(pl·vr - ql·vi)/vm², f[vi] -= (1-α)(ql·vr + pl·vi)/vm².
+        # Derivatives match uqgrid/uqgrid/models/load_imp.py:107-110, 119-122.
         if vm2 > vm2_tld
             inv_vm4 = 1.0 / (vm2 * vm2)
-            d_vr_vr_p = (1.0 - α) * ((ql*vr + pl*vi) * 2.0 * vr - ql * vm2) * inv_vm4
-            d_vr_vi_p = (1.0 - α) * ((ql*vr + pl*vi) * 2.0 * vi - pl * vm2) * inv_vm4
-            d_vi_vr_p = (1.0 - α) * ((pl*vr - ql*vi) * 2.0 * vr - pl * vm2) * inv_vm4
-            d_vi_vi_p = (1.0 - α) * ((pl*vr - ql*vi) * 2.0 * vi + ql * vm2) * inv_vm4
+            d_vr_vr_p = (1.0 - α) * ((pl*vr - ql*vi) * 2.0 * vr - pl * vm2) * inv_vm4
+            d_vr_vi_p = (1.0 - α) * ((pl*vr - ql*vi) * 2.0 * vi + ql * vm2) * inv_vm4
+            d_vi_vr_p = (1.0 - α) * ((ql*vr + pl*vi) * 2.0 * vr - ql * vm2) * inv_vm4
+            d_vi_vi_p = (1.0 - α) * ((ql*vr + pl*vi) * 2.0 * vi - pl * vm2) * inv_vm4
         else
             inv_th = 1.0 / vm2_tld
-            d_vr_vr_p = (1.0 - α) * (-ql) * inv_th
-            d_vr_vi_p = (1.0 - α) * (-pl) * inv_th
-            d_vi_vr_p = (1.0 - α) * (-pl) * inv_th
-            d_vi_vi_p = (1.0 - α) * ( ql) * inv_th
+            d_vr_vr_p = (1.0 - α) * (-pl) * inv_th
+            d_vr_vi_p = (1.0 - α) * ( ql) * inv_th
+            d_vi_vr_p = (1.0 - α) * (-ql) * inv_th
+            d_vi_vi_p = (1.0 - α) * (-pl) * inv_th
         end
 
         nz[table.jac_pos[k, J_ZL_VR_VR]] += d_vr_vr_a + d_vr_vr_p

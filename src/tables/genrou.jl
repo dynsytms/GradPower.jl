@@ -12,7 +12,7 @@
 #   directly via the d_pm column entry. Today GENROU has no exciter wiring
 #   active in tracked cases; we reserve no slot for e_fd (0 entries) and a
 #   single optional slot for p_m → see GENROU_JAC_PM_COL_SLOT below.
-const GENROU_JAC_NENTRIES = 43  # 42 always-present + 1 optional pm-col slot
+const GENROU_JAC_NENTRIES = 45  # 42 base + 1 optional pm-col + 2 saturation cross-cols
 const GENROU_JAC_PM_COL_SLOT = 43  # ∂f5/∂p_m when has_gov[k]; 0-fill when not wired
 
 #
@@ -54,7 +54,7 @@ function _build_genrou_table_impl(psd)
     ctrl_ptr = Vector{Int32}(undef, n)
     par_ptr  = Vector{Int32}(undef, n)
 
-    # 3. Allocate parameter vectors (12 Genrou parameters).
+    # 3. Allocate parameter vectors (14 Genrou parameters incl. S1, S2).
     x_d    = Vector{Float64}(undef, n)
     x_q    = Vector{Float64}(undef, n)
     x_dp   = Vector{Float64}(undef, n)
@@ -67,6 +67,8 @@ function _build_genrou_table_impl(psd)
     T_q0p  = Vector{Float64}(undef, n)
     T_d0dp = Vector{Float64}(undef, n)
     T_q0dp = Vector{Float64}(undef, n)
+    S1     = Vector{Float64}(undef, n)
+    S2     = Vector{Float64}(undef, n)
 
     # 4. Allocate control-coupling vectors.
     has_gov = Vector{Bool}(undef, n)
@@ -110,6 +112,8 @@ function _build_genrou_table_impl(psd)
         T_q0p[k]  = gen.T_q0p
         T_d0dp[k] = gen.T_d0dp
         T_q0dp[k] = gen.T_q0dp
+        S1[k]     = gen.S1
+        S2[k]     = gen.S2
 
         # Control coupling: ctrl_ptr points at u[1] (e_fd); ctrl_ptr+1 is u[2] (p_m).
         # uvec_idx[slot] == 0 means no controller wired to that slot.
@@ -124,7 +128,7 @@ function _build_genrou_table_impl(psd)
 
     return GenrouTable(n, bus, diff_ptr, alg_ptr, ctrl_ptr, par_ptr,
         x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D,
-        T_d0p, T_q0p, T_d0dp, T_q0dp,
+        T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2,
         has_gov, pm_idx, has_exc, efd_idx, jac_pos)
 end
 

@@ -73,6 +73,7 @@ struct GenrouTable
     H::Vector{Float64};    D::Vector{Float64}
     T_d0p::Vector{Float64};  T_q0p::Vector{Float64}
     T_d0dp::Vector{Float64}; T_q0dp::Vector{Float64}
+    S1::Vector{Float64};     S2::Vector{Float64}
     # control coupling resolved by set_dynamics!
     has_gov::Vector{Bool};  pm_idx::Vector{Int32}
     has_exc::Vector{Bool};  efd_idx::Vector{Int32}
