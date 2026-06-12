@@ -458,6 +458,10 @@ function preallocate_jacobian(ps::PowerSystem)
     L = ps.dynamic.layout::SimulationLayout
     ieesgo_preallocate!(coord_list, L.ieesgo, diff_dim)
 
+    # Cross-device coupling sparsity: GENROU's swing eq reads governor p_m.
+    # The legacy per-device GENROU preallocator can't see wiring; add it here.
+    genrou_coupling_preallocate!(coord_list, L.genrou)
+
     # form coordinate lists (row, col, data)
     row = Int[]
     col = Int[]

@@ -12,8 +12,8 @@
 #   directly via the d_pm column entry. Today GENROU has no exciter wiring
 #   active in tracked cases; we reserve no slot for e_fd (0 entries) and a
 #   single optional slot for p_m → see GENROU_JAC_PM_COL_SLOT below.
-const GENROU_JAC_NENTRIES = 42  # excludes optional pm/efd columns
-const GENROU_JAC_PM_COL_SLOT = 0  # 0 = not allocated; Phase 3 may turn on
+const GENROU_JAC_NENTRIES = 43  # 42 always-present + 1 optional pm-col slot
+const GENROU_JAC_PM_COL_SLOT = 43  # ∂f5/∂p_m when has_gov[k]; 0-fill when not wired
 
 #
 # This file is included from src/GradPower.jl AFTER both layout.jl (for the

@@ -193,9 +193,31 @@ const J_GR_NR_id    = 39
 const J_GR_NI_delta = 40
 const J_GR_NI_iq    = 41
 const J_GR_NI_id    = 42
+# Optional cross-coupling: diff row 5 ∂/∂p_m (when GENROU is wired to a governor).
+# When has_gov[k] is false the slot stays 0 in jac_pos and the kernel skips it.
+const J_GR_R5_pm    = 43
 
 # Sanity check: must match GENROU_JAC_NENTRIES declared in tables/genrou.jl.
-@assert J_GR_NI_id == GENROU_JAC_NENTRIES "Slot table out of sync with GENROU_JAC_NENTRIES"
+@assert J_GR_R5_pm == GENROU_JAC_NENTRIES "Slot table out of sync with GENROU_JAC_NENTRIES"
+
+"""
+    genrou_coupling_preallocate!(coord_list, table::GenrouTable)
+
+For every GENROU wired to a governor, push the cross-coupling sparsity
+entry `(dp+4, pm_idx[k])` — i.e. ∂(swing eq)/∂p_m — into coord_list.
+The legacy per-device GENROU preallocator hardcodes `governor = false`
+and cannot see the layout's wiring; this pass adds the missing entry.
+"""
+function genrou_coupling_preallocate!(coord_list::Vector{Vector{Int}},
+                                       table::GenrouTable)
+    for k in 1:table.n
+        if table.has_gov[k]
+            dp = Int(table.diff_ptr[k])
+            push!(coord_list[dp + 4], Int(table.pm_idx[k]))
+        end
+    end
+    return nothing
+end
 
 """
     genrou_jac_positions!(table::GenrouTable, J::SparseMatrixCSC,
@@ -292,12 +314,24 @@ function genrou_jac_positions!(
         table.jac_pos[k, J_GR_NI_delta] = _find_pos(J, rows, vi_idx, delta_idx)
         table.jac_pos[k, J_GR_NI_iq]    = _find_pos(J, rows, vi_idx, i_q_idx)
         table.jac_pos[k, J_GR_NI_id]    = _find_pos(J, rows, vi_idx, i_d_idx)
+        # Optional cross-coupling: ∂f5/∂p_m (only when wired to a governor).
+        # Slot stays 0 (sentinel) when has_gov[k] is false; kernel skips it.
+        if table.has_gov[k]
+            table.jac_pos[k, J_GR_R5_pm] = _find_pos(J, rows, dp + 4, Int(table.pm_idx[k]))
+        end
     end
 
-    # Sanity gate: no zero entries should remain — that would mean a
-    # (row, col) the kernel writes wasn't present in the preallocated
-    # sparsity pattern (a bug in `preallocate_jacobian!(::Genrou)`).
-    @assert all(!iszero, table.jac_pos) "GENROU jac_pos has zero slots — sparsity pattern mismatch"
+    # Sanity gate: every non-optional slot must be populated. The single
+    # optional column (J_GR_R5_pm) is allowed to be zero when has_gov is
+    # false, so check column-wise excluding that slot.
+    @inbounds for k in 1:n
+        for slot in 1:(GENROU_JAC_NENTRIES - 1)
+            @assert table.jac_pos[k, slot] != 0 "GENROU jac_pos[$k, $slot] is zero — sparsity pattern mismatch"
+        end
+        if table.has_gov[k]
+            @assert table.jac_pos[k, J_GR_R5_pm] != 0 "GENROU jac_pos[$k, J_GR_R5_pm] is zero but governor is wired"
+        end
+    end
     return nothing
 end
 
@@ -395,6 +429,10 @@ cleared them.
         nz[table.jac_pos[k, J_GR_R5_phi1d]] = -0.5 * i_q * (-x_ddp + x_dp) / (H * (x_dp - xl))
         nz[table.jac_pos[k, J_GR_R5_phi2q]] =  0.5 * i_d * (-x_ddp + x_qp) / (H * (x_qp - xl))
         nz[table.jac_pos[k, J_GR_R5_w]]     = -0.5 * D / H
+        # Optional cross-coupling ∂f5/∂p_m = 1/(2H), only when wired.
+        if table.has_gov[k]
+            nz[table.jac_pos[k, J_GR_R5_pm]] = 0.5 / H
+        end
         nz[table.jac_pos[k, J_GR_R5_iq]]    =  0.5 * (-e_qp * (x_ddp - xl) / (x_dp - xl) - phi_1d * (-x_ddp + x_dp) / (x_dp - xl)) / H
         nz[table.jac_pos[k, J_GR_R5_id]]    =  0.5 * ( e_dp * (-x_ddp + xl) / (x_qp - xl) + phi_2q * (-x_ddp + x_qp) / (x_qp - xl)) / H
 
