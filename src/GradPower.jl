@@ -178,10 +178,11 @@ function PowerSystemDynamics()
     return psd
 end
 
-function PowerSystemDynamics(psse_dyr_file::String)
+function PowerSystemDynamics(psse_dyr_file::String;
+                              active_gen_keys::Union{Nothing,Set{Tuple{Int64,String}}}=nothing)
     psd = PowerSystemDynamics()
     dyr_data = read_psse_dyr(psse_dyr_file)
-    psse_devices = create_device_vector(dyr_data)
+    psse_devices = create_device_vector(dyr_data; active_gen_keys=active_gen_keys)
     for device in psse_devices
         add_device!(psd, device)
     end
@@ -221,7 +222,9 @@ function find_gen(ps::PowerSystem, bus::Int64, gen_id::String)
     return 0
 end
 
-function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Bool=true)
+function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics;
+                        add_loads::Bool=true,
+                        add_static_gen_stubs::Bool=true)
 
     # number of dynamic devices of generator type.
     num_gen_devices = 0
@@ -232,10 +235,14 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
     end
     mvbase = ps.baseMVA
 
-    # create dynamic map.
-    dmap = DynamicMap(psd.num_devices - num_gen_devices + length(ps.gens) + length(ps.loads))
+    # create dynamic map. Upper-bound the size: every dynamic device kept,
+    # plus one stand-in per static gen (covers the worst case where every
+    # dynamic gen is orphaned from its static counterpart), plus one ZIPLoad
+    # per static load. Unused trailing slots stay zero and are ignored.
+    dmap = DynamicMap(psd.num_devices + length(ps.gens) + length(ps.loads))
 
-    matched_gens = []
+    matched_gens = Int[]
+    orphan_dyn = Tuple{Int64,String}[]
 
     # iterate dynamic vector and assign buses.
     for (i, device) in enumerate(psd.devices)
@@ -246,7 +253,7 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
             gen_id = device.dtype.id
             dmap.gen[i] = find_gen(ps, dmap.bus[i], gen_id)
             if dmap.gen[i] == 0
-                @warn "Generator not found for dynamic device $i"
+                push!(orphan_dyn, (device.dtype.bus, gen_id))
             else
                 set_ratio!(device.dtype, ps.gens[dmap.gen[i]].mbase/mvbase)
                 push!(matched_gens, dmap.gen[i])
@@ -254,18 +261,45 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
         end
     end
 
+    # Summary warning instead of one-per-device — large cases (70k) can have
+    # thousands of dynamic rows without an active static gen counterpart.
+    if !isempty(orphan_dyn)
+        @warn "$(length(orphan_dyn)) dynamic generator(s) had no active static gen at the same (bus, id); first few: $(first(orphan_dyn, 5))"
+    end
+
     # add controllers. We iterate dynamic devices again.
 
-    # check if all static generators have a corresponding dynamic generator. if not,
-    # we will add static negative loads.
-    if length(matched_gens) != length(ps.gens)
-        @warn "Not all static generators have a corresponding dynamic generator. Adding negative loads."
+    # For every active static gen not covered by a dynamic machine model,
+    # inject a StaticGenerator (constant pinj + PV/SLACK voltage regulation),
+    # mirroring uqgrid io/parse.py:703. Aggregate one StaticGenerator per
+    # bus across all unmatched gens on that bus.
+    if add_static_gen_stubs && length(matched_gens) != length(ps.gens)
+        matched_set = Set(matched_gens)
+        by_bus = Dict{Int64,Vector{Int64}}()
         for (i, gen) in enumerate(ps.gens)
-            if !(i in matched_gens)
-                dmap.bus[psd.num_devices + 1] = gen.bus
-                dmap.gen[psd.num_devices + 1] = i
-                add_device!(psd, GenericGenerator(gen.bus, gen.id))
-            end
+            i in matched_set && continue
+            push!(get!(by_bus, gen.bus, Int64[]), Int64(i))
+        end
+        n_aggregated = sum(length, values(by_bus); init=0)
+        @info "Adding $(length(by_bus)) StaticGenerator(s) aggregating $(n_aggregated) static gen(s) without a dynamic machine model."
+        for (bus_internal, gen_idxs) in by_bus
+            bt = Int64(ps.buses[bus_internal].type)
+            # vset: take from any of the aggregated gens' static voltage setpoint
+            # (already stored on ps.buses[bus].v0m by raw_to_grad's PV/SLACK
+            # write-back). All gens on a bus share that bus's setpoint.
+            vset = ps.buses[bus_internal].v0m
+            aset = ps.buses[bus_internal].v0a
+            # StaticGenerator stores its bus as the EXTERNAL PSS/E number so the
+            # build_layout! path mirrors Genrou/SEXS; fix_static_gen_bus_idx!
+            # remaps to internal index post-build.
+            ext_bus = ps.buses[bus_internal].i
+            sg = StaticGenerator(Int64(ext_bus), bt, gen_idxs, vset, aset)
+            slot = psd.num_devices + 1
+            dmap.bus[slot] = bus_internal
+            # dmap.gen[slot]: first aggregated index — used as a representative
+            # so init can recover totals via the device's own gen_idxs vector.
+            dmap.gen[slot] = gen_idxs[1]
+            add_device!(psd, sg)
         end
     end
 
@@ -322,8 +356,11 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
     psd.layout = build_layout!(psd)
 
     # SEXS needs ps.busmap to resolve its bus into a global voltage index;
-    # fix that up after the layout build.
+    # fix that up after the layout build. Genrou.bus also lives in the table
+    # as the external PSSE bus number and must be remapped to internal index.
+    fix_genrou_bus_idx!(psd, ps)
     fix_sexs_vr_idx!(psd, ps)
+    fix_static_gen_bus_idx!(psd, ps)
 end
 
 function DynamicProblem(ps::PowerSystem)
@@ -372,6 +409,7 @@ include("tables/tgov1.jl")
 include("tables/sexs.jl")
 include("tables/esdc1a.jl")
 include("tables/zipload.jl")
+include("tables/static_gen.jl")
 
 # Phase 1.5b: device coupling graph. Defines `attaches_to`,
 # `produces_signals`, `consumes_signals` traits + `wire_controls!`
@@ -392,6 +430,7 @@ include("kernels/ieesgo.jl")
 include("kernels/tgov1.jl")
 include("kernels/sexs.jl")
 include("kernels/zipload.jl")
+include("kernels/static_gen.jl")
 
 include("sensitivities.jl")
 

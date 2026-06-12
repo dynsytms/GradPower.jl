@@ -2,6 +2,7 @@ include("generators.jl")
 include("loads.jl")
 include("governors.jl")
 include("exciters.jl")
+include("static_gen.jl")
 
 function initialize_device(
         device::DynamicDevice,
@@ -158,6 +159,31 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         end
     end
 
+    # Initialize StaticGenerators: aggregate P, Q from their gen_idxs into
+    # device.p0, device.q0; populate alg state(s) (q for PV; p,q for SLACK).
+    # Mirrors uqgrid initialize_system: static_generator branch (dynamics.py:877).
+    for (i, device) in enumerate(ps.dynamic.devices)
+        device.dtype isa StaticGenerator || continue
+        sg = device.dtype
+        psum = 0.0
+        qsum = 0.0
+        for gi in sg.gen_idxs
+            psum += ps.gens[gi].psch
+            qsum += ps.gens[gi].qsch
+        end
+        sg.p0 = psum
+        sg.q0 = qsum
+        if sg.bus_type == 2          # PV: alg state is q
+            y[device.alg_ptr] = qsum
+        elseif sg.bus_type == 3      # SLACK: alg states are p, q
+            y[device.alg_ptr]     = psum
+            y[device.alg_ptr + 1] = qsum
+        end
+        # mirror p0, q0 into pvec so the kernel reads correct values
+        p[device.par_ptr]     = psum
+        p[device.par_ptr + 1] = qsum
+    end
+
     # Pre-controller hook: stash each Genrou's post-PF e_fd0 onto any
     # attached SEXS's `vref` slot (used as scratch in `initial_guess!`
     # / `initialize_dynamics!`; `extract_init_params!(::SEXS)`
@@ -194,6 +220,7 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         refresh_ieesgo_table!(ps.dynamic)
         refresh_tgov1_table!(ps.dynamic)
         refresh_sexs_table!(ps.dynamic)
+        refresh_static_gen_table!(ps.dynamic)
     end
 end
 
@@ -232,6 +259,7 @@ end
     tgov1_residual_batch!(f, z, p, L.tgov1, diff_dim)
     sexs_residual_batch!(f, z, p, L.sexs)
     zipload_residual_batch!(f, z, p, L.zipload, net_ptr)
+    static_gen_residual_batch!(f, z, p, L.static_gen)
 
     _apply_events_fun!(f, v, dyn.events, net_ptr)
     return nothing
@@ -492,9 +520,10 @@ function preallocate_jacobian(ps::PowerSystem)
     # `preallocate_jacobian!(coord_list, ..., dtype)` method that pushes
     # their (row, col) entries into the coord_list.
     for (i, device) in enumerate(ps.dynamic.devices)
-        device.dtype isa IEESGO && continue  # IEESGO sparsity comes from the batched preallocator below
-        device.dtype isa TGOV1  && continue  # TGOV1 too
-        device.dtype isa SEXS   && continue  # SEXS too
+        device.dtype isa IEESGO         && continue  # IEESGO sparsity comes from the batched preallocator below
+        device.dtype isa TGOV1          && continue  # TGOV1 too
+        device.dtype isa SEXS           && continue  # SEXS too
+        device.dtype isa StaticGenerator && continue # StaticGenerator too
         bus = map.bus[i]
         diff_ptr = map.diff_ptr[i]
         alg_ptr = diff_dim + map.alg_ptr[i]
@@ -510,6 +539,7 @@ function preallocate_jacobian(ps::PowerSystem)
     ieesgo_preallocate!(coord_list, L.ieesgo, diff_dim)
     tgov1_preallocate!(coord_list, L.tgov1, diff_dim)
     sexs_preallocate!(coord_list, L.sexs)
+    static_gen_preallocate!(coord_list, L.static_gen)
 
     # Cross-device coupling sparsity: GENROU's swing eq reads governor p_m.
     # The legacy per-device GENROU preallocator can't see wiring; add it here.
@@ -539,6 +569,7 @@ function preallocate_jacobian(ps::PowerSystem)
     tgov1_jac_positions!(L.tgov1, Jsp, diff_dim)
     sexs_jac_positions!(L.sexs, Jsp)
     zipload_jac_positions!(L.zipload, Jsp, net_ptr)
+    static_gen_jac_positions!(L.static_gen, Jsp)
 
     return Jsp
 end
@@ -583,6 +614,7 @@ end
     tgov1_jacobian_batch!(jac, p, L.tgov1, diff_dim)
     sexs_jacobian_batch!(jac, z, p, L.sexs)
     zipload_jacobian_batch!(jac, z, p, L.zipload, net_ptr)
+    static_gen_jacobian_batch!(jac, z, p, L.static_gen)
 
     _apply_events_jac!(jac, dyn.events, net_ptr)
     return nothing

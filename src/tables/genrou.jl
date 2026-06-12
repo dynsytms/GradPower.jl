@@ -85,6 +85,10 @@ function _build_genrou_table_impl(psd)
     jac_pos = zeros(Int32, n, GENROU_JAC_NENTRIES)
 
     # 6. Single pass over devices, fill row k for each Genrou match.
+    # gen.bus holds the EXTERNAL PSS/E bus number; `fix_genrou_bus_idx!`
+    # (called after build_layout!) remaps it to the internal 1-based index
+    # the kernel uses for vr/vi addressing. Tests with sequential 1..N
+    # external numbering happened to work without the remap.
     uvec = psd.uvec_idx
     k = 0
     for device in psd.devices
@@ -130,6 +134,22 @@ function _build_genrou_table_impl(psd)
         x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D,
         T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2,
         has_gov, pm_idx, has_exc, efd_idx, jac_pos)
+end
+
+# After set_dynamics! finishes, remap each Genrou.bus from external PSSE
+# bus number → internal 1-based bus index. Mirrors fix_sexs_vr_idx! and
+# must run before preallocate_jacobian / any kernel call. Called from
+# set_dynamics! once ps.busmap is available.
+function fix_genrou_bus_idx!(psd, ps)
+    table = psd.layout.genrou
+    table.n == 0 && return nothing
+    k = 0
+    for device in psd.devices
+        device.dtype isa Genrou || continue
+        k += 1
+        table.bus[k] = Int32(ps.busmap[Int(table.bus[k])])
+    end
+    return nothing
 end
 
 # Phase 1.5: register with the device registry so build_layout! picks
