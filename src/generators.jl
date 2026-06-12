@@ -22,16 +22,47 @@ mutable struct Genrou <: AbstractGeneratorType
     T_q0dp::Float64
     S1::Float64
     S2::Float64
+    # Initialization-derived: post-PF field voltage. Set by
+    # `extract_init_params!(::Genrou)` so attached exciters can read it
+    # during their own init. Not a Genrou parameter, not in pvec.
+    e_fd0::Float64
 end
 
 function Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1=0.0, S2=0.0)
-    gen = Genrou(6, 4, 2, 14, bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2)
+    gen = Genrou(6, 4, 2, 14, bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2, 0.0)
     return gen
 end
 
 function GenericGenerator(bus, id)
     gen = Genrou(bus, id, 1.9266, 1.8442, 0.3812, 0.5469, 0.2889, 0.2443, 50.0, 0.0, 7.729, 0.859, 0.047, 0.068)
     return gen
+end
+
+# GENSAL — salient-pole synchronous generator. Math (uqgrid/models/gensal_imp.py):
+# GENSAL is GENROU with x_qp = x_dp and T_q0p = T_d0p. We dispatch on this
+# tag in the .dyr parser and immediately return a `Genrou` instance — no
+# separate kernel / table is needed (option (a) of the Phase 3 plan).
+struct Gensal end
+
+function from_data_fields(::Type{Gensal}, fields::Vector{SubString{String}})
+    # PSS/E GENSAL field order: bus, 'GENSAL', id,
+    # T_d0p, T_d0dp, T_q0dp, H, D, x_d, x_q, x_dp, x_ddp, xl, S1, S2
+    bus    = parse(Int64, fields[1])
+    id     = String(fields[3])
+    T_d0p  = parse(Float64, fields[4])
+    T_d0dp = parse(Float64, fields[5])
+    T_q0dp = parse(Float64, fields[6])
+    H      = parse(Float64, fields[7])
+    D      = parse(Float64, fields[8])
+    x_d    = parse(Float64, fields[9])
+    x_q    = parse(Float64, fields[10])
+    x_dp   = parse(Float64, fields[11])
+    x_ddp  = parse(Float64, fields[12])
+    xl     = parse(Float64, fields[13])
+    S1     = length(fields) >= 15 ? parse(Float64, fields[14]) : 0.0
+    S2     = length(fields) >= 16 ? parse(Float64, fields[15]) : 0.0
+    # GENSAL substitutions: x_qp = x_dp, T_q0p = T_d0p.
+    Genrou(bus, id, x_d, x_q, x_dp, x_dp, x_ddp, xl, H, D, T_d0p, T_d0p, T_d0dp, T_q0dp, S1, S2)
 end
 
 # Quadratic open-circuit saturation model from uqgrid/models/genrou_imp.py:9.

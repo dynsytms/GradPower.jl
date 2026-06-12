@@ -103,6 +103,37 @@ struct IEESGOTable
     jac_pos::Matrix{Int32}
 end
 
+struct TGOV1Table
+    n::Int
+    bus::Vector{Int32}
+    diff_ptr::Vector{Int32}
+    alg_ptr::Vector{Int32}
+    ctrl_ptr::Vector{Int32}
+    par_ptr::Vector{Int32}
+    R::Vector{Float64};    T1::Vector{Float64}
+    VMAX::Vector{Float64}; VMIN::Vector{Float64}
+    T2::Vector{Float64};   T3::Vector{Float64}
+    DT::Vector{Float64}
+    pref::Vector{Float64}
+    w_idx::Vector{Int32}
+    jac_pos::Matrix{Int32}
+end
+
+struct SEXSTable
+    n::Int
+    bus::Vector{Int32}
+    diff_ptr::Vector{Int32}
+    ctrl_ptr::Vector{Int32}
+    par_ptr::Vector{Int32}
+    TA_TB::Vector{Float64}; TB::Vector{Float64}
+    K::Vector{Float64};      TE::Vector{Float64}
+    EMIN::Vector{Float64};   EMAX::Vector{Float64}
+    vref::Vector{Float64}
+    # net_ptr (global) of vr for this exciter's bus; vi is +1.
+    vr_idx::Vector{Int32}
+    jac_pos::Matrix{Int32}
+end
+
 struct ESDC1ATable
     n::Int
     bus::Vector{Int32}

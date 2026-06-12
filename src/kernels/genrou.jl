@@ -207,9 +207,11 @@ const J_GR_NI_id    = 42
 # Optional cross-coupling: diff row 5 ∂/∂p_m (when GENROU is wired to a governor).
 # When has_gov[k] is false the slot stays 0 in jac_pos and the kernel skips it.
 const J_GR_R5_pm    = 43
+# Optional cross-coupling: diff row 1 ∂/∂e_fd (when GENROU is wired to an exciter).
+const J_GR_R1_efd   = 46
 
 # Sanity check: must match GENROU_JAC_NENTRIES declared in tables/genrou.jl.
-@assert J_GR_R1_phi2q == GENROU_JAC_NENTRIES "Slot table out of sync with GENROU_JAC_NENTRIES"
+@assert J_GR_R1_efd == GENROU_JAC_NENTRIES "Slot table out of sync with GENROU_JAC_NENTRIES"
 
 """
     genrou_coupling_preallocate!(coord_list, table::GenrouTable)
@@ -222,9 +224,12 @@ and cannot see the layout's wiring; this pass adds the missing entry.
 function genrou_coupling_preallocate!(coord_list::Vector{Vector{Int}},
                                        table::GenrouTable)
     for k in 1:table.n
+        dp = Int(table.diff_ptr[k])
         if table.has_gov[k]
-            dp = Int(table.diff_ptr[k])
             push!(coord_list[dp + 4], Int(table.pm_idx[k]))
+        end
+        if table.has_exc[k]
+            push!(coord_list[dp], Int(table.efd_idx[k]))
         end
     end
     return nothing
@@ -332,20 +337,25 @@ function genrou_jac_positions!(
         if table.has_gov[k]
             table.jac_pos[k, J_GR_R5_pm] = _find_pos(J, rows, dp + 4, Int(table.pm_idx[k]))
         end
+        # Optional cross-coupling: ∂f1/∂e_fd (only when wired to an exciter).
+        if table.has_exc[k]
+            table.jac_pos[k, J_GR_R1_efd] = _find_pos(J, rows, dp, Int(table.efd_idx[k]))
+        end
     end
 
-    # Sanity gate: every always-present slot must be populated. Only the
-    # optional governor cross-coupling column (J_GR_R5_pm) is allowed to
-    # be 0 when has_gov is false; all other slots (including saturation
-    # cross-cols 44, 45 which are always allocated whether S2>0 or not)
-    # must be nonzero.
+    # Sanity gate: every always-present slot must be populated. Optional
+    # cross-coupling columns are allowed to be 0 when their wire is absent.
     @inbounds for k in 1:n
         for slot in 1:GENROU_JAC_NENTRIES
             slot == J_GR_R5_pm && continue
+            slot == J_GR_R1_efd && continue
             @assert table.jac_pos[k, slot] != 0 "GENROU jac_pos[$k, $slot] is zero — sparsity pattern mismatch"
         end
         if table.has_gov[k]
             @assert table.jac_pos[k, J_GR_R5_pm] != 0 "GENROU jac_pos[$k, J_GR_R5_pm] is zero but governor is wired"
+        end
+        if table.has_exc[k]
+            @assert table.jac_pos[k, J_GR_R1_efd] != 0 "GENROU jac_pos[$k, J_GR_R1_efd] is zero but exciter is wired"
         end
     end
     return nothing
@@ -460,6 +470,10 @@ cleared them.
         nz[table.jac_pos[k, J_GR_R1_id]]    = -(x_d - x_dp)*(-(-x_ddp + x_dp)*(x_dp - xl)^(-1.0) + 1) / T_d0p
         nz[table.jac_pos[k, J_GR_R1_edp]]   = dT_dedp_sat
         nz[table.jac_pos[k, J_GR_R1_phi2q]] = dT_dphi2q_sat
+        # Optional cross-coupling ∂f1/∂e_fd = 1/T_d0p (only when wired to an exciter).
+        if table.has_exc[k]
+            nz[table.jac_pos[k, J_GR_R1_efd]] = 1.0 / T_d0p
+        end
 
         # ===== diff row 2 =====
         nz[table.jac_pos[k, J_GR_R2_edp]]   = (-(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) - 1) / T_q0p

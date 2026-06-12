@@ -1,6 +1,7 @@
 include("generators.jl")
 include("loads.jl")
 include("governors.jl")
+include("exciters.jl")
 
 function initialize_device(
         device::DynamicDevice,
@@ -71,12 +72,38 @@ end
 # the shared pvec slot so the kernel SoA snapshot is correct.
 extract_init_params!(::AbstractDeviceType, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int) = nothing
 
+# Default no-op set_ratio!. Devices whose parameters live on the
+# machine base (Genrou, TGOV1) override.
+set_ratio!(::AbstractDeviceType, ratio::Float64) = nothing
+
 # IEESGO: pref is the 7th unknown (after 5 diff + 1 alg + 1 ctrl = 6;
 # initial_guess fills it at slot 7). Store on the device struct AND in
 # pvec slot 12 so kernels reading from SoA see the correct value.
 function extract_init_params!(dtype::IEESGO, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int)
     dtype.pref = sol_zero[7]
     p[par_ptr + 11] = dtype.pref   # slot 12, zero-based offset 11
+    return nothing
+end
+
+# Genrou: stash post-PF e_fd (the 11th unknown — diff 6, alg 4, then
+# ctrl[1]=e_fd, ctrl[2]=p_m) so attached exciters can read it during
+# their own init. Not mirrored into pvec; e_fd is not a Genrou parameter.
+function extract_init_params!(dtype::Genrou, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int)
+    dtype.e_fd0 = sol_zero[11]
+    return nothing
+end
+
+# TGOV1: pref is the 4th unknown (after 2 diff + 1 alg + 1 ctrl). Slot 8 in pvec.
+function extract_init_params!(dtype::TGOV1, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int)
+    dtype.pref = sol_zero[4]
+    p[par_ptr + 7] = dtype.pref    # slot 8, zero-based offset 7
+    return nothing
+end
+
+# SEXS: vref is the 3rd unknown (2 diff + 1 init slot). Slot 7 in pvec.
+function extract_init_params!(dtype::SEXS, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int)
+    dtype.vref = sol_zero[3]
+    p[par_ptr + 6] = dtype.vref    # slot 7, zero-based offset 6
     return nothing
 end
 
@@ -131,6 +158,24 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         end
     end
 
+    # Pre-controller hook: stash each Genrou's post-PF e_fd0 onto any
+    # attached SEXS's `vref` slot (used as scratch in `initial_guess!`
+    # / `initialize_dynamics!`; `extract_init_params!(::SEXS)`
+    # overwrites it with the converged vref after the controller solve).
+    for (i, device) in enumerate(ps.dynamic.devices)
+        device.dtype isa SEXS || continue
+        # Match to the Genrou by (bus, id).
+        gen_id = _normalize_id(device.dtype.id)
+        for cand in ps.dynamic.devices
+            if cand.dtype isa Genrou &&
+               cand.dtype.bus == device.dtype.bus &&
+               _normalize_id(cand.dtype.id) == gen_id
+                device.dtype.vref = cand.dtype.e_fd0
+                break
+            end
+        end
+    end
+
     # Initialize controllers. Generator needs to be initialized before
     # the controllers to set the initial power injection.
     for (i, device) in enumerate(ps.dynamic.devices)
@@ -147,6 +192,8 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
     if ps.dynamic.layout !== nothing
         refresh_zipload_table!(ps.dynamic)
         refresh_ieesgo_table!(ps.dynamic)
+        refresh_tgov1_table!(ps.dynamic)
+        refresh_sexs_table!(ps.dynamic)
     end
 end
 
@@ -182,6 +229,8 @@ end
 
     genrou_residual_batch!(f, z, u, p, L.genrou, diff_dim, net_ptr)
     ieesgo_residual_batch!(f, z, p, L.ieesgo, diff_dim)
+    tgov1_residual_batch!(f, z, p, L.tgov1, diff_dim)
+    sexs_residual_batch!(f, z, p, L.sexs)
     zipload_residual_batch!(f, z, p, L.zipload, net_ptr)
 
     _apply_events_fun!(f, v, dyn.events, net_ptr)
@@ -444,6 +493,8 @@ function preallocate_jacobian(ps::PowerSystem)
     # their (row, col) entries into the coord_list.
     for (i, device) in enumerate(ps.dynamic.devices)
         device.dtype isa IEESGO && continue  # IEESGO sparsity comes from the batched preallocator below
+        device.dtype isa TGOV1  && continue  # TGOV1 too
+        device.dtype isa SEXS   && continue  # SEXS too
         bus = map.bus[i]
         diff_ptr = map.diff_ptr[i]
         alg_ptr = diff_dim + map.alg_ptr[i]
@@ -457,6 +508,8 @@ function preallocate_jacobian(ps::PowerSystem)
     # reads the SoA table directly.
     L = ps.dynamic.layout::SimulationLayout
     ieesgo_preallocate!(coord_list, L.ieesgo, diff_dim)
+    tgov1_preallocate!(coord_list, L.tgov1, diff_dim)
+    sexs_preallocate!(coord_list, L.sexs)
 
     # Cross-device coupling sparsity: GENROU's swing eq reads governor p_m.
     # The legacy per-device GENROU preallocator can't see wiring; add it here.
@@ -483,6 +536,8 @@ function preallocate_jacobian(ps::PowerSystem)
     net_ptr = diff_dim + alg_dim
     genrou_jac_positions!(L.genrou, Jsp, diff_dim, net_ptr)
     ieesgo_jac_positions!(L.ieesgo, Jsp, diff_dim)
+    tgov1_jac_positions!(L.tgov1, Jsp, diff_dim)
+    sexs_jac_positions!(L.sexs, Jsp)
     zipload_jac_positions!(L.zipload, Jsp, net_ptr)
 
     return Jsp
@@ -525,6 +580,8 @@ end
     current_injection_jacobian!(jac, ybus, net_ptr)
     genrou_jacobian_batch!(jac, z, u, p, L.genrou, diff_dim, net_ptr)
     ieesgo_jacobian_batch!(jac, p, L.ieesgo, diff_dim)
+    tgov1_jacobian_batch!(jac, p, L.tgov1, diff_dim)
+    sexs_jacobian_batch!(jac, z, p, L.sexs)
     zipload_jacobian_batch!(jac, z, p, L.zipload, net_ptr)
 
     _apply_events_jac!(jac, dyn.events, net_ptr)

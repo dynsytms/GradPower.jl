@@ -73,6 +73,28 @@ consumes_signals(::Type{IEESGO}) = (
      state_kind  = :w),      # source: generator's w state
 )
 
+# TGOV1 has identical attachment shape to IEESGO: governor whose alg
+# output is p_m, reading the generator's w.
+attaches_to(::Type{TGOV1}) = Genrou
+produces_signals(::Type{TGOV1}) = (
+    (target_ctrl_offset = 1, source_kind = :alg_first),
+)
+consumes_signals(::Type{TGOV1}) = (
+    (ctrl_offset = 0, state_kind = :w),
+)
+
+# SEXS exciter: attaches to Genrou, produces e_fd at its 2nd diff state
+# (offset 1 within diff block), reads target's vm (bus voltage magnitude)
+# but vm reading is hard-wired in the kernel via the bus index — no
+# consumes_signals entry needed.
+attaches_to(::Type{SEXS}) = Genrou
+produces_signals(::Type{SEXS}) = (
+    (target_ctrl_offset = 0,                # Genrou ctrl[0] = e_fd
+     source_kind        = :diff_at,
+     source_offset      = 1),               # SEXS diff[1] = e_fd
+)
+consumes_signals(::Type{SEXS}) = ()
+
 # ------------------------------------------------------------------------
 # Generic wire_controls!
 #
@@ -145,6 +167,10 @@ function wire_controls!(psd, dmap)
                 source_z = psd.diff_dim + device.alg_ptr
             elseif sig.source_kind === :diff_first
                 source_z = device.diff_ptr
+            elseif sig.source_kind === :diff_at
+                # `sig.source_offset` is zero-based offset within the
+                # controller's diff block.
+                source_z = device.diff_ptr + sig.source_offset
             else
                 error("Unknown source_kind $(sig.source_kind) in produces_signals($(typeof(device.dtype)))")
             end

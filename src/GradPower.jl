@@ -301,6 +301,18 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
     # off-by-one bug from Phase 1 (p_m used to land in the e_fd slot).
     wire_controls!(psd, dmap)
 
+    # Apply mbase/sbase scaling to controllers that need it (e.g. TGOV1's
+    # R/VMAX/VMIN/DT). uqgrid does this in its parser. `set_ratio!` has
+    # a no-op default; only devices whose parameters live on machine base
+    # override (defined alongside the device struct).
+    for (i, device) in enumerate(psd.devices)
+        device.dtype isa AbstractGenControlType || continue
+        gen_idx = dmap.gen[i]
+        gen_idx == 0 && continue
+        ratio = ps.gens[gen_idx].mbase / mvbase
+        set_ratio!(device.dtype, ratio)
+    end
+
     psd.map = dmap
     ps.dynamic = psd
 
@@ -308,6 +320,10 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics; add_loads::Boo
     # dynamics.jl to consume these; for now they coexist with the old
     # heterogeneous device loop and are not used at runtime.
     psd.layout = build_layout!(psd)
+
+    # SEXS needs ps.busmap to resolve its bus into a global voltage index;
+    # fix that up after the layout build.
+    fix_sexs_vr_idx!(psd, ps)
 end
 
 function DynamicProblem(ps::PowerSystem)
@@ -352,6 +368,8 @@ include("dynamics.jl")
 # DEVICE_REGISTRY (Phase 1.5).
 include("tables/genrou.jl")
 include("tables/ieesgo.jl")
+include("tables/tgov1.jl")
+include("tables/sexs.jl")
 include("tables/esdc1a.jl")
 include("tables/zipload.jl")
 
@@ -371,6 +389,8 @@ include("coupling.jl")
 # coexist and the parity test in test/test_parity.jl asserts agreement.
 include("kernels/genrou.jl")
 include("kernels/ieesgo.jl")
+include("kernels/tgov1.jl")
+include("kernels/sexs.jl")
 include("kernels/zipload.jl")
 
 include("sensitivities.jl")

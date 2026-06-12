@@ -136,3 +136,121 @@ function initial_guess!(
     x0[7] = pref           # pref
     return nothing
 end
+
+# ===========================
+# TGOV1
+# ===========================
+
+mutable struct TGOV1 <: AbstractGovernorType
+    diff_size::Int64
+    alg_size::Int64
+    ctrl_size::Int64
+    par_size::Int64
+    bus::Int64
+    id::String
+    R::Float64
+    T1::Float64
+    VMAX::Float64
+    VMIN::Float64
+    T2::Float64
+    T3::Float64
+    DT::Float64
+    # initialization-derived parameter; filled by initialize_dynamics! and
+    # mirrored into pvec slot 8 so the kernel can read it from SoA.
+    pref::Float64
+end
+
+function TGOV1(bus, id, R, T1, VMAX, VMIN, T2, T3, DT)
+    TGOV1(2, 1, 1, 8, bus, id, R, T1, VMAX, VMIN, T2, T3, DT, 0.0)
+end
+
+function from_data_fields(::Type{TGOV1}, fields::Vector{SubString{String}})
+    bus = parse(Int64, fields[1])
+    id = String(fields[3])
+    R = parse(Float64, fields[4])
+    T1 = parse(Float64, fields[5])
+    VMAX = parse(Float64, fields[6])
+    VMIN = parse(Float64, fields[7])
+    T2 = parse(Float64, fields[8])
+    T3 = parse(Float64, fields[9])
+    DT = parse(Float64, fields[10])
+    TGOV1(bus, id, R, T1, VMAX, VMIN, T2, T3, DT)
+end
+
+function fill_pvec!(pvec::AbstractArray, dtype::TGOV1)
+    pvec[1] = dtype.R
+    pvec[2] = dtype.T1
+    pvec[3] = dtype.VMAX
+    pvec[4] = dtype.VMIN
+    pvec[5] = dtype.T2
+    pvec[6] = dtype.T3
+    pvec[7] = dtype.DT
+    pvec[8] = dtype.pref
+end
+
+# Apply mbase/sbase scaling. uqgrid (parse.py:573-576) scales R/VMAX/VMIN by
+# sbase/mbase and DT by mbase/sbase. With `ratio = mbase/sbase` here, that
+# means dividing R/VMAX/VMIN by ratio and multiplying DT by ratio.
+function set_ratio!(dtype::TGOV1, ratio::Float64)
+    dtype.R    = dtype.R    / ratio
+    dtype.VMAX = dtype.VMAX / ratio
+    dtype.VMIN = dtype.VMIN / ratio
+    dtype.DT   = dtype.DT   * ratio
+end
+
+function get_device_name(dtype::TGOV1)
+    return "TGOV1"
+end
+
+function initialize_dynamics!(
+        f::AbstractArray,
+        x0::AbstractArray,
+        pvec::AbstractArray,
+        pg::Float64,
+        qg::Float64,
+        vm::Float64,
+        va::Float64,
+        dtype::TGOV1
+)
+    R = pvec[1]
+    T1 = pvec[2]
+    T2 = pvec[5]
+    T3 = pvec[6]
+    DT = pvec[7]
+
+    # Unknowns: 2 diff (x1, x2) + 1 alg (p_m) + 1 ctrl/init (pref).
+    x1 = x0[1]
+    x2 = x0[2]
+    p_m = x0[3]
+    pref = x0[4]
+
+    w = 0.0  # steady state
+
+    f[1] = (-x1 + (1.0 - T2/T3)*x2) / T3
+    f[2] = ((pref - w)/R - x2) / T1
+    f[3] = x1 + (T2/T3)*x2 - DT*w - p_m
+    # init constraint: governor output equals generator electrical power
+    f[4] = p_m - pg
+    return nothing
+end
+
+function initial_guess!(
+        x0::AbstractArray,
+        pvec::AbstractArray,
+        pg::Float64,
+        qg::Float64,
+        vm::Float64,
+        va::Float64,
+        dtype::TGOV1
+    )
+    R = pvec[1]
+    T2 = pvec[5]
+    T3 = pvec[6]
+    x2 = pg
+    x1 = (1.0 - T2/T3)*x2
+    x0[1] = x1
+    x0[2] = x2
+    x0[3] = pg          # p_m
+    x0[4] = R*pg        # pref
+    return nothing
+end

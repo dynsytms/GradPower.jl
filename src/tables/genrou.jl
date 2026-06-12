@@ -12,7 +12,7 @@
 #   directly via the d_pm column entry. Today GENROU has no exciter wiring
 #   active in tracked cases; we reserve no slot for e_fd (0 entries) and a
 #   single optional slot for p_m → see GENROU_JAC_PM_COL_SLOT below.
-const GENROU_JAC_NENTRIES = 45  # 42 base + 1 optional pm-col + 2 saturation cross-cols
+const GENROU_JAC_NENTRIES = 46  # 42 base + pm-col (43) + sat cross-cols (44,45) + efd-col (46)
 const GENROU_JAC_PM_COL_SLOT = 43  # ∂f5/∂p_m when has_gov[k]; 0-fill when not wired
 
 #
