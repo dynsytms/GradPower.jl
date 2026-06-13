@@ -10,8 +10,6 @@ multi-machine power system through fault contingencies. The whole pipeline is wr
 derivatives flow through it, enabling gradient-based optimization, sensitivity
 analysis, and machine-learning-in-the-loop workflows.
 
-![2-bus fault response](docs/assets/2bus_fault.png)
-
 ## Features
 
 - Read PSS/E `.raw` (network) and `.dyr` (dynamic) files; MATPOWER `.m` files
@@ -41,13 +39,14 @@ pkg> dev https://github.com/dynsytms/GradPower.jl
 
 ## Quick start
 
-A complete fault-on-bus simulation on the bundled 2-bus case:
+A complete fault-on-bus simulation on the bundled 2-bus case (GENROU
+machine with an IEESGO governor):
 
 ```julia
 using GradPower
 
 # 1. Parse PSS/E network + dynamic data.
-sys = GradPower.from_psse("examples/2bus.raw", "examples/2bus.dyr")
+sys = GradPower.from_psse("examples/2bus.raw", "examples/2bus_IEESGO.dyr")
 
 # 2. Build the admittance matrix and solve the power flow.
 GradPower.build_network!(sys)
@@ -79,15 +78,9 @@ vim = traj[voff + 2*(b - 1) + 2, :]
 vm  = sqrt.(vre.^2 .+ vim.^2)
 ```
 
-The plot at the top of this README was produced from exactly this trajectory.
+The trajectory below was produced from exactly this script:
 
-To run the same script on a larger case, swap the file paths:
-
-```julia
-sys = GradPower.from_psse("examples/ACTIVSg2000.raw", "examples/ACTIVSg2000.dyr")
-```
-
-Everything downstream is identical.
+![2-bus fault response](docs/assets/2bus_fault.png)
 
 ## Repository layout
 
