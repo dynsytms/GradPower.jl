@@ -138,33 +138,6 @@ function find_outliers(vec::Vector{Float64})
     return outliers
 end
 
-function visual_stats(sys::PowerSystem)
-    # displays various statistics about the system. such as histogram of voltage magnitues,
-    # histogram of generator dispatch, histogram of load demand, etc.
-
-    # uses unicodeplots
-
-    # plot voltage magnitudes
-    vm = [bus.v0m for bus in sys.buses]
-    plt = histogram(vm, title="Voltage Magnitudes", xlabel="Voltage Magnitude", ylabel="Count")
-    display(plt)
-
-    # plot voltage angles
-    va = [bus.v0a for bus in sys.buses]
-    plt = histogram(va, title="Voltage Angles", xlabel="Voltage Angle", ylabel="Count")
-    display(plt)
-
-    # plot generator dispatch
-    psch = [gen.psch for gen in sys.gens]
-    plt = histogram(psch, title="Generator Dispatch", xlabel="Active Power", ylabel="Count")
-    display(plt)
-
-    # plot load demand
-    pd = [load.pd for load in sys.loads]
-    plt = histogram(pd, title="Load Demand", xlabel="Active Power", ylabel="Count")
-    display(plt)
-end
-
 function get_bus_info(busn::Int64, sys::PowerSystem)
     # prints all information about a bus. including connected branches, connected generators,
     # connected loads, etc.

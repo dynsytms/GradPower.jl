@@ -8,7 +8,6 @@ using SparseArrays
 using NLsolve
 using KLU
 using ForwardDiff
-using UnicodePlots
 using Statistics
 
 import NLPModels
