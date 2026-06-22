@@ -59,8 +59,8 @@ GradPower.initialize_dynamics!(dprob, sys)
 # 4. Schedule a 3-phase fault on bus 2: r_fault = 0.2 pu from t = 0.2 s to t = 0.3 s.
 GradPower.add_event!(sys, GradPower.ContingencyEvent(2, 0.2, 0.2, 0.3))
 
-# 5. Integrate to t_final = 3.0 s.
-tvec, traj = GradPower.integrate!(dprob, sys, 3.0)
+# 5. Integrate to t_final = 10.0 s.
+tvec, traj = GradPower.integrate!(dprob, sys, 10.0)
 ```
 
 `traj` is a `(system_size × nsteps)` matrix laid out as
