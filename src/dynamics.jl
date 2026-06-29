@@ -2,6 +2,7 @@ include("generators.jl")
 include("loads.jl")
 include("governors.jl")
 include("exciters.jl")
+include("stabilizers.jl")
 include("static_gen.jl")
 
 function initialize_device(
@@ -9,8 +10,8 @@ function initialize_device(
         i::Int64,
         map::DynamicMap,
         ps::PowerSystem,
-        x::AbstractArray,
-        y::AbstractArray,
+        z::AbstractArray,
+        diff_dim::Int64,
         u::AbstractArray,
         p::AbstractArray
     )
@@ -25,19 +26,19 @@ function initialize_device(
     alg_size = device.dtype.alg_size
     ctrl_size = device.dtype.ctrl_size
     par_size = device.dtype.par_size
-    
+
     # parameter view
     pview = @view(p[par_ptr:par_ptr+par_size-1])
-    
+
     # find generator in static system and retrieve power injection.
     gen = ps.gens[map.gen[i]]
     pg = gen.psch
     qg = gen.qsch
-    
+
     # retrieve voltage magnitude and angle.
     vm = ps.buses[map.bus[i]].v0m
     va = ps.buses[map.bus[i]].v0a
-    
+
     # allocate initializing vector.
     # NOTE: I would prefer not to allocate. Not sure how to do it more efficiently since
     # I need to separate zvec and uvec.
@@ -56,9 +57,12 @@ function initialize_device(
     rhs_fun!(xinit, sol.zero)
     @assert maximum(abs, xinit) < 1e-9 "Init residual $(maximum(abs, xinit)) exceeds 1e-9 for device $i of type $(typeof(device.dtype))"
     xinit .= sol.zero
-    # copy to zvec and uvec
-    x[diff_ptr:diff_ptr+diff_size-1] .= xinit[1:diff_size]
-    y[alg_ptr:alg_ptr+alg_size-1] .= xinit[diff_size+1:diff_size+alg_size]
+    # copy to zvec and uvec. diff_ptr is the absolute z-index; the alg
+    # states live at diff_dim + alg_ptr (absolute z-index after cluster-
+    # contiguous reordering).
+    z[diff_ptr:diff_ptr+diff_size-1] .= xinit[1:diff_size]
+    alg_global = diff_dim + alg_ptr
+    z[alg_global:alg_global+alg_size-1] .= xinit[diff_size+1:diff_size+alg_size]
     u[ctrl_ptr:ctrl_ptr+ctrl_size-1] .= xinit[diff_size+alg_size+1:diff_size+alg_size+ctrl_size]
 
     # Per-device post-init hook: governors / exciters may have
@@ -108,6 +112,14 @@ function extract_init_params!(dtype::SEXS, sol_zero::AbstractArray, p::AbstractA
     return nothing
 end
 
+# ESDC1A: vref is computed in closed form by `initial_guess!` and stashed
+# on `dtype.vref` (and mirrored into pvec slot 10). Re-mirror here so the
+# refresh path can pick it up unconditionally.
+function extract_init_params!(dtype::ESDC1A, sol_zero::AbstractArray, p::AbstractArray, par_ptr::Int)
+    p[par_ptr + 9] = dtype.vref    # slot 10, zero-based offset 9
+    return nothing
+end
+
 function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
 
     z = dp.zvec
@@ -119,9 +131,6 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
     ctrl_dim = ps.dynamic.ctrl_dim
     par_dim = ps.dynamic.par_dim
     nbus = length(ps.buses)
-
-    x = @view z[1:diff_dim]
-    y = @view z[diff_dim+1:diff_dim+alg_dim]
 
     # initialize voltages
     for i in 1:nbus
@@ -155,7 +164,7 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
     # Initialize generators
     for (i, device) in enumerate(ps.dynamic.devices)
         if device.dtype isa AbstractGeneratorType
-            initialize_device(device, i, map, ps, z, y, u, p)
+            initialize_device(device, i, map, ps, z, diff_dim, u, p)
         end
     end
 
@@ -172,11 +181,13 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         end
         sg.p0 = psum
         sg.q0 = qsum
+        # Write alg states using absolute z-index (diff_dim + alg_ptr).
+        alg_global = diff_dim + device.alg_ptr
         if sg.bus_type == 2          # PV: alg state is q
-            y[device.alg_ptr] = qsum
+            z[alg_global] = qsum
         elseif sg.bus_type == 3      # SLACK: alg states are p, q
-            y[device.alg_ptr]     = psum
-            y[device.alg_ptr + 1] = qsum
+            z[alg_global]     = psum
+            z[alg_global + 1] = qsum
         end
         # mirror p0, q0 into pvec so the kernel reads correct values
         p[device.par_ptr]     = psum
@@ -201,11 +212,26 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         end
     end
 
+    # Same hook for ESDC1A — its `initial_guess!` reads e_fd0 from
+    # `dtype.vref` as scratch and overwrites it with the computed vref.
+    for (i, device) in enumerate(ps.dynamic.devices)
+        device.dtype isa ESDC1A || continue
+        gen_id = _normalize_id(device.dtype.id)
+        for cand in ps.dynamic.devices
+            if cand.dtype isa Genrou &&
+               cand.dtype.bus == device.dtype.bus &&
+               _normalize_id(cand.dtype.id) == gen_id
+                device.dtype.vref = cand.dtype.e_fd0
+                break
+            end
+        end
+    end
+
     # Initialize controllers. Generator needs to be initialized before
     # the controllers to set the initial power injection.
     for (i, device) in enumerate(ps.dynamic.devices)
         if device.dtype isa AbstractGenControlType
-            initialize_device(device, i, map, ps, z, y, u, p)
+            initialize_device(device, i, map, ps, z, diff_dim, u, p)
         end
     end
 
@@ -219,6 +245,8 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         refresh_ieesgo_table!(ps.dynamic)
         refresh_tgov1_table!(ps.dynamic)
         refresh_sexs_table!(ps.dynamic)
+        refresh_esdc1a_table!(ps.dynamic)
+        refresh_ieeest_table!(ps.dynamic)
         refresh_static_gen_table!(ps.dynamic)
     end
 end
@@ -238,13 +266,21 @@ end
 
 @noinline function _rhs_fun_batched!(f::AbstractArray, z::AbstractArray, u::AbstractArray,
                                     p::AbstractArray, dyn::PowerSystemDynamics,
-                                    ybus::SparseMatrixCSC, L::SimulationLayout)
+                                    ybus::SparseMatrixCSC, L::SimulationLayout,
+                                    log::Union{Nothing,SolverLog}=nothing)
     diff_dim = dyn.diff_dim
     alg_dim  = dyn.alg_dim
     net_ptr  = diff_dim + alg_dim
     v  = @view z[net_ptr+1:end]
     fv = @view f[net_ptr+1:end]
-    mul!(fv, ybus, v, -1.0, 0.0)
+    if log !== nothing
+        _t0 = time_ns()
+        mul!(fv, ybus, v, -1.0, 0.0)
+        log.ybus_mul_ns += time_ns() - _t0
+        log.ybus_mul_count += 1
+    else
+        mul!(fv, ybus, v, -1.0, 0.0)
+    end
 
     # Apply cross-device control routing: u[i] ← z[uvec_idx[i]] for
     # each wired ctrl slot. uvec_idx[i] == 0 means "not wired" (slot
@@ -256,7 +292,9 @@ end
     genrou_residual_batch!(f, z, u, p, L.genrou, diff_dim, net_ptr)
     ieesgo_residual_batch!(f, z, p, L.ieesgo, diff_dim)
     tgov1_residual_batch!(f, z, p, L.tgov1, diff_dim)
+    ieeest_residual_batch!(f, z, p, L.ieeest, diff_dim)
     sexs_residual_batch!(f, z, p, L.sexs)
+    esdc1a_residual_batch!(f, z, p, L.esdc1a)
     zipload_residual_batch!(f, z, p, L.zipload, net_ptr)
     static_gen_residual_batch!(f, z, p, L.static_gen)
 
@@ -311,9 +349,47 @@ function beuler!(
     dt::Float64
 )
     rhs_fun!(f, z, u, p, sys)
-    @inbounds for i = 1:diff_dim
-        f[i] = z[i] - zold[i] - dt*f[i]
+    di = sys.dynamic.diff_indices
+    if di !== nothing
+        @inbounds for i in di
+            f[i] = z[i] - zold[i] - dt*f[i]
+        end
+    else
+        @inbounds for i = 1:diff_dim
+            f[i] = z[i] - zold[i] - dt*f[i]
+        end
     end
+end
+
+# Typed variant — caller pre-extracts dyn / ybus / layout once so the
+# Union{Nothing,...} fields on `PowerSystem` are not re-loaded each
+# Newton iteration. Used by `newton_step!` for the per-iteration hot
+# path; zero-alloc on its own.
+@inline function beuler_batched!(
+    f::AbstractVector,
+    z::AbstractVector,
+    zold::AbstractVector,
+    u::AbstractVector,
+    p::AbstractVector,
+    dyn::PowerSystemDynamics,
+    ybus::SparseMatrixCSC,
+    L::SimulationLayout,
+    diff_dim::Int64,
+    dt::Float64,
+    log::Union{Nothing,SolverLog}=nothing,
+)
+    _rhs_fun_batched!(f, z, u, p, dyn, ybus, L, log)
+    di = dyn.diff_indices
+    if di !== nothing
+        @inbounds for i in di
+            f[i] = z[i] - zold[i] - dt*f[i]
+        end
+    else
+        @inbounds for i = 1:diff_dim
+            f[i] = z[i] - zold[i] - dt*f[i]
+        end
+    end
+    return nothing
 end
 
 function beuler_jac!(
@@ -333,7 +409,35 @@ function beuler_jac!(
     rhs_jac!(J, z, u, p, sys)
 
     # scale for backward Euler
-    _jacobian_beuler!(J, diff_dim, dt)
+    isd = sys.dynamic.is_diff
+    if isd !== nothing
+        _jacobian_beuler_indices!(J, isd, dt)
+    else
+        _jacobian_beuler!(J, diff_dim, dt)
+    end
+end
+
+# Typed variant — same rationale as `beuler_batched!`.
+@inline function beuler_jac_batched!(
+    J::SparseMatrixCSC,
+    z::AbstractVector,
+    u::AbstractVector,
+    p::AbstractVector,
+    dyn::PowerSystemDynamics,
+    ybus::SparseMatrixCSC,
+    L::SimulationLayout,
+    diff_dim::Int64,
+    dt::Float64,
+)
+    fill!(J.nzval, 0.0)
+    _rhs_jac_batched!(J, z, u, p, dyn, ybus, L)
+    isd = dyn.is_diff
+    if isd !== nothing
+        _jacobian_beuler_indices!(J, isd, dt)
+    else
+        _jacobian_beuler!(J, diff_dim, dt)
+    end
+    return nothing
 end
 
 function _jacobian_beuler!(J::SparseMatrixCSC, NDIFFEQ::Int, h::Float64)
@@ -341,15 +445,15 @@ function _jacobian_beuler!(J::SparseMatrixCSC, NDIFFEQ::Int, h::Float64)
     for col = 1:size(J, 2)
         # Flag to check if diagonal element for the column is found
         diagonal_found = false
-        
+
         # Iterating through the non-zero elements in each column
         for row_index in nzrange(J, col)
             row = rowvals(J)[row_index]
-            
+
             # Update values if the row index is less or equal to NDIFFEQ
             if row <= NDIFFEQ
                 J.nzval[row_index] *= -h
-                
+
                 # Update diagonal element
                 if row == col
                     J.nzval[row_index] += 1.0
@@ -366,12 +470,46 @@ function _jacobian_beuler!(J::SparseMatrixCSC, NDIFFEQ::Int, h::Float64)
     end
 end
 
+"""
+    _jacobian_beuler_indices!(J, is_diff, h)
+
+Backward-Euler Jacobian scaling for cluster-contiguous layout.
+`is_diff` is a precomputed BitVector: `is_diff[i] == true` iff z[i] is
+a differential state. For each such position i, the row is scaled:
+J[i,:] *= -h and J[i,i] += 1.0.
+
+Allocation-free: `is_diff` is precomputed once during `reorder_state!`.
+"""
+function _jacobian_beuler_indices!(J::SparseMatrixCSC, is_diff::BitVector, h::Float64)
+    n_da = length(is_diff)
+    @inbounds for col = 1:size(J, 2)
+        diagonal_found = false
+        for row_index in nzrange(J, col)
+            row = rowvals(J)[row_index]
+            if row <= n_da && is_diff[row]
+                J.nzval[row_index] *= -h
+                if row == col
+                    J.nzval[row_index] += 1.0
+                    diagonal_found = true
+                end
+            end
+        end
+        if !diagonal_found && col <= n_da && is_diff[col]
+            @warn "Diagonal element not found for diff column $col. Adding it."
+            J[col, col] += 1.0
+        end
+    end
+end
+
 function integrate!(
     dp::DynamicProblem,
     ps::PowerSystem,
     tf::Float64;
     dt::Float64=(1.0/120.0),
-    verbose::Bool=false
+    verbose::Bool=false,
+    log::Union{Nothing,SolverLog}=nothing,
+    solver::Symbol=:monolithic,
+    newton_tol::Float64=1e-10,
 )
     # TODO: here we should have some checks to ensure that the problem is initialized
 
@@ -379,19 +517,30 @@ function integrate!(
     nsteps = Int(round(tf/dt))
     tvec = collect(0:dt:tf)
 
-    # retrieve events.
-    # TODO: we can only do one event right now.
+    # retrieve events — build sorted schedule of (step, event_index, action)
+    # tuples so the time loop can process all events at each step in O(1).
     events = ps.dynamic.events
-    @assert length(events) <= 1
-    ton = toff = tf + dt
-    step_on = step_off = nsteps + 1
-    if length(events) == 1
-        event = events[1]
-        ton = event.ton
-        toff = event.toff
-        step_on = Int(round(ton/dt))
-        step_off = Int(round(toff/dt))
+    disconnect_events = ps.dynamic.disconnect_events
+    trip_events = ps.dynamic.trip_events
+    # Schedule: each entry is (step, event_index, action)
+    #   :on/:off    — ContingencyEvent activate/deactivate
+    #   :disconnect — DisconnectDeviceEvent
+    #   :trip       — TripLineEvent
+    event_schedule = Tuple{Int,Int,Symbol}[]
+    for (ei, ev) in enumerate(events)
+        push!(event_schedule, (Int(round(ev.ton / dt)), ei, :on))
+        push!(event_schedule, (Int(round(ev.toff / dt)), ei, :off))
     end
+    for (di, dev) in enumerate(disconnect_events)
+        push!(event_schedule, (Int(round(dev.ton / dt)), di, :disconnect))
+    end
+    for (ti, tev) in enumerate(trip_events)
+        push!(event_schedule, (Int(round(tev.ton / dt)), ti, :trip))
+        if isfinite(tev.toff)
+            push!(event_schedule, (Int(round(tev.toff / dt)), ti, :reclose))
+        end
+    end
+    sort!(event_schedule, by = x -> x[1])
 
     # retrieve sizes
     nbus = length(ps.buses)
@@ -403,12 +552,16 @@ function integrate!(
 
     # allocate temporary vectors
     zold = zeros(Float64, system_size)
+    # Newton scratch — reused across every Newton call so the inner
+    # loop allocates nothing per iteration.
+    dx_buf   = zeros(Float64, system_size)
+    zwork    = zeros(Float64, system_size)
     verbose && println("Integrating from t = 0 s to t = $tf s with dt = $dt s.")
-    # newton parameters — use tight tolerance (1e-10). Looser tolerance
+    # newton parameters — default tolerance 1e-10. Looser tolerance
     # leaves residual algebraic state error that gets amplified through
     # fault transients (gen i_q/i_d off by ~1e-2 if tol is 1e-9, vs
     # ~1e-10 with tol=1e-10).
-    ftol = 1e-10
+    ftol = newton_tol
     max_iter = 30
 
     # initial condition
@@ -427,20 +580,69 @@ function integrate!(
     fact.common.ordering = 1
     fact.common.tol = 1e-3
 
+    # Schur workspace (preallocated once, reused every step)
+    use_schur = solver === :schur
+    use_schur_gmres = solver === :schur_gmres
+    sw = use_schur ? SchurWorkspace(ps) : nothing
+    gsw = use_schur_gmres ? GmresSchurWorkspace(ps, zold, dp.pvec, dt) : nothing
+
     # time loop
+    sched_idx = 1  # pointer into sorted event_schedule
     for k in 1:nsteps
         verbose && println("Time-stepping. t = $(tvec[k]) s.")
-        newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol)
+        if use_schur
+            newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log)
+        elseif use_schur_gmres
+            newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log)
+        else
+            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log)
+        end
         traj[:,k+1] .= zold
-        
-        if k == step_on
-            activate!(events[1])
-            verbose && println("Event activated at t = $ton s. Fault at bus $(events[1].bus).")
-            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol)
-        elseif k == step_off
-            deactivate!(events[1])
-            verbose && println("Event deactivated at t = $toff s.")
-            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol)
+
+        # process all events scheduled at this step
+        any_event = false
+        any_topology_change = false
+        while sched_idx <= length(event_schedule) && event_schedule[sched_idx][1] == k
+            step_k, idx, action = event_schedule[sched_idx]
+            if action === :on
+                activate!(events[idx])
+                verbose && println("Fault $idx activated at t = $(events[idx].ton) s. Bus $(events[idx].bus).")
+            elseif action === :off
+                deactivate!(events[idx])
+                verbose && println("Fault $idx deactivated at t = $(events[idx].toff) s.")
+            elseif action === :disconnect
+                dev_ev = disconnect_events[idx]
+                _set_device_offline!(ps.dynamic, dev_ev.device_idx)
+                verbose && println("Disconnect $idx: device $(dev_ev.device_idx) disconnected at t = $(dev_ev.ton) s.")
+            elseif action === :trip
+                tev = trip_events[idx]
+                _apply_trip_line!(ps.network.ybus_real, tev)
+                any_topology_change = true
+                verbose && println("Trip $idx: line $(tev.from_bus)-$(tev.to_bus) tripped at t = $(tev.ton) s.")
+            elseif action === :reclose
+                tev = trip_events[idx]
+                _apply_reclose_line!(ps.network.ybus_real, tev)
+                any_topology_change = true
+                verbose && println("Reclose $idx: line $(tev.from_bus)-$(tev.to_bus) reclosed at t = $(tev.toff) s.")
+            end
+            any_event = true
+            sched_idx += 1
+        end
+
+        # Refresh Y-preconditioner after topology change
+        if any_topology_change && use_schur_gmres
+            refresh_y_preconditioner!(gsw.prec, gsw.sw, ps, zold, dp.pvec, dt)
+        end
+
+        # re-solve at dt=0 after any event state change
+        if any_event
+            if use_schur
+                newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log)
+            elseif use_schur_gmres
+                newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log)
+            else
+                newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log)
+            end
         end
 
     end
@@ -497,9 +699,18 @@ function preallocate_jacobian(ps::PowerSystem)
     # coordinate list for sparse jacobian
     coord_list = [Vector{Int}() for _ in 1:sys_dim]
 
-    # diagonal non-zeros for integrators
-    for i in 1:diff_dim
-        push!(coord_list[i], i)
+    # diagonal non-zeros for integrators. After cluster-contiguous
+    # reordering, diff equations are at psd.diff_indices positions
+    # (no longer 1:diff_dim).
+    di = ps.dynamic.diff_indices
+    if di !== nothing
+        for i in di
+            push!(coord_list[i], i)
+        end
+    else
+        for i in 1:diff_dim
+            push!(coord_list[i], i)
+        end
     end
 
     # network equations
@@ -520,17 +731,20 @@ function preallocate_jacobian(ps::PowerSystem)
     # Per-device sparsity contribution (Genrou + ZIPLoad) — setup-time
     # only, runs once. Genrou and ZIPLoad each provide a
     # `preallocate_jacobian!(coord_list, ..., dtype)` method that pushes
-    # their (row, col) entries into the coord_list.
+    # their (row, col) entries into the coord_list. Uses device pointers
+    # (updated by reorder_state!) not DynamicMap copies.
     for (i, device) in enumerate(ps.dynamic.devices)
         device.dtype isa IEESGO         && continue  # IEESGO sparsity comes from the batched preallocator below
         device.dtype isa TGOV1          && continue  # TGOV1 too
+        device.dtype isa IEEEST         && continue  # IEEEST too
         device.dtype isa SEXS           && continue  # SEXS too
+        device.dtype isa ESDC1A         && continue  # ESDC1A too
         device.dtype isa StaticGenerator && continue # StaticGenerator too
         bus = map.bus[i]
-        diff_ptr = map.diff_ptr[i]
-        alg_ptr = diff_dim + map.alg_ptr[i]
+        diff_ptr = device.diff_ptr
+        alg_ptr = diff_dim + device.alg_ptr
         volt_ptr = diff_dim + alg_dim + 2*(bus -1) + 1
-        ctrl_ptr = map.ctrl_ptr[i]
+        ctrl_ptr = device.ctrl_ptr
         preallocate_jacobian!(coord_list, diff_ptr, alg_ptr, ctrl_ptr, volt_ptr, device.dtype)
     end
 
@@ -540,7 +754,9 @@ function preallocate_jacobian(ps::PowerSystem)
     L = ps.dynamic.layout::SimulationLayout
     ieesgo_preallocate!(coord_list, L.ieesgo, diff_dim)
     tgov1_preallocate!(coord_list, L.tgov1, diff_dim)
+    ieeest_preallocate!(coord_list, L.ieeest, diff_dim)
     sexs_preallocate!(coord_list, L.sexs)
+    esdc1a_preallocate!(coord_list, L.esdc1a)
     static_gen_preallocate!(coord_list, L.static_gen)
 
     # Cross-device coupling sparsity: GENROU's swing eq reads governor p_m.
@@ -569,7 +785,9 @@ function preallocate_jacobian(ps::PowerSystem)
     genrou_jac_positions!(L.genrou, Jsp, diff_dim, net_ptr)
     ieesgo_jac_positions!(L.ieesgo, Jsp, diff_dim)
     tgov1_jac_positions!(L.tgov1, Jsp, diff_dim)
+    ieeest_jac_positions!(L.ieeest, Jsp, diff_dim)
     sexs_jac_positions!(L.sexs, Jsp)
+    esdc1a_jac_positions!(L.esdc1a, Jsp)
     zipload_jac_positions!(L.zipload, Jsp, net_ptr)
     static_gen_jac_positions!(L.static_gen, Jsp)
 
@@ -614,7 +832,9 @@ end
     genrou_jacobian_batch!(jac, z, u, p, L.genrou, diff_dim, net_ptr)
     ieesgo_jacobian_batch!(jac, p, L.ieesgo, diff_dim)
     tgov1_jacobian_batch!(jac, p, L.tgov1, diff_dim)
+    ieeest_jacobian_batch!(jac, z, p, L.ieeest, diff_dim)
     sexs_jacobian_batch!(jac, z, p, L.sexs)
+    esdc1a_jacobian_batch!(jac, z, p, L.esdc1a)
     zipload_jacobian_batch!(jac, z, p, L.zipload, net_ptr)
     static_gen_jacobian_batch!(jac, z, p, L.static_gen)
 

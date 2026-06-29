@@ -130,37 +130,49 @@ end
 # Residual batch
 # --------------------------------------------------------------------
 
+@inline function _ieesgo_residual_one!(f, z, p,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        k::Int, diff_dim::Int)
+    @inbounds begin
+    dp = Int(diff_ptr[k])
+    ap = Int(alg_ptr[k]) + diff_dim
+    pp = Int(par_ptr[k])
+    w_idx = Int(w_idx_arr[k])
+
+    T1 = p[pp];      T2 = p[pp + 1]; T3 = p[pp + 2]
+    T4 = p[pp + 3];  T5 = p[pp + 4]; T6 = p[pp + 5]
+    K1 = p[pp + 6];  K2 = p[pp + 7]; K3 = p[pp + 8]
+    pref = p[pp + 11]
+
+    PF0 = z[dp]
+    PLL = z[dp + 1]
+    TP1 = z[dp + 2]
+    TP2 = z[dp + 3]
+    TP3 = z[dp + 4]
+    p_m = z[ap]
+    w = w_idx == 0 ? 0.0 : z[w_idx]
+
+    f[dp]     = (1.0 / T1) * (K1 * w - PF0)
+    f[dp + 1] = (1.0 / T3) * ((1.0 - (T2 / T3)) * PF0 - PLL)
+    SatP = pref - (T2 / T3) * PF0 - PLL
+    f[dp + 2] = (1.0 / T4) * (SatP - TP1)
+    f[dp + 3] = (1.0 / T5) * (K2 * TP1 - TP2)
+    f[dp + 4] = (1.0 / T6) * (K3 * TP2 - TP3)
+    f[ap]     = TP1 * (1.0 - K2) + TP2 * (1.0 - K3) + TP3 - p_m
+    end
+    return nothing
+end
+
 @inline function ieesgo_residual_batch!(f::AbstractArray, z::AbstractArray,
                                          p::AbstractArray, table::IEESGOTable,
                                          diff_dim::Int)
     n = table.n
     n == 0 && return nothing
     @inbounds for k in 1:n
-        dp = Int(table.diff_ptr[k])
-        ap = Int(table.alg_ptr[k]) + diff_dim
-        pp = Int(table.par_ptr[k])
-        w_idx = Int(table.w_idx[k])
-
-        T1 = p[pp];      T2 = p[pp + 1]; T3 = p[pp + 2]
-        T4 = p[pp + 3];  T5 = p[pp + 4]; T6 = p[pp + 5]
-        K1 = p[pp + 6];  K2 = p[pp + 7]; K3 = p[pp + 8]
-        pref = p[pp + 11]
-
-        PF0 = z[dp]
-        PLL = z[dp + 1]
-        TP1 = z[dp + 2]
-        TP2 = z[dp + 3]
-        TP3 = z[dp + 4]
-        p_m = z[ap]
-        w = w_idx == 0 ? 0.0 : z[w_idx]
-
-        f[dp]     = (1.0 / T1) * (K1 * w - PF0)
-        f[dp + 1] = (1.0 / T3) * ((1.0 - (T2 / T3)) * PF0 - PLL)
-        SatP = pref - (T2 / T3) * PF0 - PLL
-        f[dp + 2] = (1.0 / T4) * (SatP - TP1)
-        f[dp + 3] = (1.0 / T5) * (K2 * TP1 - TP2)
-        f[dp + 4] = (1.0 / T6) * (K3 * TP2 - TP3)
-        f[ap]     = TP1 * (1.0 - K2) + TP2 * (1.0 - K3) + TP3 - p_m
+        table.online[k] || continue
+        _ieesgo_residual_one!(f, z, p,
+            table.diff_ptr, table.alg_ptr, table.par_ptr, table.w_idx,
+            k, diff_dim)
     end
     return nothing
 end
@@ -169,46 +181,58 @@ end
 # Jacobian batch
 # --------------------------------------------------------------------
 
+@inline function _ieesgo_jacobian_one!(nz, p,
+        par_ptr, jac_pos,
+        k::Int)
+    @inbounds begin
+    pp = Int(par_ptr[k])
+    T1 = p[pp];      T2 = p[pp + 1]; T3 = p[pp + 2]
+    T4 = p[pp + 3];  T5 = p[pp + 4]; T6 = p[pp + 5]
+    K1 = p[pp + 6];  K2 = p[pp + 7]; K3 = p[pp + 8]
+
+    # row dp+0: d/dPF0 = -1/T1, d/dw = K1/T1
+    nz[jac_pos[k, J_IG_R1_PF0]] = -1.0 / T1
+    pos_w = jac_pos[k, J_IG_R1_w]
+    if pos_w != 0
+        nz[pos_w] = K1 / T1
+    end
+
+    # row dp+1: d/dPF0 = (1 - T2/T3)/T3, d/dPLL = -1/T3
+    nz[jac_pos[k, J_IG_R2_PF0]] = (1.0 - T2 / T3) / T3
+    nz[jac_pos[k, J_IG_R2_PLL]] = -1.0 / T3
+
+    # row dp+2: d/dPF0 = -T2/(T3*T4), d/dPLL = -1/T4, d/dTP1 = -1/T4
+    nz[jac_pos[k, J_IG_R3_PF0]] = -T2 / (T3 * T4)
+    nz[jac_pos[k, J_IG_R3_PLL]] = -1.0 / T4
+    nz[jac_pos[k, J_IG_R3_TP1]] = -1.0 / T4
+
+    # row dp+3: d/dTP1 = K2/T5, d/dTP2 = -1/T5
+    nz[jac_pos[k, J_IG_R4_TP1]] = K2 / T5
+    nz[jac_pos[k, J_IG_R4_TP2]] = -1.0 / T5
+
+    # row dp+4: d/dTP2 = K3/T6, d/dTP3 = -1/T6
+    nz[jac_pos[k, J_IG_R5_TP2]] = K3 / T6
+    nz[jac_pos[k, J_IG_R5_TP3]] = -1.0 / T6
+
+    # row ap: d/dTP1 = 1-K2, d/dTP2 = 1-K3, d/dTP3 = 1, d/dp_m = -1
+    nz[jac_pos[k, J_IG_A_TP1]] = 1.0 - K2
+    nz[jac_pos[k, J_IG_A_TP2]] = 1.0 - K3
+    nz[jac_pos[k, J_IG_A_TP3]] = 1.0
+    nz[jac_pos[k, J_IG_A_pm]]  = -1.0
+    end
+    return nothing
+end
+
 @inline function ieesgo_jacobian_batch!(J::SparseMatrixCSC, p::AbstractArray,
                                          table::IEESGOTable, diff_dim::Int)
     n = table.n
     n == 0 && return nothing
     nz = nonzeros(J)
     @inbounds for k in 1:n
-        pp = Int(table.par_ptr[k])
-        T1 = p[pp];      T2 = p[pp + 1]; T3 = p[pp + 2]
-        T4 = p[pp + 3];  T5 = p[pp + 4]; T6 = p[pp + 5]
-        K1 = p[pp + 6];  K2 = p[pp + 7]; K3 = p[pp + 8]
-
-        # row dp+0: ∂/∂PF0 = -1/T1, ∂/∂w = K1/T1
-        nz[table.jac_pos[k, J_IG_R1_PF0]] = -1.0 / T1
-        pos_w = table.jac_pos[k, J_IG_R1_w]
-        if pos_w != 0
-            nz[pos_w] = K1 / T1
-        end
-
-        # row dp+1: ∂/∂PF0 = (1 - T2/T3)/T3, ∂/∂PLL = -1/T3
-        nz[table.jac_pos[k, J_IG_R2_PF0]] = (1.0 - T2 / T3) / T3
-        nz[table.jac_pos[k, J_IG_R2_PLL]] = -1.0 / T3
-
-        # row dp+2: ∂/∂PF0 = -T2/(T3·T4), ∂/∂PLL = -1/T4, ∂/∂TP1 = -1/T4
-        nz[table.jac_pos[k, J_IG_R3_PF0]] = -T2 / (T3 * T4)
-        nz[table.jac_pos[k, J_IG_R3_PLL]] = -1.0 / T4
-        nz[table.jac_pos[k, J_IG_R3_TP1]] = -1.0 / T4
-
-        # row dp+3: ∂/∂TP1 = K2/T5, ∂/∂TP2 = -1/T5
-        nz[table.jac_pos[k, J_IG_R4_TP1]] = K2 / T5
-        nz[table.jac_pos[k, J_IG_R4_TP2]] = -1.0 / T5
-
-        # row dp+4: ∂/∂TP2 = K3/T6, ∂/∂TP3 = -1/T6
-        nz[table.jac_pos[k, J_IG_R5_TP2]] = K3 / T6
-        nz[table.jac_pos[k, J_IG_R5_TP3]] = -1.0 / T6
-
-        # row ap: ∂/∂TP1 = 1-K2, ∂/∂TP2 = 1-K3, ∂/∂TP3 = 1, ∂/∂p_m = -1
-        nz[table.jac_pos[k, J_IG_A_TP1]] = 1.0 - K2
-        nz[table.jac_pos[k, J_IG_A_TP2]] = 1.0 - K3
-        nz[table.jac_pos[k, J_IG_A_TP3]] = 1.0
-        nz[table.jac_pos[k, J_IG_A_pm]]  = -1.0
+        table.online[k] || continue
+        _ieesgo_jacobian_one!(nz, p,
+            table.par_ptr, table.jac_pos,
+            k)
     end
     return nothing
 end

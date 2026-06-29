@@ -130,10 +130,11 @@ function _build_genrou_table_impl(psd)
         pm_idx[k]  = Int32(pm_routed)
     end
 
+    online = fill(true, n)
     return GenrouTable(n, bus, diff_ptr, alg_ptr, ctrl_ptr, par_ptr,
         x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D,
         T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2,
-        has_gov, pm_idx, has_exc, efd_idx, jac_pos)
+        has_gov, pm_idx, has_exc, efd_idx, jac_pos, online)
 end
 
 # After set_dynamics! finishes, remap each Genrou.bus from external PSSE

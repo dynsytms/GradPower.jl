@@ -51,8 +51,9 @@ function _build_tgov1_table_impl(psd)
         w_idx[k] = Int32(w_routed)
     end
 
+    online = fill(true, n)
     return TGOV1Table(n, bus, diff_ptr, alg_ptr, ctrl_ptr, par_ptr,
-        R, T1, VMAX, VMIN, T2, T3, DT, pref, w_idx, jac_pos)
+        R, T1, VMAX, VMIN, T2, T3, DT, pref, w_idx, jac_pos, online)
 end
 
 function refresh_tgov1_table!(psd)

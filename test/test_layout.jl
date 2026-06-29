@@ -258,7 +258,6 @@ end
     @test size(L.ieesgo.jac_pos, 1)  == L.ieesgo.n
     @test size(L.zipload.jac_pos, 2) == GradPower.ZIPLOAD_JAC_NENTRIES
     @test size(L.zipload.jac_pos, 1) == L.zipload.n
-    # Remaining kernels: empty n×0 placeholder.
-    @test size(L.esdc1a.jac_pos, 2)  == 0
+    @test size(L.esdc1a.jac_pos, 2)  == GradPower.ESDC1A_JAC_NENTRIES
     @test length(L.net_jac_pos)      == 0
 end

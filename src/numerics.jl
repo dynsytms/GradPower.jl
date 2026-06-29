@@ -65,57 +65,105 @@ function newton_step!(
     itermax::Int=50,
     tol::Float64=1e-9,
     verbose::Bool=false,
-    jac_verify::Bool=false
+    jac_verify::Bool=false,
+    dx::Union{Nothing,AbstractVector}=nothing,
+    zwork::Union{Nothing,AbstractVector}=nothing,
+    log::Union{Nothing,SolverLog}=nothing,
 )
-    
+
     jac_verify = false
     # Initialize
     success = false
     verbose && @printf("   Iter     Residual inf-norm\n")
-    dx = zeros(length(z0))
-    z = copy(z0)
+    # Reuse caller-provided scratch when supplied; otherwise allocate
+    # once per Newton call (legacy path for callers that do not pass
+    # scratch).
+    dx_buf = dx === nothing ? zeros(length(z0)) : dx
+    z_buf  = zwork === nothing ? similar(z0) : zwork
+    copyto!(z_buf, z0)
+    # Pre-extract Union-typed handles once — see comment on
+    # `beuler_batched!` / `beuler_jac_batched!` for the rationale.
+    dyn  = sys.dynamic::PowerSystemDynamics
+    net  = sys.network::Network
+    L    = dyn.layout::SimulationLayout
+    diff_dim = dyn.diff_dim
     for i = 1:itermax
         # Evaluate the right-hand side
-        beuler!(f0, z, zold, u, p, sys, sys.dynamic.diff_dim, dt)
+        if log !== nothing
+            _t0 = time_ns()
+            beuler_batched!(f0, z_buf, zold, u, p, dyn, net.ybus_real, L, diff_dim, dt, log)
+            log.residual_ns += time_ns() - _t0
+            log.residual_count += 1
+        else
+            beuler_batched!(f0, z_buf, zold, u, p, dyn, net.ybus_real, L, diff_dim, dt)
+        end
         norm_f = norm(f0, Inf)
         verbose && @printf("   %2d     %.6e\n", i-1, norm_f)
         if norm_f < tol
             success = true
             break
         end
-        
+
         # Evaluate the Jacobian
-        beuler_jac!(J0, z, zold, u, p, sys, sys.dynamic.diff_dim, dt)
+        if log !== nothing
+            _t0 = time_ns()
+            beuler_jac_batched!(J0, z_buf, u, p, dyn, net.ybus_real, L, diff_dim, dt)
+            log.jacobian_ns += time_ns() - _t0
+            log.jacobian_count += 1
+        else
+            beuler_jac_batched!(J0, z_buf, u, p, dyn, net.ybus_real, L, diff_dim, dt)
+        end
 
         # verify jacobian
         if jac_verify
             #@assert size(J0, 1) <= 100
             @warn "Jacobian verification"
-            function ff(z)
-                f = zeros(length(z))
-                beuler!(f, z, zold, u, p, sys, sys.dynamic.diff_dim, dt)
-                return f
+            function ff(zz)
+                ftmp = zeros(length(zz))
+                beuler!(ftmp, zz, zold, u, p, sys, diff_dim, dt)
+                return ftmp
             end
-            Jfd = FiniteDiff.finite_difference_jacobian(ff, z)
+            Jfd = FiniteDiff.finite_difference_jacobian(ff, z_buf)
             valid = compare_matrix(Array(J0), Jfd)
             @assert valid "Jacobian verification failed"
             @assert false "Jacobian verification passed"
         end
-        
+
         # Solve. First iter does full symbolic+numeric factor (refresh
         # ordering — dt may have changed, or z drifted enough to invalidate
         # the prior pivot order). Subsequent iters reuse the symbolic and
-        # only re-do numeric, which is ~3× cheaper.
-        if i == 1
-            fact = klu(J0)
-        else
-            klu!(fact, J0)
-        end
-        ldiv!(dx,fact,f0)
+        # only re-do numeric, which is ~3× cheaper. The iter-1 `klu` call
+        # allocates inside KLU.jl and is the single per-Newton allocation
+        # the integrate! loop cannot avoid without a forked solver; all
+        # later iterations of the inner loop are zero-alloc on our side.
+        if log !== nothing
+            _t0 = time_ns()
+            if i == 1
+                fact = klu(J0)
+            else
+                klu!(fact, J0)
+            end
+            log.lsolve_factor_ns += time_ns() - _t0
+            log.lsolve_factor_count += 1
 
-        # Update the state
-        z -= dx
+            _t0 = time_ns()
+            ldiv!(dx_buf, fact, f0)
+            log.lsolve_solve_ns += time_ns() - _t0
+            log.lsolve_solve_count += 1
+        else
+            if i == 1
+                fact = klu(J0)
+            else
+                klu!(fact, J0)
+            end
+            ldiv!(dx_buf, fact, f0)
+        end
+
+        # Update the state in place (no temporary).
+        @inbounds for k in eachindex(z_buf)
+            z_buf[k] -= dx_buf[k]
+        end
     end
-    z0 .= z
+    z0 .= z_buf
     return success
 end

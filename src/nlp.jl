@@ -48,13 +48,8 @@ function NLPModels.obj(nlp::DynamicNLP{T, S}, p::AbstractVector) where {T, S}
 end
 
 function NLPModels.grad!(nlp::DynamicNLP, x::AbstractVector, g::AbstractVector)
-    prob = DynamicProblem(nlp.sys)
-    GradPower.initialize_dynamics!(prob, nlp.sys)
-    copyto!(prob.pvec, x)
-    tvec, traj = integrate!(prob, nlp.sys, nlp.tfinal)
-    λ, μ = adjoint(nlp.λ0, prob, nlp.sys, traj, tvec; functional=true)
-    copyto!(g, μ)
-    return g
+    error("NLPModels.grad! is not available: the legacy adjoint/AD path was removed. " *
+          "Gradient support will be re-implemented in Phase 15 (batched-GPU adjoint).")
 end
 
 # Dummy function required to use dense BFGS

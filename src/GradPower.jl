@@ -7,7 +7,7 @@ using LinearAlgebra
 using SparseArrays
 using NLsolve
 using KLU
-using ForwardDiff
+using Krylov
 using Statistics
 
 import NLPModels
@@ -74,12 +74,13 @@ abstract type AbstractLoadType <: AbstractDeviceType end
 abstract type AbstractGenControlType <: AbstractDeviceType end
 abstract type AbstractGovernorType <: AbstractGenControlType end
 
-struct DynamicDevice
+mutable struct DynamicDevice
     dtype::AbstractDeviceType
     diff_ptr::Int64
     alg_ptr::Int64
     ctrl_ptr::Int64
     par_ptr::Int64
+    online::Bool
 end
 
 struct DynamicMap
@@ -126,6 +127,45 @@ function ContingencyEvent(bus::Int64, rfault::Float64, ton::Float64, toff::Float
     return ce
 end
 
+"""
+    DisconnectDeviceEvent
+
+Disconnect a device at a specified time by setting its `online` flag to false.
+The device's batch residual/Jacobian kernels skip it when `online == false`.
+
+Fields:
+- `device_idx`: index into `psd.devices`
+- `ton`: time at which the device is disconnected
+"""
+struct DisconnectDeviceEvent
+    device_idx::Int64
+    ton::Float64
+end
+
+"""
+    TripLineEvent
+
+Trip a transmission line at `ton` by subtracting its admittance from
+`ybus_real`. If `toff < Inf`, the line is reclosed at `toff` by adding
+the admittance back.
+
+Fields:
+- `from_bus`, `to_bus`: internal bus indices
+- `ton`: time at which the line is tripped
+- `toff`: time at which the line is reclosed (`Inf` = permanent trip)
+- `yff`, `yft`, `ytf`, `ytt`: precomputed complex admittance contributions
+"""
+struct TripLineEvent
+    from_bus::Int64
+    to_bus::Int64
+    ton::Float64
+    toff::Float64
+    yff::ComplexF64
+    yft::ComplexF64
+    ytf::ComplexF64
+    ytt::ComplexF64
+end
+
 mutable struct DynamicProblem
     zvec::AbstractArray
     uvec::AbstractArray
@@ -146,7 +186,12 @@ mutable struct PowerSystemDynamics
     map::Union{Nothing,DynamicMap}
     uvec_idx::Union{Nothing,Vector{Int64}}
     events::Vector{ContingencyEvent}
+    disconnect_events::Vector{DisconnectDeviceEvent}
+    trip_events::Vector{TripLineEvent}
     layout::Union{Nothing,SimulationLayout}
+    clusters::Any  # Union{Nothing,ClusterTable} — defined after PSD
+    diff_indices::Union{Nothing,Vector{Int}}  # z-positions of differential states after cluster reordering
+    is_diff::Union{Nothing,BitVector}  # precomputed mask: is_diff[i] = true iff z[i] is a diff state
 end
 
 mutable struct PowerSystem
@@ -172,8 +217,36 @@ struct PowerFlowSolution
     sinj::AbstractArray
 end
 
+"""
+    SolverLog
+
+Lightweight event timer for the solver, modeled after PETSc PetscLogEvent.
+Tracks per-event call count and cumulative wall-clock time (in nanoseconds).
+Opt-in: pass to `integrate!` via the `log` kwarg; when `nothing`, zero overhead.
+"""
+mutable struct SolverLog
+    residual_count::Int
+    residual_ns::UInt64
+    jacobian_count::Int
+    jacobian_ns::UInt64
+    lsolve_factor_count::Int
+    lsolve_factor_ns::UInt64
+    lsolve_solve_count::Int
+    lsolve_solve_ns::UInt64
+    ybus_mul_count::Int
+    ybus_mul_ns::UInt64
+    init_ns::UInt64
+    parse_ns::UInt64
+    gmres_iters::Vector{Int}  # per-Newton-step GMRES iteration counts
+end
+
+function SolverLog()
+    SolverLog(0, UInt64(0), 0, UInt64(0), 0, UInt64(0), 0, UInt64(0),
+              0, UInt64(0), UInt64(0), UInt64(0), Int[])
+end
+
 function PowerSystemDynamics()
-    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, nothing, Vector{ContingencyEvent}(), nothing)
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, nothing, Vector{ContingencyEvent}(), Vector{DisconnectDeviceEvent}(), Vector{TripLineEvent}(), nothing, nothing, nothing, nothing)
     return psd
 end
 
@@ -198,7 +271,7 @@ function add_device!(psd::PowerSystemDynamics, dtype::AbstractDeviceType)
     alg_ptr = psd.alg_dim + 1
     ctrl_ptr = psd.ctrl_dim + 1
     par_ptr = psd.par_dim + 1
-    push!(psd.devices, DynamicDevice(dtype, diff_ptr, alg_ptr, ctrl_ptr, par_ptr))
+    push!(psd.devices, DynamicDevice(dtype, diff_ptr, alg_ptr, ctrl_ptr, par_ptr, true))
     psd.num_devices += 1
     psd.diff_dim += dtype.diff_size
     psd.alg_dim += dtype.alg_size
@@ -353,7 +426,24 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics;
     # as the external PSSE bus number and must be remapped to internal index.
     fix_genrou_bus_idx!(psd, ps)
     fix_sexs_vr_idx!(psd, ps)
+    fix_esdc1a_vr_idx!(psd, ps)
+    fix_ieeest_wiring!(psd, ps)
     fix_static_gen_bus_idx!(psd, ps)
+
+    # Build device clusters and reorder state vector to cluster-contiguous
+    # layout: z = (w_1, w_2, ..., w_Nc, v). This must happen AFTER all
+    # fix_* calls (bus indices resolved) and AFTER build_layout! (SoA
+    # tables populated). The reordering updates diff_ptr/alg_ptr on both
+    # DynamicDevice and SoA tables, plus uvec_idx entries.
+    ct = build_clusters!(psd, dmap)
+    reorder_state!(psd, ct)
+    psd.clusters = ct
+
+    # Refresh DynamicMap pointers to match the reordered layout.
+    for (i, device) in enumerate(psd.devices)
+        dmap.diff_ptr[i] = device.diff_ptr
+        dmap.alg_ptr[i]  = device.alg_ptr
+    end
 end
 
 function DynamicProblem(ps::PowerSystem)
@@ -384,10 +474,152 @@ function deactivate!(event::ContingencyEvent)
     event.status = false
 end
 
+function add_disconnect_event!(psd::PowerSystemDynamics, event::DisconnectDeviceEvent)
+    push!(psd.disconnect_events, event)
+end
+
+function add_disconnect_event!(ps::PowerSystem, event::DisconnectDeviceEvent)
+    if ps.dynamic === nothing
+        @warn "No dynamics data found. Did not register disconnect event"
+        return
+    end
+    add_disconnect_event!(ps.dynamic, event)
+end
+
+function add_trip_event!(psd::PowerSystemDynamics, event::TripLineEvent)
+    push!(psd.trip_events, event)
+end
+
+function add_trip_event!(ps::PowerSystem, event::TripLineEvent)
+    if ps.dynamic === nothing
+        @warn "No dynamics data found. Did not register trip event"
+        return
+    end
+    add_trip_event!(ps.dynamic, event)
+end
+
+"""
+    create_trip_line_event(ps, from_bus_ext, to_bus_ext, ton; toff=Inf) -> TripLineEvent
+
+Create a TripLineEvent by looking up the branch between `from_bus_ext` and
+`to_bus_ext` (external PSS/E bus numbers) and precomputing its admittance
+contribution. Line is tripped at `ton` and reclosed at `toff` (default `Inf`
+= permanent).
+"""
+function create_trip_line_event(ps::PowerSystem, from_bus_ext::Int, to_bus_ext::Int, ton::Float64; toff::Float64=Inf)
+    from_int = ps.busmap[from_bus_ext]
+    to_int   = ps.busmap[to_bus_ext]
+
+    # Find the branch
+    br = nothing
+    for b in ps.branches
+        if (b.fr == from_int && b.to == to_int) || (b.fr == to_int && b.to == from_int)
+            br = b
+            break
+        end
+    end
+    br === nothing && error("No branch found between buses $from_bus_ext and $to_bus_ext")
+
+    # Compute admittance contributions (same convention as create_ybus_complex)
+    tap = br.tap
+    shift = br.shift
+    if tap > 0.0
+        tpsh = tap * exp(im * π / 180.0 * shift)
+    else
+        tpsh = 1.0 + 0.0im
+        tap = 1.0
+    end
+    y = 1.0 / (br.r + im * br.x)
+
+    fr = br.fr
+    to = br.to
+
+    yff = y / (tap * tap) + im * 0.5 * br.sh
+    ytt = y + (im * 0.5 * br.sh) / (tap * tap)
+    yft = -y / conj(tpsh)
+    ytf = -y / tpsh
+
+    return TripLineEvent(fr, to, ton, toff, yff, yft, ytf, ytt)
+end
+
+"""
+    _apply_trip_line!(ybus_real, event::TripLineEvent)
+
+Subtract the tripped line's admittance contribution from `ybus_real` in-place.
+Uses the same realify convention as `network.jl`.
+"""
+function _apply_trip_line!(ybus_real::SparseMatrixCSC, event::TripLineEvent)
+    fr = event.from_bus
+    to = event.to_bus
+
+    # Subtract yff (from-from block)
+    _subtract_complex_from_realified!(ybus_real, fr, fr, event.yff)
+    # Subtract yft (from-to block)
+    _subtract_complex_from_realified!(ybus_real, fr, to, event.yft)
+    # Subtract ytf (to-from block)
+    _subtract_complex_from_realified!(ybus_real, to, fr, event.ytf)
+    # Subtract ytt (to-to block)
+    _subtract_complex_from_realified!(ybus_real, to, to, event.ytt)
+    return nothing
+end
+
+function _apply_reclose_line!(ybus_real::SparseMatrixCSC, event::TripLineEvent)
+    fr = event.from_bus
+    to = event.to_bus
+    _add_complex_to_realified!(ybus_real, fr, fr, event.yff)
+    _add_complex_to_realified!(ybus_real, fr, to, event.yft)
+    _add_complex_to_realified!(ybus_real, to, fr, event.ytf)
+    _add_complex_to_realified!(ybus_real, to, to, event.ytt)
+    return nothing
+end
+
+function _add_complex_to_realified!(ybus_real::SparseMatrixCSC,
+                                     bus_row::Int, bus_col::Int,
+                                     yval::ComplexF64)
+    zr = real(yval)
+    zi = imag(yval)
+    r1 = 2 * bus_row - 1
+    r2 = 2 * bus_row
+    c1 = 2 * bus_col - 1
+    c2 = 2 * bus_col
+    ybus_real[r1, c1] += zr
+    ybus_real[r2, c2] += zr
+    ybus_real[r1, c2] += -zi
+    ybus_real[r2, c1] += zi
+    return nothing
+end
+
+"""
+    _subtract_complex_from_realified!(ybus_real, bus_row, bus_col, yval)
+
+Subtract a complex admittance entry from the realified Ybus matrix at the
+(bus_row, bus_col) 2x2 block. The realify convention is:
+  [real(y), -imag(y); imag(y), real(y)]
+"""
+function _subtract_complex_from_realified!(ybus_real::SparseMatrixCSC,
+                                            bus_row::Int, bus_col::Int,
+                                            yval::ComplexF64)
+    zr = real(yval)
+    zi = imag(yval)
+    r1 = 2 * bus_row - 1
+    r2 = 2 * bus_row
+    c1 = 2 * bus_col - 1
+    c2 = 2 * bus_col
+
+    # (r1, c1) -= zr
+    ybus_real[r1, c1] -= zr
+    # (r2, c2) -= zr
+    ybus_real[r2, c2] -= zr
+    # (r1, c2) -= -zi  =>  += zi
+    ybus_real[r1, c2] += zi
+    # (r2, c1) -= zi
+    ybus_real[r2, c1] -= zi
+    return nothing
+end
+
 # Include files. functionality.
 include("utils.jl")
 include("numerics.jl")
-include("ad.jl")
 include("network.jl")
 include("pflow.jl")
 include("dynamics.jl")
@@ -402,6 +634,7 @@ include("tables/tgov1.jl")
 include("tables/sexs.jl")
 include("tables/esdc1a.jl")
 include("tables/zipload.jl")
+include("tables/ieeest.jl")
 include("tables/static_gen.jl")
 
 # Device coupling graph. Defines `attaches_to`, `produces_signals`,
@@ -409,6 +642,11 @@ include("tables/static_gen.jl")
 # tables/*.jl since the trait definitions reference concrete device
 # types (Genrou, IEESGO).
 include("coupling.jl")
+
+# Cluster infrastructure: DeviceCluster, ClusterTable, build_clusters!,
+# reorder_state!, A_k extraction helpers. Must be AFTER coupling.jl
+# (uses _normalize_id, attaches_to traits) and device type definitions.
+include("clusters.jl")
 
 # Batched per-device-type kernels. Each kernel file owns
 # `<dev>_residual_batch!`, `<dev>_jacobian_batch!`, and
@@ -419,10 +657,58 @@ include("kernels/genrou.jl")
 include("kernels/ieesgo.jl")
 include("kernels/tgov1.jl")
 include("kernels/sexs.jl")
+include("kernels/esdc1a.jl")
 include("kernels/zipload.jl")
+include("kernels/ieeest.jl")
 include("kernels/static_gen.jl")
 
-include("sensitivities.jl")
+# Schur complement reduction. Must be AFTER clusters.jl (cluster types)
+# and kernels/*.jl (preallocate_jacobian references kernel preallocators).
+include("schur.jl")
+
+# Device online/offline helpers. Must be AFTER device type definitions
+# and kernel includes so Genrou, IEESGO, etc. are in scope.
+"""
+    _set_device_offline!(psd, device_idx)
+
+Set a device's `online` flag to false on both the DynamicDevice struct and
+the corresponding entry in the SoA table. The batch kernels skip devices
+whose `online` entry is false.
+"""
+function _set_device_offline!(psd::PowerSystemDynamics, device_idx::Int)
+    device = psd.devices[device_idx]
+    device.online = false
+
+    # Find the device's table-local index and set online[k] = false.
+    dtype = device.dtype
+    L = psd.layout::SimulationLayout
+    k = 0
+    for (i, d) in enumerate(psd.devices)
+        typeof(d.dtype) == typeof(dtype) || continue
+        k += 1
+        if i == device_idx
+            _set_table_online!(L, dtype, k, false)
+            return nothing
+        end
+    end
+    error("Device $device_idx not found in its table")
+end
+
+# Dispatch helper to set online[k] on the correct table.
+_set_table_online!(L::SimulationLayout, ::Genrou,           k::Int, v::Bool) = (L.genrou.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::IEESGO,           k::Int, v::Bool) = (L.ieesgo.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::TGOV1,            k::Int, v::Bool) = (L.tgov1.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::SEXS,             k::Int, v::Bool) = (L.sexs.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::ESDC1A,           k::Int, v::Bool) = (L.esdc1a.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::IEEEST,           k::Int, v::Bool) = (L.ieeest.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::ZIPLoad,          k::Int, v::Bool) = (L.zipload.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::StaticGenerator,  k::Int, v::Bool) = (L.static_gen.online[k] = v; nothing)
+
+# Device contract registry. Included AFTER kernels/*.jl so device structs
+# (Genrou, IEESGO, TGOV1, SEXS, ESDC1A, ZIPLoad, StaticGenerator) are in
+# scope for the seed registrations.
+include("devices/registry.jl")
+include("devices/seeds.jl")
 
 # Optimization model.
 include("nlp.jl")
@@ -440,5 +726,6 @@ export runpf
 export DynamicDevice, PowerSystemDynamics
 export add_device!
 export from_psse
+export SolverLog
 
 end # module GradPower

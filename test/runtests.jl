@@ -29,6 +29,9 @@ end
 @testset "layout" begin
     include("test_layout.jl")
 end
+@testset "clusters" begin
+    include("test_clusters.jl")
+end
 @testset "kernels" begin
     include("test_genrou_kernel.jl")
     include("test_ieesgo_kernel.jl")

@@ -78,6 +78,8 @@ struct GenrouTable
     has_exc::Vector{Bool};  efd_idx::Vector{Int32}
     # Precomputed J.nzval positions, filled by preallocate_jacobian.
     jac_pos::Matrix{Int32}
+    # Per-device online flag (mutable vector so integrate! can flip it)
+    online::Vector{Bool}
 end
 
 struct IEESGOTable
@@ -91,14 +93,10 @@ struct IEESGOTable
     T4::Vector{Float64}; T5::Vector{Float64}; T6::Vector{Float64}
     K1::Vector{Float64}; K2::Vector{Float64}; K3::Vector{Float64}
     pmax::Vector{Float64}; pmin::Vector{Float64}
-    # Init-derived parameter (filled during initialize_dynamics! and
-    # refreshed via refresh_ieesgo_table!). The kernel reads it
-    # from the table, NOT from the device struct.
     pref::Vector{Float64}
-    # control coupling
-    w_idx::Vector{Int32}     # global z-index of the generator's `w` state this governor reads
-    # Precomputed J.nzval positions, filled by preallocate_jacobian.
+    w_idx::Vector{Int32}
     jac_pos::Matrix{Int32}
+    online::Vector{Bool}
 end
 
 struct TGOV1Table
@@ -115,6 +113,7 @@ struct TGOV1Table
     pref::Vector{Float64}
     w_idx::Vector{Int32}
     jac_pos::Matrix{Int32}
+    online::Vector{Bool}
 end
 
 struct SEXSTable
@@ -127,9 +126,10 @@ struct SEXSTable
     K::Vector{Float64};      TE::Vector{Float64}
     EMIN::Vector{Float64};   EMAX::Vector{Float64}
     vref::Vector{Float64}
-    # net_ptr (global) of vr for this exciter's bus; vi is +1.
     vr_idx::Vector{Int32}
+    vs_idx::Vector{Int32}    # PSS v_s z-index; 0 = no PSS attached
     jac_pos::Matrix{Int32}
+    online::Vector{Bool}
 end
 
 struct ESDC1ATable
@@ -141,8 +141,29 @@ struct ESDC1ATable
     Tf::Vector{Float64}; Ke::Vector{Float64}; Te::Vector{Float64}
     Tr::Vector{Float64}; Ae::Vector{Float64}; Be::Vector{Float64}
     vref::Vector{Float64}
-    # Precomputed J.nzval positions, filled by preallocate_jacobian.
+    vr_idx::Vector{Int32}
+    vs_idx::Vector{Int32}    # PSS v_s z-index; 0 = no PSS attached
     jac_pos::Matrix{Int32}
+    online::Vector{Bool}
+end
+
+struct IEEESTTable
+    n::Int
+    bus::Vector{Int32}
+    diff_ptr::Vector{Int32}
+    alg_ptr::Vector{Int32}
+    ctrl_ptr::Vector{Int32}
+    par_ptr::Vector{Int32}
+    A1::Vector{Float64}; A2::Vector{Float64}
+    A3::Vector{Float64}; A4::Vector{Float64}
+    A5::Vector{Float64}; A6::Vector{Float64}
+    T1::Vector{Float64}; T2::Vector{Float64}
+    T3::Vector{Float64}; T4::Vector{Float64}
+    T5::Vector{Float64}; T6::Vector{Float64}
+    KS::Vector{Float64}
+    w_idx::Vector{Int32}
+    jac_pos::Matrix{Int32}
+    online::Vector{Bool}
 end
 
 struct ZIPLoadTable
@@ -153,8 +174,8 @@ struct ZIPLoadTable
     α::Vector{Float64}; β::Vector{Float64}; γ::Vector{Float64}
     weight::Vector{Float64}; v0mag::Vector{Float64}
     yreal::Vector{Float64}; yimag::Vector{Float64}
-    # Precomputed J.nzval positions, filled by preallocate_jacobian.
     jac_pos::Matrix{Int32}
+    online::Vector{Bool}
 end
 
 # ------------------------------------------------------------------------

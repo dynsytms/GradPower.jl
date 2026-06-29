@@ -23,6 +23,7 @@ function _build_sexs_table_impl(psd)
     EMAX  = Vector{Float64}(undef, n)
     vref  = zeros(Float64, n)
     vr_idx = Vector{Int32}(undef, n)
+    vs_idx = zeros(Int32, n)          # PSS v_s z-index; 0 = no PSS attached
 
     jac_pos = zeros(Int32, n, SEXS_JAC_NENTRIES)
 
@@ -55,8 +56,9 @@ function _build_sexs_table_impl(psd)
         vr_idx[k] = Int32(net_ptr + 2*(internal_bus - 1) + 1)
     end
 
+    online = fill(true, n)
     return SEXSTable(n, bus, diff_ptr, ctrl_ptr, par_ptr,
-        TA_TB, TB, K, TE, EMIN, EMAX, vref, vr_idx, jac_pos)
+        TA_TB, TB, K, TE, EMIN, EMAX, vref, vr_idx, vs_idx, jac_pos, online)
 end
 
 # After set_dynamics! finishes, refresh vr_idx using ps.busmap (which maps

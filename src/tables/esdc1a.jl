@@ -56,8 +56,13 @@ function _build_esdc1a_table_impl(psd)
     Be   = Vector{Float64}(undef, n)
     vref = Vector{Float64}(undef, n)
 
-    # 4. `preallocate_jacobian` fills jac_pos's second dim; leave it empty here.
-    jac_pos = Matrix{Int32}(undef, n, 0)
+    # vr_idx is resolved by `fix_esdc1a_vr_idx!` after set_dynamics! wires
+    # the busmap; placeholder here.
+    vr_idx = zeros(Int32, n)
+    vs_idx = zeros(Int32, n)          # PSS v_s z-index; 0 = no PSS attached
+
+    # 4. Allocate jac_pos with the kernel's slot count.
+    jac_pos = zeros(Int32, n, ESDC1A_JAC_NENTRIES)
 
     # 5. Single pass over devices, fill row k for each ESDC1A match.
     #    Use getfield since d.dtype is of an unknown-at-compile-time type
@@ -84,9 +89,39 @@ function _build_esdc1a_table_impl(psd)
         vref[k] = getfield(exc, :vref)
     end
 
+    online = fill(true, n)
     return ESDC1ATable(n, bus, diff_ptr, par_ptr,
         Ka, Ta, Kf, Tf, Ke, Te, Tr, Ae, Be, vref,
-        jac_pos)
+        vr_idx, vs_idx, jac_pos, online)
+end
+
+# After set_dynamics! finishes, resolve vr_idx using ps.busmap.
+function fix_esdc1a_vr_idx!(psd, ps)
+    table = psd.layout.esdc1a
+    table.n == 0 && return nothing
+    net_ptr = psd.diff_dim + psd.alg_dim
+    k = 0
+    for device in psd.devices
+        is_esdc1a(device) || continue
+        k += 1
+        internal_bus = ps.busmap[Int(table.bus[k])]
+        table.vr_idx[k] = Int32(net_ptr + 2*(internal_bus - 1) + 1)
+    end
+    return nothing
+end
+
+# Re-snapshot vref from device structs into the SoA table after init.
+function refresh_esdc1a_table!(psd)
+    table = psd.layout.esdc1a
+    table.n == 0 && return nothing
+    k = 0
+    for device in psd.devices
+        is_esdc1a(device) || continue
+        k += 1
+        table.vref[k] = getfield(device.dtype, :vref)
+    end
+    @assert k == table.n
+    return nothing
 end
 
 # Register with the device registry.
