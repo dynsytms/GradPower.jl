@@ -106,7 +106,7 @@ end
 
 @inline function _static_gen_residual_one!(f, z, p,
         vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
-        k::Int)
+        k::Int, inj=nothing, inj_slot::Int=0)
     @inbounds begin
     vr_idx = Int(vr_idx_arr[k])
     vi_idx = vr_idx + 1
@@ -123,8 +123,15 @@ end
     pp_val, qq_val = _sg_power(z, p, bt, ap, pp)
 
     # Current injection into the network voltage rows.
-    f[vr_idx] += (pp_val*vr + qq_val*vi) / vm2
-    f[vi_idx] += (pp_val*vi - qq_val*vr) / vm2
+    if inj === nothing
+        # Plain-loop path: accumulate directly into f.
+        f[vr_idx] += (pp_val*vr + qq_val*vi) / vm2
+        f[vi_idx] += (pp_val*vi - qq_val*vr) / vm2
+    else
+        # KA path: write to per-device injection buffer.
+        inj[2*inj_slot - 1] = (pp_val*vr + qq_val*vi) / vm2
+        inj[2*inj_slot]     = (pp_val*vi - qq_val*vr) / vm2
+    end
 
     # Alg-row residuals.
     if bt == SG_PV

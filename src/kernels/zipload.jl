@@ -32,7 +32,8 @@ threshold as the legacy code.
 """
 @inline function _zipload_residual_one!(f, z, p,
         bus_arr, par_ptr,
-        k::Int, net_ptr::Int)
+        k::Int, net_ptr::Int,
+        inj=nothing, inj_slot::Int=0)
     @inbounds begin
     bus = Int(bus_arr[k])
     pp = Int(par_ptr[k])
@@ -50,15 +51,34 @@ threshold as the legacy code.
     vm2 = vr*vr + vi*vi
     vm2_tld = 0.2
 
-    f[vr_idx] -= vr*yreal - vi*yimag
-    f[vi_idx] -= vr*yimag + vi*yreal
+    if inj === nothing
+        # Plain-loop path: accumulate directly into f (preserves original
+        # computation order for bit-identical results).
+        f[vr_idx] -= vr*yreal - vi*yimag
+        f[vi_idx] -= vr*yimag + vi*yreal
 
-    if vm2 > vm2_tld
-        f[vr_idx] -= (1.0 - α) * (pl*vr - ql*vi) / vm2
-        f[vi_idx] -= (1.0 - α) * (ql*vr + pl*vi) / vm2
+        if vm2 > vm2_tld
+            f[vr_idx] -= (1.0 - α) * (pl*vr - ql*vi) / vm2
+            f[vi_idx] -= (1.0 - α) * (ql*vr + pl*vi) / vm2
+        else
+            f[vr_idx] -= (1.0 - α) * (pl*vr - ql*vi) / vm2_tld
+            f[vi_idx] -= (1.0 - α) * (ql*vr + pl*vi) / vm2_tld
+        end
     else
-        f[vr_idx] -= (1.0 - α) * (pl*vr - ql*vi) / vm2_tld
-        f[vi_idx] -= (1.0 - α) * (ql*vr + pl*vi) / vm2_tld
+        # KA path: accumulate into locals, write to injection buffer.
+        inj_r = -(vr*yreal - vi*yimag)
+        inj_i = -(vr*yimag + vi*yreal)
+
+        if vm2 > vm2_tld
+            inj_r -= (1.0 - α) * (pl*vr - ql*vi) / vm2
+            inj_i -= (1.0 - α) * (ql*vr + pl*vi) / vm2
+        else
+            inj_r -= (1.0 - α) * (pl*vr - ql*vi) / vm2_tld
+            inj_i -= (1.0 - α) * (ql*vr + pl*vi) / vm2_tld
+        end
+
+        inj[2*inj_slot - 1] = inj_r
+        inj[2*inj_slot]     = inj_i
     end
     end
     return nothing

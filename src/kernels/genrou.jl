@@ -49,6 +49,7 @@ independent of `PowerSystem`. Caller:
         f, z, u, p,
         diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr,
         k::Int, diff_dim::Int, net_ptr::Int, twopi60::Float64,
+        inj=nothing, inj_slot::Int=0,
 )
     @inbounds begin
     # ----- pointers -----
@@ -125,9 +126,16 @@ independent of `PowerSystem`. Caller:
     f[diff_dim + ap + 2] = v_d - (vr*sd - vi*cd)
     f[diff_dim + ap + 3] = v_q - (vr*cd + vi*sd)
 
-    # ----- network current injection (accumulate, NOT assign) -----
-    f[vr_idx] += sd*i_d + cd*i_q
-    f[vi_idx] += -cd*i_d + sd*i_q
+    # ----- network current injection -----
+    if inj === nothing
+        # Plain-loop path: accumulate directly into f (races on GPU).
+        f[vr_idx] += sd*i_d + cd*i_q
+        f[vi_idx] += -cd*i_d + sd*i_q
+    else
+        # KA path: write to per-device injection buffer (reduced per bus later).
+        inj[2*inj_slot - 1] = sd*i_d + cd*i_q
+        inj[2*inj_slot]     = -cd*i_d + sd*i_q
+    end
     end
     return nothing
 end

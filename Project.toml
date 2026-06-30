@@ -1,12 +1,13 @@
 name = "GradPower"
 uuid = "5211b32c-a125-4187-bd0f-53521f0f3afa"
-authors = ["D. Adrian Maldonado <maldonadod@anl.gov>", "François Pacaud <francois.pacaud@minesparis.psl.eu>", "Michel Schanen <mschanen@anl.gov>"]
 version = "0.1.1"
+authors = ["D. Adrian Maldonado <maldonadod@anl.gov>", "François Pacaud <francois.pacaud@minesparis.psl.eu>", "Michel Schanen <mschanen@anl.gov>"]
 
 [deps]
 FiniteDiff = "6a86dc24-6348-571c-b903-95158fe2bd41"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 KLU = "ef3ab10e-7fda-4108-b977-705223b18434"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 Krylov = "ba0b0d4f-ebba-5204-a429-3ac8c609bfb7"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MadNLP = "2621e9c9-9eb4-46b1-8089-e8c72242dfb6"
@@ -20,4 +21,5 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 
 [compat]
+KernelAbstractions = "0.9.41"
 Krylov = "0.10.6"

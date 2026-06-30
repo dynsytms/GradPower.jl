@@ -40,3 +40,9 @@ end
     # AD-using kernel gate: skipped pending ad.jl rewrite (see "dynamic" testset above).
     # include("test_tlm_genrou_param.jl")
 end
+@testset "ka_wrappers" begin
+    include("test_ka_wrappers.jl")
+end
+@testset "batched_layout" begin
+    include("test_batched_layout.jl")
+end

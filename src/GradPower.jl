@@ -662,6 +662,9 @@ include("kernels/zipload.jl")
 include("kernels/ieeest.jl")
 include("kernels/static_gen.jl")
 
+# KernelAbstractions wrappers + injection buffer dispatch.
+include("kernels/ka_wrappers.jl")
+
 # Schur complement reduction. Must be AFTER clusters.jl (cluster types)
 # and kernels/*.jl (preallocate_jacobian references kernel preallocators).
 include("schur.jl")
@@ -709,6 +712,9 @@ _set_table_online!(L::SimulationLayout, ::StaticGenerator,  k::Int, v::Bool) = (
 # scope for the seed registrations.
 include("devices/registry.jl")
 include("devices/seeds.jl")
+
+# 2D scenario-indexed batched layout + batched CPU integration.
+include("batched.jl")
 
 # Optimization model.
 include("nlp.jl")
