@@ -20,6 +20,15 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 
+[weakdeps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CUDSS = "45b445bb-4962-46a0-9369-b4df9d0f772e"
+
+[extensions]
+GradPowerCUDAExt = ["CUDA", "CUDSS"]
+
 [compat]
+CUDA = "6"
+CUDSS = "0.8"
 KernelAbstractions = "0.9.41"
 Krylov = "0.10.6"
