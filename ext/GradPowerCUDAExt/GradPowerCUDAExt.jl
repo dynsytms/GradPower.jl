@@ -403,6 +403,10 @@ struct GpuBatchedLayout
     schur_fwk_packed::Vector{CuArray{Float64, 3}}     # wk × 1 × (nc*M) per group, for batched A⁻¹ f_wk solve
     schur_dz_gpu::Union{Nothing, CuVector{Float64}}   # sys_dim buffer for dz
     schur_S_csc_buf::Union{Nothing, CuVector{Float64}} # S_nnz buffer for CSC→CSR
+    # GPU copies of per-cluster metadata for fused kernels
+    schur_w_start_gpu::Vector{CuVector{Int}}           # per group: w_start for each cluster
+    schur_vr_l_gpu::Vector{CuVector{Int}}              # per group: reduced vr index
+    schur_vi_l_gpu::Vector{CuVector{Int}}              # per group: reduced vi index
     # cuDSS monolithic direct solver (phase 14c)
     cudss_solver::Union{Nothing, CudssSolver{Float64, Int32}}
     cudss_csr::Union{Nothing, CuSparseMatrixCSR{Float64, Int32}}  # persistent CSR shell
@@ -752,6 +756,16 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     schur_dz_gpu_v = CUDA.zeros(Float64, sys_dim_v)
     schur_S_csc_buf_v = CUDA.zeros(Float64, S_nnz_val)
 
+    # GPU copies of per-cluster metadata for fused kernels
+    schur_w_start_gpu_v = CuVector{Int}[]
+    schur_vr_l_gpu_v = CuVector{Int}[]
+    schur_vi_l_gpu_v = CuVector{Int}[]
+    for (g, bus_red) in enumerate(schur_cluster_bus_reduced_v)
+        push!(schur_w_start_gpu_v, CuVector(schur_cluster_w_start_v[g]))
+        push!(schur_vr_l_gpu_v, CuVector([br[1] for br in bus_red]))
+        push!(schur_vi_l_gpu_v, CuVector([br[2] for br in bus_red]))
+    end
+
     # --- cuDSS monolithic direct solver setup ---
     # Build CSC→CSR nzval permutation (computed once, fixed sparsity)
     nnz_J = length(bl_cpu.J_rowval)
@@ -810,6 +824,7 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
                              cudss_S_solver_v, cudss_S_csr_v, csc_to_csr_perm_S_v,
                              cudss_S_rhs_v, cudss_S_sol_v,
                              schur_fwk_packed_v, schur_dz_gpu_v, schur_S_csc_buf_v,
+                             schur_w_start_gpu_v, schur_vr_l_gpu_v, schur_vi_l_gpu_v,
                              cudss_solver, cudss_csr, csc_to_csr_perm,
                              cudss_rhs, cudss_sol)
 end
@@ -2195,29 +2210,34 @@ end
     @inbounds z[m, reduced_idx[i]] += dv[i]
 end
 
-# Gather f_wk for all clusters×scenarios into fwk_packed
-# fwk_packed is wk × 1 × (nc*M). For cluster ki, scenario m: batch = (ki-1)*M + m
-@kernel function schur_gather_fwk_ka!(fwk_packed, f, @Const(w_start), @Const(ki),
-                                       @Const(wk), @Const(M))
-    m = @index(Global)
+# ── Fused kernels: one launch covers ALL clusters in a group ──
+
+# Gather f_wk for ALL clusters in a group, ALL scenarios.
+# ndrange = nc (one thread per cluster), M-loop inside.
+@kernel function schur_gather_fwk_fused_ka!(fwk_packed, f, w_start_arr,
+                                             @Const(wk), @Const(M))
+    ki = @index(Global)
     @inbounds begin
-        b = (ki - 1) * M + m
-        for j in 1:wk
-            fwk_packed[j, 1, b] = f[m, w_start + j - 1]
+        w_start = w_start_arr[ki]
+        for m in 1:M
+            b = (ki - 1) * M + m
+            for j in 1:wk
+                fwk_packed[j, 1, b] = f[m, w_start + j - 1]
+            end
         end
     end
 end
 
-# Accumulate C_k * (A⁻¹ f_wk) into rhs_red for one cluster, all scenarios at once.
-# fwk_solved is wk × 1 × (nc*M) after batched solve = A⁻¹ f_wk.
-# This kernel is called per cluster per scenario.
-@kernel function schur_accum_Ck_fwk_ka!(rhs_red, C_packed, fwk_solved,
-                                          @Const(ki), @Const(wk), @Const(M),
-                                          @Const(vr_l), @Const(vi_l), @Const(m))
-    # Single thread per (ki, m) pair
-    b = @index(Global)  # we'll launch with ndrange=1
+# Accumulate C_k * (A⁻¹ f_wk) into rhs_red for ALL clusters, one scenario m.
+# ndrange = nc.
+@kernel function schur_accum_Ck_fwk_fused_ka!(rhs_red, C_packed, fwk_solved,
+                                                vr_l_arr, vi_l_arr,
+                                                @Const(wk), @Const(M), @Const(m))
+    ki = @index(Global)
     @inbounds begin
         batch = (ki - 1) * M + m
+        vr_l = vr_l_arr[ki]
+        vi_l = vi_l_arr[ki]
         c1 = 0.0; c2 = 0.0
         for j in 1:wk
             x = fwk_solved[j, 1, batch]
@@ -2229,16 +2249,17 @@ end
     end
 end
 
-# Back-sub: dw_k = -(A⁻¹f_wk + (A⁻¹B_k) dv), write to z
-@kernel function schur_backsub_ka!(z, fwk_solved, AinvBk, dv_sol,
-                                    @Const(ki), @Const(wk), @Const(M),
-                                    @Const(w_start), @Const(vr_l), @Const(vi_l),
-                                    @Const(m))
-    idx = @index(Global)  # ndrange=1
+# Back-sub for ALL clusters in a group, one scenario m.
+# ndrange = nc.
+@kernel function schur_backsub_fused_ka!(z, fwk_solved, AinvBk, dv_sol,
+                                          w_start_arr, vr_l_arr, vi_l_arr,
+                                          @Const(wk), @Const(M), @Const(m))
+    ki = @index(Global)
     @inbounds begin
         batch = (ki - 1) * M + m
-        dv1 = dv_sol[vr_l]
-        dv2 = dv_sol[vi_l]
+        w_start = w_start_arr[ki]
+        dv1 = dv_sol[vr_l_arr[ki]]
+        dv2 = dv_sol[vi_l_arr[ki]]
         for j in 1:wk
             dw = -(fwk_solved[j, 1, batch] + AinvBk[j, 1, batch] * dv1 + AinvBk[j, 2, batch] * dv2)
             z[m, w_start + j - 1] += dw
@@ -2282,28 +2303,14 @@ function _newton_step_schur_cudss_gpu!(
         # 4. Extract A/B/C, factor A, solve A⁻¹B (all clusters × all scenarios)
         _schur_extract_and_factor_gpu!(gbl)
 
-        # 4b. Gather f_wk and solve A⁻¹ f_wk for all clusters × scenarios
+        # 4b. Gather f_wk and solve A⁻¹ f_wk — one fused launch per group
         for (g, glu) in enumerate(gbl.schur_batched_lus)
             nc = glu.n_clusters; wk = glu.w_k
             fwk = gbl.schur_fwk_packed[g]
-
-            # Gather f_wk for each cluster
-            for (ki, ci) in enumerate(gbl.schur_nt_groups[g])
-                w_start = gbl.schur_cluster_w_start[g][ki]
-                kernel_fw = schur_gather_fwk_ka!(backend)
-                kernel_fw(fwk, gbl.f, w_start, ki, wk, M; ndrange=M)
-            end
+            kernel_fw = schur_gather_fwk_fused_ka!(backend)
+            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=nc)
             KernelAbstractions.synchronize(backend)
-
-            # Batched solve: A_k⁻¹ f_wk using already-factored A_k
-            # getrs! expects B same stride as A. fwk is wk × 1 × (nc*M).
-            # A is wk × wk × (nc*M). Stride of A = wk*wk, stride of B = wk*1.
-            # But getrs_strided_batched! works on the same-sized batch.
-            # Actually, need to use the A from glu.A_packed and ipiv from glu.ipiv.
-            # getrs_strided_batched! signature: getrs_strided_batched!('N', A, B, ipiv)
-            # A: wk × wk × batch, B: wk × nrhs × batch, ipiv: wk × batch
             CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, fwk, glu.ipiv)
-            # Now fwk contains A⁻¹ f_wk
         end
 
         # 5. Per scenario: assemble S, build RHS, cuDSS solve, scatter+backsub
@@ -2311,23 +2318,19 @@ function _newton_step_schur_cudss_gpu!(
             # 5a. Assemble S for scenario m
             _schur_assemble_S_gpu!(gbl, m)
 
-            # 5b. Gather reduced RHS: rhs = -f[m, reduced_idx]
+            # 5b. Gather reduced RHS: rhs = f[m, reduced_idx]
             kernel_rhs = schur_gather_rhs_ka!(backend)
             kernel_rhs(gbl.cudss_S_rhs, gbl.f, gbl.reduced_idx_gpu, m;
                        ndrange=n_red)
             KernelAbstractions.synchronize(backend)
 
-            # 5c. Subtract C_k (A⁻¹ f_wk) from RHS
+            # 5c. Subtract C_k (A⁻¹ f_wk) — one fused launch per group
             for (g, glu) in enumerate(gbl.schur_batched_lus)
                 nc = glu.n_clusters; wk = glu.w_k
-                fwk = gbl.schur_fwk_packed[g]
-                for (ki, ci) in enumerate(gbl.schur_nt_groups[g])
-                    vr_l, vi_l = gbl.schur_cluster_bus_reduced[g][ki]
-                    kernel_acc = schur_accum_Ck_fwk_ka!(backend)
-                    kernel_acc(gbl.cudss_S_rhs, glu.C_packed, fwk,
-                               ki, wk, M, vr_l, vi_l, m;
-                               ndrange=1)
-                end
+                kernel_acc = schur_accum_Ck_fwk_fused_ka!(backend)
+                kernel_acc(gbl.cudss_S_rhs, glu.C_packed, gbl.schur_fwk_packed[g],
+                           gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
+                           wk, M, m; ndrange=nc)
             end
             KernelAbstractions.synchronize(backend)
 
@@ -2349,18 +2352,13 @@ function _newton_step_schur_cudss_gpu!(
             kernel_dv(gbl.z, gbl.cudss_S_sol, gbl.reduced_idx_gpu, m;
                       ndrange=n_red)
 
-            # 5f. Back-sub: dw_k = -(A⁻¹f_wk + (A⁻¹B_k) dv), write to z
+            # 5f. Back-sub — one fused launch per group
             for (g, glu) in enumerate(gbl.schur_batched_lus)
                 nc = glu.n_clusters; wk = glu.w_k
-                fwk = gbl.schur_fwk_packed[g]
-                for (ki, ci) in enumerate(gbl.schur_nt_groups[g])
-                    w_start = gbl.schur_cluster_w_start[g][ki]
-                    vr_l, vi_l = gbl.schur_cluster_bus_reduced[g][ki]
-                    kernel_bs = schur_backsub_ka!(backend)
-                    kernel_bs(gbl.z, fwk, glu.B_packed, gbl.cudss_S_sol,
-                              ki, wk, M, w_start, vr_l, vi_l, m;
-                              ndrange=1)
-                end
+                kernel_bs = schur_backsub_fused_ka!(backend)
+                kernel_bs(gbl.z, gbl.schur_fwk_packed[g], glu.B_packed, gbl.cudss_S_sol,
+                          gbl.schur_w_start_gpu[g], gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
+                          wk, M, m; ndrange=nc)
             end
             KernelAbstractions.synchronize(backend)
         end
