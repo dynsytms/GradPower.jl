@@ -234,6 +234,63 @@ function GpuIEEESTArrays(t::GradPower.IEEESTTable)
 end
 
 # -----------------------------------------------------------------------
+# Batched dense LU — cuBLAS getrf_strided_batched! / getrs_strided_batched!
+# (moved before GpuBatchedLayout so the type is available for fields)
+# -----------------------------------------------------------------------
+
+"""
+    GpuBatchedLU
+
+Holds packed dense A_k blocks for one w_k-group across all clusters
+and scenarios, plus pivot storage. Uses cuBLAS strided batched LU.
+
+Layout: A_packed[w_k, w_k, n_clusters_in_group * M]
+        B_packed[w_k, 2, n_clusters_in_group * M]
+        ipiv[w_k, n_clusters_in_group * M]
+"""
+struct GpuBatchedLU
+    w_k::Int
+    n_clusters::Int
+    M::Int
+    A_packed::CuArray{Float64, 3}
+    B_packed::CuArray{Float64, 3}    # w_k x 2 x (n_clusters * M)
+    C_packed::CuArray{Float64, 3}    # 2 x w_k x (n_clusters * M)
+    ipiv::CuMatrix{Int32}            # w_k x (n_clusters * M)
+    info::CuVector{Int32}            # n_clusters * M
+end
+
+function GpuBatchedLU(w_k::Int, n_clusters::Int, M::Int)
+    batch = n_clusters * M
+    A = CUDA.zeros(Float64, w_k, w_k, batch)
+    B = CUDA.zeros(Float64, w_k, 2, batch)
+    C = CUDA.zeros(Float64, 2, w_k, batch)
+    ipiv = CUDA.zeros(Int32, w_k, batch)
+    info = CUDA.zeros(Int32, batch)
+    return GpuBatchedLU(w_k, n_clusters, M, A, B, C, ipiv, info)
+end
+
+"""
+    gpu_batched_lu_factor!(glu::GpuBatchedLU)
+
+Factor all A_k blocks using cuBLAS getrf_strided_batched!.
+"""
+function gpu_batched_lu_factor!(glu::GpuBatchedLU)
+    CUDA.CUBLAS.getrf_strided_batched!(glu.A_packed, glu.ipiv, glu.info)
+    return nothing
+end
+
+"""
+    gpu_batched_lu_solve!(glu::GpuBatchedLU)
+
+Solve A_k * x = B_packed using cuBLAS getrs_strided_batched!.
+Solution overwrites B_packed.
+"""
+function gpu_batched_lu_solve!(glu::GpuBatchedLU)
+    CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, glu.B_packed, glu.ipiv)
+    return nothing
+end
+
+# -----------------------------------------------------------------------
 # GPU BatchedLayout (D1)
 # -----------------------------------------------------------------------
 
@@ -327,6 +384,25 @@ struct GpuBatchedLayout
     n_B_entries::Int
     n_C_entries::Int
     n_D_entries::Int
+    # Schur batched LU per w_k-group and metadata for GPU Schur solver
+    schur_batched_lus::Vector{GpuBatchedLU}
+    schur_nt_groups::Vector{Vector{Int}}      # nt_groups from SchurWorkspace
+    schur_group_A_offsets::Vector{Int}         # start/end in flat A_jnz for each group
+    schur_group_B_offsets::Vector{Int}
+    schur_group_C_offsets::Vector{Int}
+    schur_group_D_offsets::Vector{Int}         # 4 entries per cluster, sequential
+    schur_cluster_bus_reduced::Vector{Vector{Tuple{Int,Int}}} # (vr_l, vi_l) per cluster per group
+    schur_cluster_w_start::Vector{Vector{Int}} # w_start per cluster per group
+    # cuDSS solver for the reduced Schur system S
+    cudss_S_solver::Union{Nothing, CudssSolver{Float64, Int32}}
+    cudss_S_csr::Union{Nothing, CuSparseMatrixCSR{Float64, Int32}}
+    csc_to_csr_perm_S::Union{Nothing, CuVector{Int32}}
+    cudss_S_rhs::Union{Nothing, CuVector{Float64}}
+    cudss_S_sol::Union{Nothing, CuVector{Float64}}
+    # Scratch buffers for GPU Schur Newton
+    schur_fwk_packed::Vector{CuArray{Float64, 3}}     # wk × 1 × (nc*M) per group, for batched A⁻¹ f_wk solve
+    schur_dz_gpu::Union{Nothing, CuVector{Float64}}   # sys_dim buffer for dz
+    schur_S_csc_buf::Union{Nothing, CuVector{Float64}} # S_nnz buffer for CSC→CSR
     # cuDSS monolithic direct solver (phase 14c)
     cudss_solver::Union{Nothing, CudssSolver{Float64, Int32}}
     cudss_csr::Union{Nothing, CuSparseMatrixCSR{Float64, Int32}}  # persistent CSR shell
@@ -450,29 +526,231 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     ybus_nzval_g  = CuVector(nonzeros(ybus_cpu_mat))
     ybus_ncols_v  = size(ybus_cpu_mat, 2)
 
-    # Schur index maps — built lazily via setup_gpu_schur!
-    reduced_idx_g = nothing
-    g2r_g = nothing
-    J_to_S_row_g = nothing
-    J_to_S_col_g = nothing
-    J_to_S_nzpos_g = nothing
-    J_nz_count_for_S_v = 0
-    S_nzval_g = nothing
-    S_colptr_g = nothing
-    S_rowval_g = nothing
-    S_n_v = 0
-    S_nnz_v = 0
-    cluster_A_jnz_g = nothing
-    cluster_A_local_g = nothing
-    cluster_B_jnz_g = nothing
-    cluster_B_local_g = nothing
-    cluster_C_jnz_g = nothing
-    cluster_C_local_g = nothing
-    cluster_D_S_nzpos_g = nothing
-    n_A_entries_v = 0
-    n_B_entries_v = 0
-    n_C_entries_v = 0
-    n_D_entries_v = 0
+    # --- Schur index maps (precomputed on CPU, uploaded to GPU) ---
+    ct = dyn.clusters::GradPower.ClusterTable
+    net_ptr_v = dyn.diff_dim + dyn.alg_dim
+    sys_dim_v = bl_cpu.sys_dim
+    sw_tmp = GradPower.SchurWorkspace(ps)
+
+    reduced_idx_g = CuVector(sw_tmp.reduced_idx)
+    g2r_g = CuVector(sw_tmp.global_to_reduced)
+    n_red = length(sw_tmp.reduced_idx)
+
+    # Build J_nzval→S_nzval index map for the reduced block copy.
+    # For each nz in J whose (row, col) are both in reduced_idx,
+    # record (J_nzval_position, S_nzval_position).
+    S_rows_cpu = rowvals(sw_tmp.S)
+    J_to_S_jnz = Int32[]   # J nzval positions
+    J_to_S_snz = Int32[]   # S nzval positions
+    for (lj, gj) in enumerate(sw_tmp.reduced_idx)
+        for j_nz in J_colptr_cpu[gj]:(J_colptr_cpu[gj+1]-1)
+            gi = J_rowval_cpu[j_nz]
+            li = sw_tmp.global_to_reduced[gi]
+            li == 0 && continue
+            # Find li in S's column lj
+            for s_nz in nzrange(sw_tmp.S, lj)
+                if S_rows_cpu[s_nz] == li
+                    push!(J_to_S_jnz, Int32(j_nz))
+                    push!(J_to_S_snz, Int32(s_nz))
+                    break
+                end
+            end
+        end
+    end
+    J_to_S_nzpos_g = CuVector(J_to_S_snz)
+    J_to_S_jnz_g   = CuVector(J_to_S_jnz)
+    # Reuse J_to_S_row/col fields for jnz/snz pair arrays
+    J_to_S_row_g = J_to_S_jnz_g    # J nzval indices
+    J_to_S_col_g = J_to_S_nzpos_g  # S nzval indices
+    J_nz_count_for_S_v = length(J_to_S_jnz)
+
+    S_nzval_g = CuVector(zeros(Float64, nnz(sw_tmp.S)))
+    S_colptr_g = CuVector(Int32.(sw_tmp.S.colptr))
+    S_rowval_g = CuVector(Int32.(rowvals(sw_tmp.S)))
+    S_n_v = n_red
+    S_nnz_v = nnz(sw_tmp.S)
+
+    # Build per-cluster A_k/B_k/C_k nzval index maps.
+    # For each nonzero in J that falls inside A_k/B_k/C_k of cluster ci,
+    # record (J_nzval_position, local_position_in_packed_buffer).
+    # Local position in A_packed: linear index into w_k × w_k matrix
+    # for the cluster's slice (column-major).
+    A_jnz_list = Int32[]
+    A_local_list = Int32[]
+    B_jnz_list = Int32[]
+    B_local_list = Int32[]
+    C_jnz_list = Int32[]
+    C_local_list = Int32[]
+
+    # For each group, we need cluster_within_group index to know the
+    # batch offset. Batch index = (ki-1)*M + m, but for index maps
+    # we store the ki (1-based within group) and apply M offset in the kernel.
+    # Actually, store flat: per-cluster maps with a group_offset field.
+    # Simpler: store (jnz_pos, local_row, local_col, ki_in_group, group_idx).
+    # But that's too many arrays. Instead, pre-flatten per group.
+
+    # We'll build per-group maps, then concatenate with group metadata.
+    nt_groups = sw_tmp.nt_groups
+    ng = length(nt_groups)
+
+    # Per-group metadata for A/B/C extraction kernel dispatch
+    # group_A_offset[g] = start index into flat A_jnz_list for group g
+    group_A_offsets = zeros(Int, ng + 1)
+    group_B_offsets = zeros(Int, ng + 1)
+    group_C_offsets = zeros(Int, ng + 1)
+
+    # Temporary per-group lists
+    for (g, group) in enumerate(nt_groups)
+        wk = ct.clusters[group[1]].w_size
+        for (ki, ci) in enumerate(group)
+            cl = ct.clusters[ci]
+            ws_cl = cl.w_start; we_cl = cl.w_end
+            vr_col = net_ptr_v + 2*(cl.bus - 1) + 1
+            vi_col = vr_col + 1
+
+            # A_k: rows/cols in [ws_cl, we_cl]
+            for col_global in ws_cl:we_cl
+                local_col = col_global - ws_cl + 1
+                for j_nz in J_colptr_cpu[col_global]:(J_colptr_cpu[col_global+1]-1)
+                    row_global = J_rowval_cpu[j_nz]
+                    if ws_cl <= row_global <= we_cl
+                        local_row = row_global - ws_cl + 1
+                        # Column-major linear index in w_k × w_k
+                        local_pos = (local_col - 1) * wk + local_row
+                        push!(A_jnz_list, Int32(j_nz))
+                        # Encode: (ki, local_pos) — ki used by kernel to compute batch offset
+                        # Pack as: flat_idx = (ki-1)*wk*wk + local_pos
+                        push!(A_local_list, Int32((ki - 1) * wk * wk + local_pos))
+                    end
+                end
+            end
+
+            # B_k: rows in [ws_cl, we_cl], cols in {vr_col, vi_col}
+            for (lcol, gcol) in enumerate((vr_col, vi_col))
+                for j_nz in J_colptr_cpu[gcol]:(J_colptr_cpu[gcol+1]-1)
+                    row_global = J_rowval_cpu[j_nz]
+                    if ws_cl <= row_global <= we_cl
+                        local_row = row_global - ws_cl + 1
+                        # B_packed layout: w_k × 2 × batch, column-major
+                        # local_pos = (lcol-1)*wk + local_row
+                        local_pos = (lcol - 1) * wk + local_row
+                        push!(B_jnz_list, Int32(j_nz))
+                        push!(B_local_list, Int32((ki - 1) * wk * 2 + local_pos))
+                    end
+                end
+            end
+
+            # C_k: rows in {vr_col, vi_col}, cols in [ws_cl, we_cl]
+            for col_global in ws_cl:we_cl
+                local_col = col_global - ws_cl + 1
+                for j_nz in J_colptr_cpu[col_global]:(J_colptr_cpu[col_global+1]-1)
+                    row_global = J_rowval_cpu[j_nz]
+                    if row_global == vr_col
+                        # C_packed layout: 2 × w_k × batch
+                        local_pos = (local_col - 1) * 2 + 1
+                        push!(C_jnz_list, Int32(j_nz))
+                        push!(C_local_list, Int32((ki - 1) * 2 * wk + local_pos))
+                    elseif row_global == vi_col
+                        local_pos = (local_col - 1) * 2 + 2
+                        push!(C_jnz_list, Int32(j_nz))
+                        push!(C_local_list, Int32((ki - 1) * 2 * wk + local_pos))
+                    end
+                end
+            end
+        end
+        group_A_offsets[g + 1] = length(A_jnz_list)
+        group_B_offsets[g + 1] = length(B_jnz_list)
+        group_C_offsets[g + 1] = length(C_jnz_list)
+    end
+
+    cluster_A_jnz_g   = CuVector(A_jnz_list)
+    cluster_A_local_g  = CuVector(A_local_list)
+    cluster_B_jnz_g   = CuVector(B_jnz_list)
+    cluster_B_local_g  = CuVector(B_local_list)
+    cluster_C_jnz_g   = CuVector(C_jnz_list)
+    cluster_C_local_g  = CuVector(C_local_list)
+    n_A_entries_v = length(A_jnz_list)
+    n_B_entries_v = length(B_jnz_list)
+    n_C_entries_v = length(C_jnz_list)
+
+    # D_k subtract positions: for each non-trivial cluster, the 4 S nzval
+    # positions where D_k[1,1], D_k[2,1], D_k[1,2], D_k[2,2] subtract.
+    D_S_nzpos_list = Int32[]
+    for (g, group) in enumerate(nt_groups)
+        for (ki, ci) in enumerate(group)
+            cl = ct.clusters[ci]
+            vr_g = net_ptr_v + 2*(cl.bus - 1) + 1
+            vi_g = vr_g + 1
+            vr_l = sw_tmp.global_to_reduced[vr_g]
+            vi_l = sw_tmp.global_to_reduced[vi_g]
+            # Find S nzval positions for (vr_l,vr_l), (vi_l,vr_l), (vr_l,vi_l), (vi_l,vi_l)
+            for (col_l, row_l) in ((vr_l, vr_l), (vr_l, vi_l), (vi_l, vr_l), (vi_l, vi_l))
+                found = false
+                for s_nz in nzrange(sw_tmp.S, col_l)
+                    if S_rows_cpu[s_nz] == row_l
+                        push!(D_S_nzpos_list, Int32(s_nz))
+                        found = true
+                        break
+                    end
+                end
+                @assert found "Missing S entry for D_k subtract at ($row_l, $col_l)"
+            end
+        end
+    end
+    cluster_D_S_nzpos_g = CuVector(D_S_nzpos_list)
+    n_D_entries_v = length(D_S_nzpos_list)
+
+    # Build GpuBatchedLU instances for each w_k-group
+    schur_batched_lus_v = GpuBatchedLU[]
+    schur_group_D_offsets_v = [0]
+    schur_cluster_bus_reduced_v = Vector{Tuple{Int,Int}}[]
+    schur_cluster_w_start_v = Vector{Int}[]
+    for (g, group) in enumerate(nt_groups)
+        nc = length(group)
+        wk = ct.clusters[group[1]].w_size
+        glu = GpuBatchedLU(wk, nc, M)
+        push!(schur_batched_lus_v, glu)
+        push!(schur_group_D_offsets_v, schur_group_D_offsets_v[end] + 4 * nc)
+        bus_red = Tuple{Int,Int}[]
+        ws_list = Int[]
+        for (ki, ci) in enumerate(group)
+            cl = ct.clusters[ci]
+            vr_g = net_ptr_v + 2*(cl.bus - 1) + 1
+            push!(bus_red, (sw_tmp.global_to_reduced[vr_g],
+                            sw_tmp.global_to_reduced[vr_g + 1]))
+            push!(ws_list, cl.w_start)
+        end
+        push!(schur_cluster_bus_reduced_v, bus_red)
+        push!(schur_cluster_w_start_v, ws_list)
+    end
+
+    # cuDSS for reduced system S (symbolic analysis once)
+    S_nnz_val = nnz(sw_tmp.S)
+    S_perm_csc = SparseMatrixCSC(n_red, n_red,
+                                  copy(sw_tmp.S.colptr), copy(rowvals(sw_tmp.S)),
+                                  collect(Float64, 1:S_nnz_val))
+    S_perm_csr = copy(S_perm_csc')
+    csc_to_csr_perm_S_v = CuVector(Int32.(S_perm_csr.nzval))
+
+    S_csc_ones = SparseMatrixCSC(n_red, n_red,
+                                  copy(sw_tmp.S.colptr), copy(rowvals(sw_tmp.S)),
+                                  ones(Float64, S_nnz_val))
+    cudss_S_csr_v = CuSparseMatrixCSR(S_csc_ones)
+    cudss_S_solver_v = CudssSolver(cudss_S_csr_v, "G", 'F')
+    _tmp_sx = CUDA.zeros(Float64, n_red)
+    _tmp_sb = CUDA.zeros(Float64, n_red)
+    cudss("analysis", cudss_S_solver_v, _tmp_sx, _tmp_sb)
+    cudss_S_rhs_v = CUDA.zeros(Float64, n_red)
+    cudss_S_sol_v = CUDA.zeros(Float64, n_red)
+
+    # Scratch buffers for GPU Schur Newton
+    schur_fwk_packed_v = CuArray{Float64, 3}[]
+    for (g, glu) in enumerate(schur_batched_lus_v)
+        wk = glu.w_k; nc = glu.n_clusters
+        push!(schur_fwk_packed_v, CUDA.zeros(Float64, wk, 1, nc * M))
+    end
+    schur_dz_gpu_v = CUDA.zeros(Float64, sys_dim_v)
+    schur_S_csc_buf_v = CUDA.zeros(Float64, S_nnz_val)
 
     # --- cuDSS monolithic direct solver setup ---
     # Build CSC→CSR nzval permutation (computed once, fixed sparsity)
@@ -525,6 +803,13 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
                              cluster_C_jnz_g, cluster_C_local_g,
                              cluster_D_S_nzpos_g,
                              n_A_entries_v, n_B_entries_v, n_C_entries_v, n_D_entries_v,
+                             schur_batched_lus_v, nt_groups,
+                             group_A_offsets, group_B_offsets, group_C_offsets,
+                             schur_group_D_offsets_v,
+                             schur_cluster_bus_reduced_v, schur_cluster_w_start_v,
+                             cudss_S_solver_v, cudss_S_csr_v, csc_to_csr_perm_S_v,
+                             cudss_S_rhs_v, cudss_S_sol_v,
+                             schur_fwk_packed_v, schur_dz_gpu_v, schur_S_csc_buf_v,
                              cudss_solver, cudss_csr, csc_to_csr_perm,
                              cudss_rhs, cudss_sol)
 end
@@ -1341,62 +1626,6 @@ function integrate_gpu!(gbl::GpuBatchedLayout, ps::GradPower.PowerSystem, tf::Fl
 end
 
 # -----------------------------------------------------------------------
-# Batched dense LU (D3) — cuBLAS getrf_strided_batched! / getrs_strided_batched!
-# -----------------------------------------------------------------------
-
-"""
-    GpuBatchedLU
-
-Holds packed dense A_k blocks for one w_k-group across all clusters
-and scenarios, plus pivot storage. Uses cuBLAS strided batched LU.
-
-Layout: A_packed[w_k, w_k, n_clusters_in_group * M]
-        B_packed[w_k, 2, n_clusters_in_group * M]
-        ipiv[w_k, n_clusters_in_group * M]
-"""
-struct GpuBatchedLU
-    w_k::Int
-    n_clusters::Int
-    M::Int
-    A_packed::CuArray{Float64, 3}
-    B_packed::CuArray{Float64, 3}    # w_k x 2 x (n_clusters * M)
-    C_packed::CuArray{Float64, 3}    # 2 x w_k x (n_clusters * M)
-    ipiv::CuMatrix{Int32}            # w_k x (n_clusters * M)
-    info::CuVector{Int32}            # n_clusters * M
-end
-
-function GpuBatchedLU(w_k::Int, n_clusters::Int, M::Int)
-    batch = n_clusters * M
-    A = CUDA.zeros(Float64, w_k, w_k, batch)
-    B = CUDA.zeros(Float64, w_k, 2, batch)
-    C = CUDA.zeros(Float64, 2, w_k, batch)
-    ipiv = CUDA.zeros(Int32, w_k, batch)
-    info = CUDA.zeros(Int32, batch)
-    return GpuBatchedLU(w_k, n_clusters, M, A, B, C, ipiv, info)
-end
-
-"""
-    gpu_batched_lu_factor!(glu::GpuBatchedLU)
-
-Factor all A_k blocks using cuBLAS getrf_strided_batched!.
-"""
-function gpu_batched_lu_factor!(glu::GpuBatchedLU)
-    CUDA.CUBLAS.getrf_strided_batched!(glu.A_packed, glu.ipiv, glu.info)
-    return nothing
-end
-
-"""
-    gpu_batched_lu_solve!(glu::GpuBatchedLU)
-
-Solve A_k * x = B_packed using cuBLAS getrs_strided_batched!.
-Solution overwrites B_packed.
-"""
-function gpu_batched_lu_solve!(glu::GpuBatchedLU)
-    CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, glu.B_packed, glu.ipiv)
-    return nothing
-end
-
-# -----------------------------------------------------------------------
 # GPU Schur complement operator (D4) — matrix-free
 #
 # Computes S·x = D·x − Σ_k C_k A_k⁻¹ B_k·x without assembling S.
@@ -1740,6 +1969,407 @@ end
 end
 
 # -----------------------------------------------------------------------
+# GPU Schur extraction kernels
+# -----------------------------------------------------------------------
+
+# Gather A_k entries from J_nzval[m, :] into A_packed[:, :, batch_idx]
+# for all scenarios m=1..M simultaneously.
+# idx indexes into the flat A_jnz / A_local arrays (one entry per structural nz).
+# M-loop inside kernel to avoid M × n_entries kernel launches.
+@kernel function schur_gather_A_ka!(A_packed, J_nzval, A_jnz, A_local,
+                                     @Const(wk_sq), @Const(M))
+    idx = @index(Global)
+    @inbounds begin
+        jnz = A_jnz[idx]          # J nzval position (1-based)
+        encoded = A_local[idx]     # (ki-1)*wk² + local_pos  (1-based)
+        ki_m1 = div(encoded - 1, wk_sq)  # 0-based cluster-within-group
+        local_pos = encoded - ki_m1 * wk_sq  # 1-based linear index in wk×wk
+        for m in 1:M
+            b = ki_m1 * M + m      # 1-based batch index
+            val = J_nzval[m, jnz]
+            A_packed[local_pos, b] = val  # A_packed viewed as (wk², batch)
+        end
+    end
+end
+
+# Gather B_k entries from J_nzval
+@kernel function schur_gather_B_ka!(B_packed, J_nzval, B_jnz, B_local,
+                                     @Const(wk_x2), @Const(M))
+    idx = @index(Global)
+    @inbounds begin
+        jnz = B_jnz[idx]
+        encoded = B_local[idx]     # (ki-1)*wk*2 + local_pos
+        ki_m1 = div(encoded - 1, wk_x2)
+        local_pos = encoded - ki_m1 * wk_x2
+        for m in 1:M
+            b = ki_m1 * M + m
+            B_packed[local_pos, b] = J_nzval[m, jnz]
+        end
+    end
+end
+
+# Gather C_k entries from J_nzval
+@kernel function schur_gather_C_ka!(C_packed, J_nzval, C_jnz, C_local,
+                                     @Const(x2_wk), @Const(M))
+    idx = @index(Global)
+    @inbounds begin
+        jnz = C_jnz[idx]
+        encoded = C_local[idx]     # (ki-1)*2*wk + local_pos
+        ki_m1 = div(encoded - 1, x2_wk)
+        local_pos = encoded - ki_m1 * x2_wk
+        for m in 1:M
+            b = ki_m1 * M + m
+            C_packed[local_pos, b] = J_nzval[m, jnz]
+        end
+    end
+end
+
+# Copy reduced block of J into S_nzval for one scenario
+@kernel function schur_copy_reduced_ka!(S_nzval, J_nzval, J_to_S_jnz, J_to_S_snz,
+                                         @Const(m))
+    idx = @index(Global)
+    @inbounds begin
+        S_nzval[J_to_S_snz[idx]] = J_nzval[m, J_to_S_jnz[idx]]
+    end
+end
+
+# Subtract D_k = C_k A_k⁻¹ B_k from S_nzval at precomputed positions.
+# D_k is stored in B_packed after solving A_k⁻¹ B_k then multiplied by C_k.
+# This kernel is called per cluster, writing 4 values (2×2 D_k).
+# Actually, we'll compute D_k on GPU and subtract with a small kernel.
+# Computes D_k = C_packed[:,:,b] * B_packed[:,:,b] (after solve, B holds A⁻¹B)
+# and subtracts from S at 4 positions given in D_S_nzpos.
+# One thread per cluster per scenario.
+@kernel function schur_subtract_Dk_ka!(S_nzval, B_packed, C_packed, D_S_nzpos,
+                                        @Const(wk), @Const(M), @Const(d_offset),
+                                        @Const(ki_offset), @Const(m))
+    ki_local = @index(Global)  # 1-based cluster within group
+    @inbounds begin
+        b = (ki_local - 1 + ki_offset) * M + m  # batch index (ki_offset=0 if starting from 1)
+        d_base = d_offset + (ki_local - 1) * 4  # 0-based offset into D_S_nzpos
+        # D_k[r,c] = Σ_j C[r,j,b] * B_solved[j,c,b]
+        # C_packed is 2 × wk × batch, B_packed is wk × 2 × batch
+        # After solve, B_packed[:, :, b] = A⁻¹ B
+        for c in 1:2
+            for r in 1:2
+                dval = 0.0
+                for j in 1:wk
+                    # C_packed[r, j, b]: linear index = r + (j-1)*2 + (b-1)*2*wk
+                    # But we store as CuArray{Float64,3} with dims (2, wk, batch)
+                    dval += C_packed[r, j, b] * B_packed[j, c, b]
+                end
+                # Subtract from S: column-major order in D_S_nzpos is
+                # (vr,vr), (vr,vi), (vi,vr), (vi,vi) — but actually stored as
+                # (col=vr,row=vr), (col=vr,row=vi), (col=vi,row=vr), (col=vi,row=vi)
+                # which maps to D[r,c] order: D[1,1], D[2,1], D[1,2], D[2,2]
+                pos_idx = d_base + (c - 1) * 2 + r
+                S_nzval[D_S_nzpos[pos_idx]] -= dval
+            end
+        end
+    end
+end
+
+# -----------------------------------------------------------------------
+# GPU Schur assembly
+# -----------------------------------------------------------------------
+
+"""
+    _schur_extract_and_factor_gpu!(gbl)
+
+Phase 1 of GPU Schur: extract A_k, B_k, C_k from J_nzval for ALL
+scenarios, factor A_k, solve A_k⁻¹ B_k. All via single batched calls.
+"""
+function _schur_extract_and_factor_gpu!(gbl::GpuBatchedLayout)
+    backend = CUDABackend()
+
+    for (g, glu) in enumerate(gbl.schur_batched_lus)
+        nc = glu.n_clusters
+        wk = glu.w_k
+
+        # Zero out packed buffers (stale values from previous iteration)
+        fill!(glu.A_packed, 0.0)
+        fill!(glu.B_packed, 0.0)
+        fill!(glu.C_packed, 0.0)
+
+        # Gather A_k (all clusters × all scenarios)
+        n_a = gbl.schur_group_A_offsets[g + 1] - gbl.schur_group_A_offsets[g]
+        if n_a > 0
+            a_start = gbl.schur_group_A_offsets[g] + 1
+            a_end = gbl.schur_group_A_offsets[g + 1]
+            A_flat = reshape(glu.A_packed, wk * wk, nc * gbl.M)
+            kernel_a = schur_gather_A_ka!(backend)
+            kernel_a(A_flat, gbl.J_nzval,
+                     view(gbl.cluster_A_jnz, a_start:a_end),
+                     view(gbl.cluster_A_local, a_start:a_end),
+                     Int32(wk * wk), Int32(gbl.M);
+                     ndrange=n_a)
+        end
+
+        n_b = gbl.schur_group_B_offsets[g + 1] - gbl.schur_group_B_offsets[g]
+        if n_b > 0
+            b_start = gbl.schur_group_B_offsets[g] + 1
+            b_end = gbl.schur_group_B_offsets[g + 1]
+            B_flat = reshape(glu.B_packed, wk * 2, nc * gbl.M)
+            kernel_b = schur_gather_B_ka!(backend)
+            kernel_b(B_flat, gbl.J_nzval,
+                     view(gbl.cluster_B_jnz, b_start:b_end),
+                     view(gbl.cluster_B_local, b_start:b_end),
+                     Int32(wk * 2), Int32(gbl.M);
+                     ndrange=n_b)
+        end
+
+        n_c = gbl.schur_group_C_offsets[g + 1] - gbl.schur_group_C_offsets[g]
+        if n_c > 0
+            c_start = gbl.schur_group_C_offsets[g] + 1
+            c_end = gbl.schur_group_C_offsets[g + 1]
+            C_flat = reshape(glu.C_packed, 2 * wk, nc * gbl.M)
+            kernel_c = schur_gather_C_ka!(backend)
+            kernel_c(C_flat, gbl.J_nzval,
+                     view(gbl.cluster_C_jnz, c_start:c_end),
+                     view(gbl.cluster_C_local, c_start:c_end),
+                     Int32(2 * wk), Int32(gbl.M);
+                     ndrange=n_c)
+        end
+
+        KernelAbstractions.synchronize(backend)
+
+        # Factor all A_k in one batched call
+        gpu_batched_lu_factor!(glu)
+
+        # Solve A_k⁻¹ B_k in one batched call (overwrites B_packed)
+        gpu_batched_lu_solve!(glu)
+    end
+
+    return nothing
+end
+
+"""
+    _schur_assemble_S_gpu!(gbl, m)
+
+Phase 2 of GPU Schur: for scenario `m`, assemble S = D - Σ C_k A_k⁻¹ B_k.
+Assumes `_schur_extract_and_factor_gpu!` already ran.
+"""
+function _schur_assemble_S_gpu!(gbl::GpuBatchedLayout, m::Int)
+    backend = CUDABackend()
+
+    # Copy reduced block: S_nzval[snz] = J_nzval[m, jnz]
+    if gbl.J_nz_count_for_S > 0
+        kernel_red = schur_copy_reduced_ka!(backend)
+        kernel_red(gbl.S_nzval_gpu, gbl.J_nzval,
+                   gbl.J_to_S_row, gbl.J_to_S_col, m;
+                   ndrange=gbl.J_nz_count_for_S)
+        KernelAbstractions.synchronize(backend)
+    end
+
+    # Subtract D_k for each group
+    d_offset = 0
+    for (g, glu) in enumerate(gbl.schur_batched_lus)
+        nc = glu.n_clusters
+        wk = glu.w_k
+        kernel_d = schur_subtract_Dk_ka!(backend)
+        kernel_d(gbl.S_nzval_gpu, glu.B_packed, glu.C_packed,
+                 gbl.cluster_D_S_nzpos,
+                 Int32(wk), Int32(gbl.M), Int32(d_offset),
+                 Int32(0), Int32(m);
+                 ndrange=nc)
+        d_offset += 4 * nc
+    end
+    KernelAbstractions.synchronize(backend)
+
+    return nothing
+end
+
+# -----------------------------------------------------------------------
+# GPU Schur-complement Newton step with cuDSS on S
+# -----------------------------------------------------------------------
+
+# Gather reduced RHS (before negation): rhs_red[i] = f[m, reduced_idx[i]]
+@kernel function schur_gather_rhs_ka!(rhs_red, f, reduced_idx, @Const(m))
+    i = @index(Global)
+    @inbounds rhs_red[i] = f[m, reduced_idx[i]]
+end
+
+# Scatter dz into z: z[m, reduced_idx[i]] += dv[i]
+@kernel function schur_scatter_dv_ka!(z, dv, reduced_idx, @Const(m))
+    i = @index(Global)
+    @inbounds z[m, reduced_idx[i]] += dv[i]
+end
+
+# Gather f_wk for all clusters×scenarios into fwk_packed
+# fwk_packed is wk × 1 × (nc*M). For cluster ki, scenario m: batch = (ki-1)*M + m
+@kernel function schur_gather_fwk_ka!(fwk_packed, f, @Const(w_start), @Const(ki),
+                                       @Const(wk), @Const(M))
+    m = @index(Global)
+    @inbounds begin
+        b = (ki - 1) * M + m
+        for j in 1:wk
+            fwk_packed[j, 1, b] = f[m, w_start + j - 1]
+        end
+    end
+end
+
+# Accumulate C_k * (A⁻¹ f_wk) into rhs_red for one cluster, all scenarios at once.
+# fwk_solved is wk × 1 × (nc*M) after batched solve = A⁻¹ f_wk.
+# This kernel is called per cluster per scenario.
+@kernel function schur_accum_Ck_fwk_ka!(rhs_red, C_packed, fwk_solved,
+                                          @Const(ki), @Const(wk), @Const(M),
+                                          @Const(vr_l), @Const(vi_l), @Const(m))
+    # Single thread per (ki, m) pair
+    b = @index(Global)  # we'll launch with ndrange=1
+    @inbounds begin
+        batch = (ki - 1) * M + m
+        c1 = 0.0; c2 = 0.0
+        for j in 1:wk
+            x = fwk_solved[j, 1, batch]
+            c1 += C_packed[1, j, batch] * x
+            c2 += C_packed[2, j, batch] * x
+        end
+        rhs_red[vr_l] -= c1
+        rhs_red[vi_l] -= c2
+    end
+end
+
+# Back-sub: dw_k = -(A⁻¹f_wk + (A⁻¹B_k) dv), write to z
+@kernel function schur_backsub_ka!(z, fwk_solved, AinvBk, dv_sol,
+                                    @Const(ki), @Const(wk), @Const(M),
+                                    @Const(w_start), @Const(vr_l), @Const(vi_l),
+                                    @Const(m))
+    idx = @index(Global)  # ndrange=1
+    @inbounds begin
+        batch = (ki - 1) * M + m
+        dv1 = dv_sol[vr_l]
+        dv2 = dv_sol[vi_l]
+        for j in 1:wk
+            dw = -(fwk_solved[j, 1, batch] + AinvBk[j, 1, batch] * dv1 + AinvBk[j, 2, batch] * dv2)
+            z[m, w_start + j - 1] += dw
+        end
+    end
+end
+
+"""
+    _newton_step_schur_cudss_gpu!(gbl, dyn, L, dt; ...)
+
+GPU Schur Newton step. All computation on GPU except per-scenario cuDSS
+factorization of the small reduced system S.
+"""
+function _newton_step_schur_cudss_gpu!(
+    gbl::GpuBatchedLayout,
+    dyn::GradPower.PowerSystemDynamics,
+    L::GradPower.SimulationLayout,
+    dt::Float64;
+    itermax::Int = 30,
+    tol::Float64 = 1e-10,
+)
+    M       = gbl.M
+    sys_dim = gbl.sys_dim
+    n_red   = gbl.S_n
+    backend = CUDABackend()
+
+    f_flat = reshape(gbl.f, :)
+    tol_l2 = tol * sqrt(Float64(sys_dim * M))
+
+    for iter in 1:itermax
+        # 1. Residual + backward Euler
+        _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
+
+        # 2. Convergence check
+        norm_f = CUDA.CUBLAS.nrm2(f_flat)
+        norm_f < tol_l2 && return true
+
+        # 3. Jacobian + backward Euler scaling
+        _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
+
+        # 4. Extract A/B/C, factor A, solve A⁻¹B (all clusters × all scenarios)
+        _schur_extract_and_factor_gpu!(gbl)
+
+        # 4b. Gather f_wk and solve A⁻¹ f_wk for all clusters × scenarios
+        for (g, glu) in enumerate(gbl.schur_batched_lus)
+            nc = glu.n_clusters; wk = glu.w_k
+            fwk = gbl.schur_fwk_packed[g]
+
+            # Gather f_wk for each cluster
+            for (ki, ci) in enumerate(gbl.schur_nt_groups[g])
+                w_start = gbl.schur_cluster_w_start[g][ki]
+                kernel_fw = schur_gather_fwk_ka!(backend)
+                kernel_fw(fwk, gbl.f, w_start, ki, wk, M; ndrange=M)
+            end
+            KernelAbstractions.synchronize(backend)
+
+            # Batched solve: A_k⁻¹ f_wk using already-factored A_k
+            # getrs! expects B same stride as A. fwk is wk × 1 × (nc*M).
+            # A is wk × wk × (nc*M). Stride of A = wk*wk, stride of B = wk*1.
+            # But getrs_strided_batched! works on the same-sized batch.
+            # Actually, need to use the A from glu.A_packed and ipiv from glu.ipiv.
+            # getrs_strided_batched! signature: getrs_strided_batched!('N', A, B, ipiv)
+            # A: wk × wk × batch, B: wk × nrhs × batch, ipiv: wk × batch
+            CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, fwk, glu.ipiv)
+            # Now fwk contains A⁻¹ f_wk
+        end
+
+        # 5. Per scenario: assemble S, build RHS, cuDSS solve, scatter+backsub
+        for m in 1:M
+            # 5a. Assemble S for scenario m
+            _schur_assemble_S_gpu!(gbl, m)
+
+            # 5b. Gather reduced RHS: rhs = -f[m, reduced_idx]
+            kernel_rhs = schur_gather_rhs_ka!(backend)
+            kernel_rhs(gbl.cudss_S_rhs, gbl.f, gbl.reduced_idx_gpu, m;
+                       ndrange=n_red)
+            KernelAbstractions.synchronize(backend)
+
+            # 5c. Subtract C_k (A⁻¹ f_wk) from RHS
+            for (g, glu) in enumerate(gbl.schur_batched_lus)
+                nc = glu.n_clusters; wk = glu.w_k
+                fwk = gbl.schur_fwk_packed[g]
+                for (ki, ci) in enumerate(gbl.schur_nt_groups[g])
+                    vr_l, vi_l = gbl.schur_cluster_bus_reduced[g][ki]
+                    kernel_acc = schur_accum_Ck_fwk_ka!(backend)
+                    kernel_acc(gbl.cudss_S_rhs, glu.C_packed, fwk,
+                               ki, wk, M, vr_l, vi_l, m;
+                               ndrange=1)
+                end
+            end
+            KernelAbstractions.synchronize(backend)
+
+            # Negate RHS: rhs = -(f_red - C_k A_k⁻¹ f_wk)
+            CUDA.CUBLAS.scal!(n_red, -1.0, gbl.cudss_S_rhs)
+
+            # 5d. CSC→CSR for S, cuDSS refactorize + solve
+            copyto!(gbl.schur_S_csc_buf, gbl.S_nzval_gpu)
+            kernel_csr = csc_to_csr_gather_ka!(backend)
+            kernel_csr(gbl.cudss_S_csr.nzVal, gbl.schur_S_csc_buf, gbl.csc_to_csr_perm_S;
+                       ndrange=gbl.S_nnz)
+            KernelAbstractions.synchronize(backend)
+
+            cudss("factorization", gbl.cudss_S_solver, gbl.cudss_S_sol, gbl.cudss_S_rhs)
+            cudss("solve", gbl.cudss_S_solver, gbl.cudss_S_sol, gbl.cudss_S_rhs)
+
+            # 5e. Scatter dv into z for reduced variables
+            kernel_dv = schur_scatter_dv_ka!(backend)
+            kernel_dv(gbl.z, gbl.cudss_S_sol, gbl.reduced_idx_gpu, m;
+                      ndrange=n_red)
+
+            # 5f. Back-sub: dw_k = -(A⁻¹f_wk + (A⁻¹B_k) dv), write to z
+            for (g, glu) in enumerate(gbl.schur_batched_lus)
+                nc = glu.n_clusters; wk = glu.w_k
+                fwk = gbl.schur_fwk_packed[g]
+                for (ki, ci) in enumerate(gbl.schur_nt_groups[g])
+                    w_start = gbl.schur_cluster_w_start[g][ki]
+                    vr_l, vi_l = gbl.schur_cluster_bus_reduced[g][ki]
+                    kernel_bs = schur_backsub_ka!(backend)
+                    kernel_bs(gbl.z, fwk, glu.B_packed, gbl.cudss_S_sol,
+                              ki, wk, M, w_start, vr_l, vi_l, m;
+                              ndrange=1)
+                end
+            end
+            KernelAbstractions.synchronize(backend)
+        end
+    end
+
+    return false
+end
+
+# -----------------------------------------------------------------------
 # GPU monolithic Newton step via cuDSS direct solve
 #
 # Everything on GPU. Zero host↔device transfers per Newton iteration.
@@ -1892,6 +2522,87 @@ function integrate_gpu_cudss!(
             end
             copyto!(gbl.zold, gbl.z)
             _newton_step_cudss_gpu!(gbl, dyn, L, 0.0; tol = newton_tol)
+        end
+    end
+
+    for event in events
+        GradPower.deactivate!(event)
+    end
+
+    return tvec, trajs
+end
+
+# -----------------------------------------------------------------------
+# integrate_gpu_schur_cudss! — GPU Schur + cuDSS on S
+# -----------------------------------------------------------------------
+
+"""
+    integrate_gpu_schur_cudss!(gbl, ps, tf; dt=1/120, newton_tol=1e-10)
+
+GPU-resident batched integration using Schur-complement reduction.
+A_k factored via cuBLAS batched, S solved via cuDSS.
+"""
+function integrate_gpu_schur_cudss!(
+    gbl::GpuBatchedLayout,
+    ps::GradPower.PowerSystem,
+    tf::Float64;
+    dt::Float64 = 1.0 / 120.0,
+    newton_tol::Float64 = 1e-10,
+)
+    dyn     = ps.dynamic::GradPower.PowerSystemDynamics
+    L       = dyn.layout::GradPower.SimulationLayout
+    M       = gbl.M
+    sys_dim = gbl.sys_dim
+
+    nsteps = Int(round(tf / dt))
+    tvec   = collect(0:dt:tf)
+
+    events = dyn.events
+    event_schedule = Tuple{Int,Int,Symbol}[]
+    for (ei, ev) in enumerate(events)
+        push!(event_schedule, (Int(round(ev.ton / dt)), ei, :on))
+        push!(event_schedule, (Int(round(ev.toff / dt)), ei, :off))
+    end
+    sort!(event_schedule, by = x -> x[1])
+
+    z0_cpu = Array(gbl.z)
+    trajs  = [zeros(Float64, sys_dim, nsteps + 1) for _ in 1:M]
+    for m in 1:M
+        trajs[m][:, 1] .= z0_cpu[m, :]
+    end
+
+    copyto!(gbl.zold, gbl.z)
+
+    sched_idx = 1
+    for k in 1:nsteps
+        copyto!(gbl.zold, gbl.z)
+
+        _newton_step_schur_cudss_gpu!(gbl, dyn, L, dt; tol=newton_tol)
+
+        # Trajectory snapshot (one download per step)
+        z_cpu = Array(gbl.z)
+        for m in 1:M
+            trajs[m][:, k + 1] .= z_cpu[m, :]
+        end
+
+        any_event = false
+        while sched_idx <= length(event_schedule) && event_schedule[sched_idx][1] == k
+            _, idx, action = event_schedule[sched_idx]
+            if action === :on
+                GradPower.activate!(events[idx])
+            elseif action === :off
+                GradPower.deactivate!(events[idx])
+            end
+            any_event = true
+            sched_idx += 1
+        end
+
+        if any_event
+            for (ei, ev) in enumerate(events)
+                CUDA.@allowscalar gbl.event_status[ei] = ev.status
+            end
+            copyto!(gbl.zold, gbl.z)
+            _newton_step_schur_cudss_gpu!(gbl, dyn, L, 0.0; tol=newton_tol)
         end
     end
 
