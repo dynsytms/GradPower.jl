@@ -134,7 +134,7 @@ end
     @test max_err <= 1e-12
 end
 
-@testset "GPU Schur operator matches CPU" begin
+@testset "GPU Schur operator matches CPU assembled S" begin
     HAS_CUDA || return
 
     ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
@@ -154,7 +154,7 @@ end
     net_ptr = dyn.diff_dim + dyn.alg_dim
     dt = 1.0 / 120.0
 
-    # Build SchurWorkspace and assemble S
+    # Build SchurWorkspace, assemble S, then build GPU operator from J
     sw = GradPower.SchurWorkspace(ps)
     J0 = GradPower.preallocate_jacobian(ps)
     GradPower.beuler_jac_batched!(J0, dp.zvec, dp.uvec, dp.pvec,
@@ -163,20 +163,26 @@ end
                                    dyn.diff_dim, dt)
     GradPower.assemble_schur!(sw, J0, ct, net_ptr)
 
-    # GPU Schur operator
-    op = ext.GpuSchurOperator(length(sw.reduced_idx), sw)
+    # GPU operator constructed from J (re-extracts A_k/B_k/C_k independently)
+    op = ext.GpuSchurOperator(sw, J0, ct, net_ptr)
     n_red = length(sw.reduced_idx)
 
-    # Random test vector
-    x = randn(n_red)
-    y_op = zeros(n_red)
-    y_ref = zeros(n_red)
+    @test size(op) == (n_red, n_red)
+    @test eltype(op) == Float64
 
-    mul!(y_op, op, x)
-    mul!(y_ref, sw.S, x)
+    # Compare against CPU-assembled S * x for multiple random vectors
+    for _ in 1:5
+        x = randn(n_red)
+        y_ref = zeros(n_red)
+        mul!(y_ref, sw.S, x)
 
-    diff = maximum(abs, y_op - y_ref)
-    @test diff <= 1e-12
+        x_d = CuVector(x)
+        y_d = CUDA.zeros(Float64, n_red)
+        mul!(y_d, op, x_d)
+        y_gpu = Array(y_d)
+
+        @test maximum(abs, y_gpu - y_ref) <= 1e-12
+    end
 end
 
 @testset "KA CUDA kernel dispatch — single-scenario residual" begin

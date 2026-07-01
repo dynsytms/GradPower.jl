@@ -7,6 +7,7 @@ using CUDSS
 using LinearAlgebra
 using SparseArrays
 using KernelAbstractions
+using Krylov
 
 using GradPower
 using KLU
@@ -74,6 +75,9 @@ struct GpuGenrouArrays
     par_ptr::CuVector{Int32}
     bus::CuVector{Int32}
     online::CuVector{Bool}
+    jac_pos::CuMatrix{Int32}
+    has_gov::CuVector{Bool}
+    has_exc::CuVector{Bool}
 end
 
 struct GpuZIPLoadArrays
@@ -81,6 +85,7 @@ struct GpuZIPLoadArrays
     bus::CuVector{Int32}
     par_ptr::CuVector{Int32}
     online::CuVector{Bool}
+    jac_pos::CuMatrix{Int32}
 end
 
 struct GpuStaticGenArrays
@@ -90,32 +95,142 @@ struct GpuStaticGenArrays
     par_ptr::CuVector{Int32}
     bus_type::CuVector{Int8}
     online::CuVector{Bool}
+    jac_pos::CuMatrix{Int32}
 end
 
 function GpuGenrouArrays(gt::GradPower.GenrouTable)
     gt.n == 0 && return GpuGenrouArrays(0, CuVector{Int32}(undef,0),
         CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
         CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
-        CuVector{Bool}(undef,0))
+        CuVector{Bool}(undef,0), CuMatrix{Int32}(undef,0,0),
+        CuVector{Bool}(undef,0), CuVector{Bool}(undef,0))
     GpuGenrouArrays(gt.n, CuVector(gt.diff_ptr), CuVector(gt.alg_ptr),
                      CuVector(gt.ctrl_ptr), CuVector(gt.par_ptr),
-                     CuVector(gt.bus), CuVector(gt.online))
+                     CuVector(gt.bus), CuVector(gt.online),
+                     CuMatrix(gt.jac_pos), CuVector(gt.has_gov),
+                     CuVector(gt.has_exc))
 end
 
 function GpuZIPLoadArrays(zt::GradPower.ZIPLoadTable)
     zt.n == 0 && return GpuZIPLoadArrays(0, CuVector{Int32}(undef,0),
-        CuVector{Int32}(undef,0), CuVector{Bool}(undef,0))
+        CuVector{Int32}(undef,0), CuVector{Bool}(undef,0),
+        CuMatrix{Int32}(undef,0,0))
     GpuZIPLoadArrays(zt.n, CuVector(zt.bus), CuVector(zt.par_ptr),
-                      CuVector(zt.online))
+                      CuVector(zt.online), CuMatrix(zt.jac_pos))
 end
 
 function GpuStaticGenArrays(st::GradPower.StaticGenTable)
     st.n == 0 && return GpuStaticGenArrays(0, CuVector{Int32}(undef,0),
         CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
-        CuVector{Int8}(undef,0), CuVector{Bool}(undef,0))
+        CuVector{Int8}(undef,0), CuVector{Bool}(undef,0),
+        CuMatrix{Int32}(undef,0,0))
     GpuStaticGenArrays(st.n, CuVector(st.vr_idx), CuVector(st.alg_ptr),
                         CuVector(st.par_ptr), CuVector(st.bus_type),
-                        CuVector(st.online))
+                        CuVector(st.online), CuMatrix(st.jac_pos))
+end
+
+# -----------------------------------------------------------------------
+# GPU copies of SoA controller table arrays (phase 14c D1)
+# -----------------------------------------------------------------------
+
+struct GpuIEESGOArrays
+    n::Int
+    diff_ptr::CuVector{Int32}
+    alg_ptr::CuVector{Int32}
+    par_ptr::CuVector{Int32}
+    w_idx::CuVector{Int32}
+    online::CuVector{Bool}
+    jac_pos::CuMatrix{Int32}
+end
+
+function GpuIEESGOArrays(t::GradPower.IEESGOTable)
+    t.n == 0 && return GpuIEESGOArrays(0, CuVector{Int32}(undef,0),
+        CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
+        CuVector{Int32}(undef,0), CuVector{Bool}(undef,0),
+        CuMatrix{Int32}(undef,0,0))
+    GpuIEESGOArrays(t.n, CuVector(t.diff_ptr), CuVector(t.alg_ptr),
+                     CuVector(t.par_ptr), CuVector(t.w_idx), CuVector(t.online),
+                     CuMatrix(t.jac_pos))
+end
+
+struct GpuTGOV1Arrays
+    n::Int
+    diff_ptr::CuVector{Int32}
+    alg_ptr::CuVector{Int32}
+    par_ptr::CuVector{Int32}
+    w_idx::CuVector{Int32}
+    online::CuVector{Bool}
+    jac_pos::CuMatrix{Int32}
+end
+
+function GpuTGOV1Arrays(t::GradPower.TGOV1Table)
+    t.n == 0 && return GpuTGOV1Arrays(0, CuVector{Int32}(undef,0),
+        CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
+        CuVector{Int32}(undef,0), CuVector{Bool}(undef,0),
+        CuMatrix{Int32}(undef,0,0))
+    GpuTGOV1Arrays(t.n, CuVector(t.diff_ptr), CuVector(t.alg_ptr),
+                    CuVector(t.par_ptr), CuVector(t.w_idx), CuVector(t.online),
+                    CuMatrix(t.jac_pos))
+end
+
+struct GpuSEXSArrays
+    n::Int
+    diff_ptr::CuVector{Int32}
+    par_ptr::CuVector{Int32}
+    vr_idx::CuVector{Int32}
+    vs_idx::CuVector{Int32}
+    online::CuVector{Bool}
+    jac_pos::CuMatrix{Int32}
+end
+
+function GpuSEXSArrays(t::GradPower.SEXSTable)
+    t.n == 0 && return GpuSEXSArrays(0, CuVector{Int32}(undef,0),
+        CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
+        CuVector{Int32}(undef,0), CuVector{Bool}(undef,0),
+        CuMatrix{Int32}(undef,0,0))
+    GpuSEXSArrays(t.n, CuVector(t.diff_ptr), CuVector(t.par_ptr),
+                   CuVector(t.vr_idx), CuVector(t.vs_idx), CuVector(t.online),
+                   CuMatrix(t.jac_pos))
+end
+
+struct GpuESDC1AArrays
+    n::Int
+    diff_ptr::CuVector{Int32}
+    par_ptr::CuVector{Int32}
+    vr_idx::CuVector{Int32}
+    vs_idx::CuVector{Int32}
+    online::CuVector{Bool}
+    jac_pos::CuMatrix{Int32}
+end
+
+function GpuESDC1AArrays(t::GradPower.ESDC1ATable)
+    t.n == 0 && return GpuESDC1AArrays(0, CuVector{Int32}(undef,0),
+        CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
+        CuVector{Int32}(undef,0), CuVector{Bool}(undef,0),
+        CuMatrix{Int32}(undef,0,0))
+    GpuESDC1AArrays(t.n, CuVector(t.diff_ptr), CuVector(t.par_ptr),
+                     CuVector(t.vr_idx), CuVector(t.vs_idx), CuVector(t.online),
+                     CuMatrix(t.jac_pos))
+end
+
+struct GpuIEEESTArrays
+    n::Int
+    diff_ptr::CuVector{Int32}
+    alg_ptr::CuVector{Int32}
+    par_ptr::CuVector{Int32}
+    w_idx::CuVector{Int32}
+    online::CuVector{Bool}
+    jac_pos::CuMatrix{Int32}
+end
+
+function GpuIEEESTArrays(t::GradPower.IEEESTTable)
+    t.n == 0 && return GpuIEEESTArrays(0, CuVector{Int32}(undef,0),
+        CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
+        CuVector{Int32}(undef,0), CuVector{Bool}(undef,0),
+        CuMatrix{Int32}(undef,0,0))
+    GpuIEEESTArrays(t.n, CuVector(t.diff_ptr), CuVector(t.alg_ptr),
+                     CuVector(t.par_ptr), CuVector(t.w_idx), CuVector(t.online),
+                     CuMatrix(t.jac_pos))
 end
 
 # -----------------------------------------------------------------------
@@ -159,12 +274,65 @@ struct GpuBatchedLayout
     # Diff indices on GPU (for backward Euler)
     diff_indices::Union{Nothing, CuVector{Int}}
     is_diff::Union{Nothing, CuVector{Bool}}
-    # CPU-side bus_map for sequential bus injection reduce (avoids GPU race)
-    inj_meta_bus_map_cpu::Vector{Int32}
+    # Per-bus injection index (CSR-style on GPU) for deterministic reduce
+    bus_inj_start::CuVector{Int32}
+    bus_inj_list::CuVector{Int32}
     # GPU copies of SoA device table arrays for KA kernel dispatch
     gpu_genrou::GpuGenrouArrays
     gpu_zipload::GpuZIPLoadArrays
     gpu_static_gen::GpuStaticGenArrays
+    # Controller GPU arrays (phase 14c D1)
+    gpu_ieesgo::GpuIEESGOArrays
+    gpu_tgov1::GpuTGOV1Arrays
+    gpu_sexs::GpuSEXSArrays
+    gpu_esdc1a::GpuESDC1AArrays
+    gpu_ieeest::GpuIEEESTArrays
+    # GPU event arrays (phase 14c — avoid per-step allocation)
+    event_bus::CuVector{Int64}
+    event_rfault::CuVector{Float64}
+    event_status::CuVector{Bool}
+    # Ybus→J_nzval index map for GPU Jacobian (phase 14c D2)
+    ybus_to_jnz::CuVector{Int32}
+    ybus_nzval_cpu::Vector{Float64}
+    # Event Jacobian: nzval positions for bus diagonal (vr,vr) and (vi,vi)
+    event_jac_diag_pos::CuVector{Int32}   # length 2*n_events: [vr_pos_1, vi_pos_1, ...]
+    # Ybus CSC arrays on GPU for batched SpMV kernel (phase 14c D6)
+    ybus_colptr_gpu::CuVector{Int}
+    ybus_rowval_gpu::CuVector{Int}
+    ybus_nzval_gpu::CuVector{Float64}
+    ybus_ncols::Int
+    # Schur workspace data on GPU (phase 14c D3)
+    # Precomputed nzval→S index maps
+    reduced_idx_gpu::Union{Nothing, CuVector{Int}}
+    g2r_gpu::Union{Nothing, CuVector{Int}}
+    J_to_S_row::Union{Nothing, CuVector{Int32}}
+    J_to_S_col::Union{Nothing, CuVector{Int32}}
+    J_to_S_nzpos::Union{Nothing, CuVector{Int32}}
+    J_nz_count_for_S::Int
+    # GPU Schur complement S storage
+    S_nzval_gpu::Union{Nothing, CuVector{Float64}}
+    S_colptr_gpu::Union{Nothing, CuVector{Int32}}
+    S_rowval_gpu::Union{Nothing, CuVector{Int32}}
+    S_n::Int  # n_red
+    S_nnz::Int
+    # Per-cluster GPU index maps for A_k/B_k/C_k extraction
+    cluster_A_jnz::Union{Nothing, CuVector{Int32}}  # flat: all A_k nzval indices
+    cluster_A_local::Union{Nothing, CuVector{Int32}} # flat: local positions in A_packed
+    cluster_B_jnz::Union{Nothing, CuVector{Int32}}
+    cluster_B_local::Union{Nothing, CuVector{Int32}}
+    cluster_C_jnz::Union{Nothing, CuVector{Int32}}
+    cluster_C_local::Union{Nothing, CuVector{Int32}}
+    cluster_D_S_nzpos::Union{Nothing, CuVector{Int32}} # where D_k subtracts in S
+    n_A_entries::Int
+    n_B_entries::Int
+    n_C_entries::Int
+    n_D_entries::Int
+    # cuDSS monolithic direct solver (phase 14c)
+    cudss_solver::Union{Nothing, CudssSolver{Float64, Int32}}
+    cudss_csr::Union{Nothing, CuSparseMatrixCSR{Float64, Int32}}  # persistent CSR shell
+    csc_to_csr_perm::Union{Nothing, CuVector{Int32}}              # nzval reorder map
+    cudss_rhs::Union{Nothing, CuVector{Float64}}                  # reusable RHS buffer
+    cudss_sol::Union{Nothing, CuVector{Float64}}                  # reusable solution buffer
 end
 
 """
@@ -210,6 +378,126 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     gpu_zipload = GpuZIPLoadArrays(L.zipload)
     gpu_static_gen = GpuStaticGenArrays(L.static_gen)
 
+    # Controller GPU arrays (phase 14c D1)
+    gpu_ieesgo = GpuIEESGOArrays(L.ieesgo)
+    gpu_tgov1  = GpuTGOV1Arrays(L.tgov1)
+    gpu_sexs   = GpuSEXSArrays(L.sexs)
+    gpu_esdc1a = GpuESDC1AArrays(L.esdc1a)
+    gpu_ieeest = GpuIEEESTArrays(L.ieeest)
+
+    # Per-bus injection index for deterministic GPU reduce
+    bis_cpu, bil_cpu = build_bus_injection_index(bl_cpu.inj_meta.bus_map, bl_cpu.nbus)
+    bus_inj_start_gpu = CuVector(bis_cpu)
+    bus_inj_list_gpu  = CuVector(bil_cpu)
+
+    # Pre-allocated event arrays on GPU (avoid per-step allocation)
+    events = dyn.events
+    event_bus = CuVector(Int64[ev.bus for ev in events])
+    event_rfault = CuVector(Float64[ev.rfault for ev in events])
+    event_status = CuVector(Bool[ev.status for ev in events])
+
+    # Ybus→J_nzval index map (phase 14c D2)
+    ybus_cpu_mat = bl_cpu.ybus
+    net_ptr_cpu = bl_cpu.diff_dim + dyn.alg_dim
+    J_colptr_cpu = bl_cpu.J_colptr
+    J_rowval_cpu = bl_cpu.J_rowval
+    ybus_rows = rowvals(ybus_cpu_mat)
+    ybus_nnz = length(nonzeros(ybus_cpu_mat))
+    ybus_to_jnz_cpu = zeros(Int32, ybus_nnz)
+    for col_y in 1:size(ybus_cpu_mat, 2)
+        for nz_y in nzrange(ybus_cpu_mat, col_y)
+            row_y = ybus_rows[nz_y]
+            new_row = row_y + net_ptr_cpu
+            new_col = col_y + net_ptr_cpu
+            for j in J_colptr_cpu[new_col]:(J_colptr_cpu[new_col+1]-1)
+                if J_rowval_cpu[j] == new_row
+                    ybus_to_jnz_cpu[nz_y] = Int32(j)
+                    break
+                end
+            end
+        end
+    end
+    ybus_to_jnz_gpu = CuVector(ybus_to_jnz_cpu)
+    ybus_nzval_cpu_arr = copy(nonzeros(ybus_cpu_mat))
+
+    # Event Jacobian diagonal positions
+    n_events = length(events)
+    event_jac_diag_pos_cpu = zeros(Int32, 2 * n_events)
+    for (ei, ev) in enumerate(events)
+        bus = ev.bus
+        vr_col = net_ptr_cpu + 2*(bus-1) + 1
+        vi_col = vr_col + 1
+        # Find diagonal nzval position for (vr_col, vr_col)
+        for j in J_colptr_cpu[vr_col]:(J_colptr_cpu[vr_col+1]-1)
+            if J_rowval_cpu[j] == vr_col
+                event_jac_diag_pos_cpu[2*ei-1] = Int32(j)
+                break
+            end
+        end
+        # Find diagonal nzval position for (vi_col, vi_col)
+        for j in J_colptr_cpu[vi_col]:(J_colptr_cpu[vi_col+1]-1)
+            if J_rowval_cpu[j] == vi_col
+                event_jac_diag_pos_cpu[2*ei] = Int32(j)
+                break
+            end
+        end
+    end
+    event_jac_diag_pos_gpu = CuVector(event_jac_diag_pos_cpu)
+
+    # Ybus CSC arrays on GPU for batched SpMV kernel (phase 14c D6)
+    ybus_colptr_g = CuVector(ybus_cpu_mat.colptr)
+    ybus_rowval_g = CuVector(ybus_cpu_mat.rowval)
+    ybus_nzval_g  = CuVector(nonzeros(ybus_cpu_mat))
+    ybus_ncols_v  = size(ybus_cpu_mat, 2)
+
+    # Schur index maps — built lazily via setup_gpu_schur!
+    reduced_idx_g = nothing
+    g2r_g = nothing
+    J_to_S_row_g = nothing
+    J_to_S_col_g = nothing
+    J_to_S_nzpos_g = nothing
+    J_nz_count_for_S_v = 0
+    S_nzval_g = nothing
+    S_colptr_g = nothing
+    S_rowval_g = nothing
+    S_n_v = 0
+    S_nnz_v = 0
+    cluster_A_jnz_g = nothing
+    cluster_A_local_g = nothing
+    cluster_B_jnz_g = nothing
+    cluster_B_local_g = nothing
+    cluster_C_jnz_g = nothing
+    cluster_C_local_g = nothing
+    cluster_D_S_nzpos_g = nothing
+    n_A_entries_v = 0
+    n_B_entries_v = 0
+    n_C_entries_v = 0
+    n_D_entries_v = 0
+
+    # --- cuDSS monolithic direct solver setup ---
+    # Build CSC→CSR nzval permutation (computed once, fixed sparsity)
+    nnz_J = length(bl_cpu.J_rowval)
+    J_csc_idx = SparseMatrixCSC(bl_cpu.sys_dim, bl_cpu.sys_dim,
+                                 copy(bl_cpu.J_colptr), copy(bl_cpu.J_rowval),
+                                 collect(Float64, 1:nnz_J))
+    J_csr_idx = copy(J_csc_idx')  # CSC of transpose = CSR layout
+    csc_to_csr_perm = CuVector(Int32.(J_csr_idx.nzval))
+
+    # Build persistent CuSparseMatrixCSR with dummy values for symbolic analysis
+    J_csc_ones = SparseMatrixCSC(bl_cpu.sys_dim, bl_cpu.sys_dim,
+                                  copy(bl_cpu.J_colptr), copy(bl_cpu.J_rowval),
+                                  ones(Float64, nnz_J))
+    cudss_csr = CuSparseMatrixCSR(J_csc_ones)
+
+    # Create solver and perform symbolic analysis (once)
+    cudss_solver = CudssSolver(cudss_csr, "G", 'F')
+    _tmp_x = CUDA.zeros(Float64, bl_cpu.sys_dim)
+    _tmp_b = CUDA.zeros(Float64, bl_cpu.sys_dim)
+    cudss("analysis", cudss_solver, _tmp_x, _tmp_b)
+
+    cudss_rhs = CUDA.zeros(Float64, bl_cpu.sys_dim)
+    cudss_sol = CUDA.zeros(Float64, bl_cpu.sys_dim)
+
     return GpuBatchedLayout(M, bl_cpu.sys_dim, bl_cpu.diff_dim, bl_cpu.alg_dim,
                              bl_cpu.nbus,
                              z, p, u, f, zold, inj, J_nzval,
@@ -222,8 +510,23 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
                              bl_cpu.inj_meta.n_total,
                              uvec_idx_gpu,
                              di_gpu, isd_gpu,
-                             copy(bl_cpu.inj_meta.bus_map),
-                             gpu_genrou, gpu_zipload, gpu_static_gen)
+                             bus_inj_start_gpu, bus_inj_list_gpu,
+                             gpu_genrou, gpu_zipload, gpu_static_gen,
+                             gpu_ieesgo, gpu_tgov1, gpu_sexs, gpu_esdc1a, gpu_ieeest,
+                             event_bus, event_rfault, event_status,
+                             ybus_to_jnz_gpu, ybus_nzval_cpu_arr,
+                             event_jac_diag_pos_gpu,
+                             ybus_colptr_g, ybus_rowval_g, ybus_nzval_g, ybus_ncols_v,
+                             reduced_idx_g, g2r_g,
+                             J_to_S_row_g, J_to_S_col_g, J_to_S_nzpos_g, J_nz_count_for_S_v,
+                             S_nzval_g, S_colptr_g, S_rowval_g, S_n_v, S_nnz_v,
+                             cluster_A_jnz_g, cluster_A_local_g,
+                             cluster_B_jnz_g, cluster_B_local_g,
+                             cluster_C_jnz_g, cluster_C_local_g,
+                             cluster_D_S_nzpos_g,
+                             n_A_entries_v, n_B_entries_v, n_C_entries_v, n_D_entries_v,
+                             cudss_solver, cudss_csr, csc_to_csr_perm,
+                             cudss_rhs, cudss_sol)
 end
 
 # -----------------------------------------------------------------------
@@ -238,6 +541,22 @@ end
             M = size(u, 1)
             for m in 1:M
                 u[m, j] = z[m, src]
+            end
+        end
+    end
+end
+
+# Event Jacobian kernel: adds -1/rfault to diagonal entries for active faults
+@kernel function events_jac_gpu_kernel!(nzval, rfault_arr, status_arr, diag_pos, @Const(M))
+    ei = @index(Global)
+    @inbounds begin
+        if status_arr[ei]
+            yfault = 1.0 / rfault_arr[ei]
+            vr_pos = diag_pos[2*ei - 1]
+            vi_pos = diag_pos[2*ei]
+            for m in 1:M
+                nzval[m, vr_pos] += -yfault
+                nzval[m, vi_pos] += -yfault
             end
         end
     end
@@ -271,6 +590,55 @@ end
     end
 end
 
+# -----------------------------------------------------------------------
+# Per-bus injection reduce: deterministic accumulation, no atomics
+# -----------------------------------------------------------------------
+
+"""
+    build_bus_injection_index(bus_map, nbus) -> (bus_inj_start, bus_inj_list)
+
+CSR-style index mapping each bus to its injector slots.
+`bus_inj_start` has length `nbus+1`; injectors for bus `b` are
+`bus_inj_list[bus_inj_start[b]:bus_inj_start[b+1]-1]`.
+"""
+function build_bus_injection_index(bus_map::AbstractVector{Int32}, nbus::Int)
+    counts = zeros(Int32, nbus)
+    for ik in eachindex(bus_map)
+        counts[Int(bus_map[ik])] += one(Int32)
+    end
+    bus_inj_start = Vector{Int32}(undef, nbus + 1)
+    bus_inj_start[1] = one(Int32)
+    for b in 1:nbus
+        bus_inj_start[b + 1] = bus_inj_start[b] + counts[b]
+    end
+    bus_inj_list = Vector{Int32}(undef, length(bus_map))
+    fill!(counts, zero(Int32))
+    for ik in eachindex(bus_map)
+        b = Int(bus_map[ik])
+        pos = bus_inj_start[b] + counts[b]
+        bus_inj_list[pos] = Int32(ik)
+        counts[b] += one(Int32)
+    end
+    return bus_inj_start, bus_inj_list
+end
+
+@kernel function bus_injection_reduce_perbus_ka!(f, inj, bus_inj_start, bus_inj_list, @Const(nbus), @Const(net_ptr))
+    b = @index(Global)
+    @inbounds if b <= nbus
+        vr_idx = net_ptr + 2 * (b - 1) + 1
+        vi_idx = vr_idx + 1
+        s_re = zero(eltype(f))
+        s_im = zero(eltype(f))
+        for pos in bus_inj_start[b]:(bus_inj_start[b + 1] - Int32(1))
+            ik = Int(bus_inj_list[pos])
+            s_re += inj[2 * ik - 1]
+            s_im += inj[2 * ik]
+        end
+        f[vr_idx] += s_re
+        f[vi_idx] += s_im
+    end
+end
+
 # 1D uvec routing kernel for per-scenario GPU dispatch
 @kernel function uvec_routing_1d_kernel!(u, z, uvec_idx)
     j = @index(Global)
@@ -283,18 +651,316 @@ end
 end
 
 # -----------------------------------------------------------------------
-# GPU residual evaluation using KA kernels (CRITICAL 1 fix)
+# Batched 2D KA kernels (phase 14c D6)
 #
-# For each scenario m, extracts 1D CuVector views from the 2D CuMatrix
-# and launches the existing KA @kernel functions with CUDABackend().
-# Controllers (IEESGO, TGOV1, SEXS, ESDC1A, IEEEST) don't have KA
-# kernels — their contributions are computed via CPU roundtrip on the
-# controller-owned rows of f.
+# Each kernel launches with ndrange = n_devices and loops over M
+# scenarios internally. Calls existing _*_one! leaf functions via
+# @view(array[m, :]) for 1D access into 2D arrays.
 # -----------------------------------------------------------------------
 
-# Evaluate residual for all M scenarios using KA kernels on GPU.
-# Network injection devices (genrou, zipload, static_gen) run on GPU.
-# Controllers run on CPU (no KA kernels; their computation is lightweight).
+@kernel function genrou_residual_batched_ka!(f, z, u, p, inj, online,
+        diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr,
+        @Const(diff_dim), @Const(net_ptr), @Const(twopi60), @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._genrou_residual_one!(
+                @view(f[m,:]), @view(z[m,:]), @view(u[m,:]), @view(p[m,:]),
+                diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr,
+                k, diff_dim, net_ptr, twopi60, @view(inj[m,:]), k)
+        end
+    end
+end
+
+@kernel function ieesgo_residual_batched_ka!(f, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        @Const(diff_dim), @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._ieesgo_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+                diff_ptr, alg_ptr, par_ptr, w_idx_arr, k, diff_dim)
+        end
+    end
+end
+
+@kernel function tgov1_residual_batched_ka!(f, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        @Const(diff_dim), @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._tgov1_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+                diff_ptr, alg_ptr, par_ptr, w_idx_arr, k, diff_dim)
+        end
+    end
+end
+
+@kernel function sexs_residual_batched_ka!(f, z, p, online,
+        diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._sexs_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+                diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, k)
+        end
+    end
+end
+
+@kernel function esdc1a_residual_batched_ka!(f, z, p, online,
+        diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._esdc1a_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+                diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, k)
+        end
+    end
+end
+
+@kernel function ieeest_residual_batched_ka!(f, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        @Const(diff_dim), @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._ieeest_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+                diff_ptr, alg_ptr, par_ptr, w_idx_arr, diff_dim, k)
+        end
+    end
+end
+
+@kernel function zipload_residual_batched_ka!(f, z, p, inj, online,
+        bus_arr, par_ptr,
+        @Const(net_ptr), @Const(inj_offset), @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._zipload_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+                bus_arr, par_ptr, k, net_ptr, @view(inj[m,:]), inj_offset + k)
+        end
+    end
+end
+
+@kernel function static_gen_residual_batched_ka!(f, z, p, inj, online,
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
+        @Const(inj_offset), @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._static_gen_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+                vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
+                k, @view(inj[m,:]), inj_offset + k)
+        end
+    end
+end
+
+# Per-bus injection reduce, batched over M scenarios
+@kernel function bus_injection_reduce_batched_ka!(f, inj, bus_inj_start, bus_inj_list,
+        @Const(nbus), @Const(net_ptr), @Const(M))
+    b = @index(Global)
+    @inbounds if b <= nbus
+        vr_idx = net_ptr + 2 * (b - 1) + 1
+        vi_idx = vr_idx + 1
+        for m in 1:M
+            s_re = zero(eltype(f))
+            s_im = zero(eltype(f))
+            for pos in bus_inj_start[b]:(bus_inj_start[b + 1] - Int32(1))
+                ik = Int(bus_inj_list[pos])
+                s_re += inj[m, 2*ik - 1]
+                s_im += inj[m, 2*ik]
+            end
+            f[m, vr_idx] += s_re
+            f[m, vi_idx] += s_im
+        end
+    end
+end
+
+# Row extraction/placement kernels for cuSPARSE SpMV on 2D arrays
+@kernel function _extract_row_ka!(dst, src, @Const(m), @Const(col_start), @Const(n))
+    i = @index(Global)
+    @inbounds dst[i] = src[m, col_start + i - 1]
+end
+
+@kernel function _place_row_ka!(dst, src, @Const(m), @Const(col_start), @Const(n))
+    i = @index(Global)
+    @inbounds dst[m, col_start + i - 1] = src[i]
+end
+
+function _extract_row_range!(dst::CuVector, src::CuMatrix, m::Int, col_start::Int, n::Int)
+    backend = CUDABackend()
+    kernel = _extract_row_ka!(backend)
+    kernel(dst, src, m, col_start, n; ndrange=n)
+    KernelAbstractions.synchronize(backend)
+end
+
+function _place_row_range!(dst::CuMatrix, src::CuVector, m::Int, col_start::Int, n::Int)
+    backend = CUDABackend()
+    kernel = _place_row_ka!(backend)
+    kernel(dst, src, m, col_start, n; ndrange=n)
+    KernelAbstractions.synchronize(backend)
+end
+
+# Batched Jacobian kernels (D6) — same pattern, loop M internally
+
+@kernel function genrou_jacobian_batched_ka!(nzval, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+        @Const(diff_dim), @Const(net_ptr), @Const(twopi60), @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._genrou_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+                diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+                k, diff_dim, net_ptr, twopi60)
+        end
+    end
+end
+
+@kernel function ieesgo_jacobian_batched_ka!(nzval, p, online,
+        par_ptr, jac_pos, @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._ieesgo_jacobian_one!(@view(nzval[m,:]), @view(p[m,:]),
+                par_ptr, jac_pos, k)
+        end
+    end
+end
+
+@kernel function tgov1_jacobian_batched_ka!(nzval, p, online,
+        par_ptr, jac_pos, @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._tgov1_jacobian_one!(@view(nzval[m,:]), @view(p[m,:]),
+                par_ptr, jac_pos, k)
+        end
+    end
+end
+
+@kernel function sexs_jacobian_batched_ka!(nzval, z, p, online,
+        par_ptr, vr_idx_arr, vs_idx_arr, jac_pos, @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._sexs_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+                par_ptr, vr_idx_arr, vs_idx_arr, jac_pos, k)
+        end
+    end
+end
+
+@kernel function esdc1a_jacobian_batched_ka!(nzval, z, p, online,
+        par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos, @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._esdc1a_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+                par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos, k)
+        end
+    end
+end
+
+@kernel function ieeest_jacobian_batched_ka!(nzval, z, p, online,
+        par_ptr, diff_ptr, alg_ptr, w_idx_arr, jac_pos,
+        @Const(diff_dim), @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._ieeest_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+                par_ptr, diff_ptr, alg_ptr, w_idx_arr, jac_pos, diff_dim, k)
+        end
+    end
+end
+
+@kernel function zipload_jacobian_batched_ka!(nzval, z, p, online,
+        bus_arr, par_ptr, jac_pos,
+        @Const(net_ptr), @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._zipload_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+                bus_arr, par_ptr, jac_pos, k, net_ptr)
+        end
+    end
+end
+
+@kernel function static_gen_jacobian_batched_ka!(nzval, z, p, online,
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos, @Const(M))
+    k = @index(Global)
+    @inbounds if online[k]
+        for m in 1:M
+            GradPower._static_gen_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+                vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos, k)
+        end
+    end
+end
+
+# Batched ybus → J_nzval copy (all M scenarios)
+@kernel function ybus_to_jnzval_batched_ka!(nzval, ybus_nzval, ybus_to_jnz, @Const(M))
+    i = @index(Global)
+    @inbounds begin
+        jpos = ybus_to_jnz[i]
+        if jpos > 0
+            val = -ybus_nzval[i]
+            for m in 1:M
+                nzval[m, jpos] = val
+            end
+        end
+    end
+end
+
+# Batched backward Euler Jacobian scaling
+@kernel function beuler_jac_scale_batched_ka!(nzval, J_colptr, J_rowval, is_diff,
+        @Const(n_da), @Const(sys_dim), @Const(dt), @Const(M))
+    col = @index(Global)
+    @inbounds for nz_idx in J_colptr[col]:(J_colptr[col+1]-1)
+        row = J_rowval[nz_idx]
+        if row <= n_da && is_diff[row]
+            for m in 1:M
+                nzval[m, nz_idx] *= -dt
+                if row == col
+                    nzval[m, nz_idx] += 1.0
+                end
+            end
+        end
+    end
+end
+
+@kernel function beuler_jac_scale_simple_batched_ka!(nzval, J_colptr, J_rowval,
+        @Const(diff_dim), @Const(sys_dim), @Const(dt), @Const(M))
+    col = @index(Global)
+    @inbounds for nz_idx in J_colptr[col]:(J_colptr[col+1]-1)
+        row = J_rowval[nz_idx]
+        if row <= diff_dim
+            for m in 1:M
+                nzval[m, nz_idx] *= -dt
+                if row == col
+                    nzval[m, nz_idx] += 1.0
+                end
+            end
+        end
+    end
+end
+
+# Batched backward Euler diff residual scaling
+@kernel function beuler_diff_batched_ka!(f, z, zold, diff_indices, @Const(dt), @Const(M))
+    idx = @index(Global)
+    @inbounds begin
+        i = diff_indices[idx]
+        for m in 1:M
+            f[m, i] = z[m, i] - zold[m, i] - dt * f[m, i]
+        end
+    end
+end
+
+# -----------------------------------------------------------------------
+# GPU residual evaluation — batched (phase 14c D6)
+#
+# One kernel launch per device type covering all M scenarios.
+# Each kernel loops M internally using @view(array[m,:]).
+# Zero per-scenario allocation, zero CPU→GPU transfers.
+# -----------------------------------------------------------------------
+
 function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSystemDynamics,
                                       L::GradPower.SimulationLayout)
     M = gbl.M
@@ -303,161 +969,207 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
     alg_dim  = gbl.alg_dim
     net_ptr  = diff_dim + alg_dim
     twopi60  = 2.0 * π * 60.0
-    nv = 2 * gbl.nbus
-    sys_dim = gbl.sys_dim
 
     gt = gbl.gpu_genrou
     zt = gbl.gpu_zipload
     st = gbl.gpu_static_gen
+    ig = gbl.gpu_ieesgo
+    tg = gbl.gpu_tgov1
+    sx = gbl.gpu_sexs
+    ex = gbl.gpu_esdc1a
+    pss = gbl.gpu_ieeest
     n_genrou = gbl.inj_meta_n_genrou
     n_zipload = gbl.inj_meta_n_zipload
     n_total = gbl.inj_meta_n_total
 
-    # Preallocate contiguous CuVector buffers for cuSPARSE SpMV
-    # (cuSPARSE mv! requires DenseCuVector, not SubArray views)
-    v_buf = CUDA.zeros(Float64, nv)
-    fv_buf = CUDA.zeros(Float64, nv)
+    # 1. Zero f and inj
+    fill!(gbl.f, 0.0)
+    fill!(gbl.inj, 0.0)
 
-    # Preallocate contiguous 1D CuVector buffers for KA kernels
-    # (KA kernels need contiguous arrays, not row-views of 2D CuMatrix)
-    f_1d  = CUDA.zeros(Float64, sys_dim)
-    z_1d  = CUDA.zeros(Float64, sys_dim)
-    u_1d  = CUDA.zeros(Float64, size(gbl.u, 2))
-    p_1d  = CUDA.zeros(Float64, size(gbl.p, 2))
-    inj_1d = CUDA.zeros(Float64, 2 * n_total)
-
-    for m in 1:M
-        # Copy scenario m data into contiguous 1D buffers
-        copyto!(z_1d, view(gbl.z, m, :))
-        copyto!(u_1d, view(gbl.u, m, :))
-        copyto!(p_1d, view(gbl.p, m, :))
-        fill!(f_1d, 0.0)
-
-        # 1. Y*v → network portion of f (cuSPARSE SpMV)
-        copyto!(v_buf, view(z_1d, net_ptr+1:net_ptr+nv))
-        CUSPARSE.mv!('N', -1.0, gbl.ybus_csr, v_buf, 0.0, fv_buf, 'O')
-        copyto!(view(f_1d, net_ptr+1:net_ptr+nv), fv_buf)
-
-        # 2. uvec routing on GPU
-        if length(gbl.uvec_idx) > 0
-            kernel = uvec_routing_1d_kernel!(backend)
-            kernel(u_1d, z_1d, gbl.uvec_idx; ndrange=length(gbl.uvec_idx))
+    # 2. Batched ybus SpMV via per-scenario cuSPARSE mv!
+    # Uses pre-allocated v_buf/fv_buf stored alongside gbl
+    nv = 2 * gbl.nbus
+    if nv > 0
+        v_buf = CuVector{Float64}(undef, nv)
+        fv_buf = CuVector{Float64}(undef, nv)
+        for m in 1:M
+            # Extract voltage subvector: v_buf = z[m, net_ptr+1:end]
+            _extract_row_range!(v_buf, gbl.z, m, net_ptr+1, nv)
+            CUSPARSE.mv!('N', -1.0, gbl.ybus_csr, v_buf, 0.0, fv_buf, 'O')
+            # Place result: f[m, net_ptr+1:end] = fv_buf
+            _place_row_range!(gbl.f, fv_buf, m, net_ptr+1, nv)
         end
-
-        # 3. Zero injection buffer
-        fill!(inj_1d, 0.0)
-
-        # 4. Genrou KA kernel
-        if gt.n > 0
-            kernel = GradPower.genrou_residual_ka!(backend)
-            kernel(f_1d, z_1d, u_1d, p_1d, inj_1d, gt.online,
-                   gt.diff_ptr, gt.alg_ptr, gt.ctrl_ptr, gt.par_ptr, gt.bus,
-                   diff_dim, net_ptr, twopi60; ndrange=gt.n)
-        end
-
-        # 5. ZIPLoad KA kernel
-        if zt.n > 0
-            kernel = GradPower.zipload_residual_ka!(backend)
-            kernel(f_1d, z_1d, p_1d, inj_1d, zt.online,
-                   zt.bus, zt.par_ptr,
-                   net_ptr, n_genrou; ndrange=zt.n)
-        end
-
-        # 6. StaticGen KA kernel
-        if st.n > 0
-            kernel = GradPower.static_gen_residual_ka!(backend)
-            kernel(f_1d, z_1d, p_1d, inj_1d, st.online,
-                   st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type,
-                   n_genrou + n_zipload; ndrange=st.n)
-        end
-
-        KernelAbstractions.synchronize(backend)
-
-        # 7. Bus injection reduce — sequential on CPU to avoid race
-        # conditions. Multiple devices (genrou, zipload) on the same bus
-        # write f[vr_idx] +=, which races on GPU. GPU atomics deferred.
-        if n_total > 0
-            f_host = Array(f_1d)
-            inj_host = Array(inj_1d)
-            GradPower.bus_injection_reduce!(f_host, inj_host,
-                gbl.inj_meta_bus_map_cpu, n_total, net_ptr)
-            copyto!(f_1d, CuVector(f_host))
-        end
-
-        # Copy f_1d back to the 2D f matrix
-        copyto!(view(gbl.f, m, :), f_1d)
     end
 
-    # 8. Controllers: compute on CPU. Download z, u, p for all scenarios,
-    # compute controller contributions to f, upload back.
-    # Controllers write to their own exclusive diff/alg rows (no network rows).
-    z_cpu = Array(gbl.z)
-    p_cpu = Array(gbl.p)
-    f_cpu = Array(gbl.f)
-
-    for m in 1:M
-        f_row = view(f_cpu, m, :)
-        z_row = view(z_cpu, m, :)
-        p_row = view(p_cpu, m, :)
-
-        GradPower.ieesgo_residual_batch!(f_row, z_row, p_row, L.ieesgo, diff_dim)
-        GradPower.tgov1_residual_batch!(f_row, z_row, p_row, L.tgov1, diff_dim)
-        GradPower.ieeest_residual_batch!(f_row, z_row, p_row, L.ieeest, diff_dim)
-        GradPower.sexs_residual_batch!(f_row, z_row, p_row, L.sexs)
-        GradPower.esdc1a_residual_batch!(f_row, z_row, p_row, L.esdc1a)
+    # 3. uvec routing (one kernel, M-loop inside)
+    if length(gbl.uvec_idx) > 0
+        kernel = uvec_routing_gpu_kernel!(backend)
+        kernel(gbl.u, gbl.z, gbl.uvec_idx; ndrange=length(gbl.uvec_idx))
     end
 
-    # Upload f with controller contributions
-    copyto!(gbl.f, CuMatrix(f_cpu))
+    # 4. Device residual kernels — one launch per device type
+    if gt.n > 0
+        kernel = genrou_residual_batched_ka!(backend)
+        kernel(gbl.f, gbl.z, gbl.u, gbl.p, gbl.inj, gt.online,
+               gt.diff_ptr, gt.alg_ptr, gt.ctrl_ptr, gt.par_ptr, gt.bus,
+               diff_dim, net_ptr, twopi60, M; ndrange=gt.n)
+    end
+    if ig.n > 0
+        kernel = ieesgo_residual_batched_ka!(backend)
+        kernel(gbl.f, gbl.z, gbl.p, ig.online,
+               ig.diff_ptr, ig.alg_ptr, ig.par_ptr, ig.w_idx,
+               diff_dim, M; ndrange=ig.n)
+    end
+    if tg.n > 0
+        kernel = tgov1_residual_batched_ka!(backend)
+        kernel(gbl.f, gbl.z, gbl.p, tg.online,
+               tg.diff_ptr, tg.alg_ptr, tg.par_ptr, tg.w_idx,
+               diff_dim, M; ndrange=tg.n)
+    end
+    if pss.n > 0
+        kernel = ieeest_residual_batched_ka!(backend)
+        kernel(gbl.f, gbl.z, gbl.p, pss.online,
+               pss.diff_ptr, pss.alg_ptr, pss.par_ptr, pss.w_idx,
+               diff_dim, M; ndrange=pss.n)
+    end
+    if sx.n > 0
+        kernel = sexs_residual_batched_ka!(backend)
+        kernel(gbl.f, gbl.z, gbl.p, sx.online,
+               sx.diff_ptr, sx.par_ptr, sx.vr_idx, sx.vs_idx, M; ndrange=sx.n)
+    end
+    if ex.n > 0
+        kernel = esdc1a_residual_batched_ka!(backend)
+        kernel(gbl.f, gbl.z, gbl.p, ex.online,
+               ex.diff_ptr, ex.par_ptr, ex.vr_idx, ex.vs_idx, M; ndrange=ex.n)
+    end
+    if zt.n > 0
+        kernel = zipload_residual_batched_ka!(backend)
+        kernel(gbl.f, gbl.z, gbl.p, gbl.inj, zt.online,
+               zt.bus, zt.par_ptr, net_ptr, n_genrou, M; ndrange=zt.n)
+    end
+    if st.n > 0
+        kernel = static_gen_residual_batched_ka!(backend)
+        kernel(gbl.f, gbl.z, gbl.p, gbl.inj, st.online,
+               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type,
+               n_genrou + n_zipload, M; ndrange=st.n)
+    end
 
-    # 9. Events on GPU
+    # 5. Bus injection reduce — one launch, M-loop inside
+    if n_total > 0
+        kernel = bus_injection_reduce_batched_ka!(backend)
+        kernel(gbl.f, gbl.inj, gbl.bus_inj_start, gbl.bus_inj_list,
+               gbl.nbus, net_ptr, M; ndrange=gbl.nbus)
+    end
+
+    # 6. Events — update status from CPU (O(n_events), small)
     events = dyn.events
     if !isempty(events)
-        bus_arr    = CuVector(Int64[ev.bus for ev in events])
-        rfault_arr = CuVector(Float64[ev.rfault for ev in events])
-        status_arr = CuVector(Bool[ev.status for ev in events])
+        status_cpu = Bool[ev.status for ev in events]
+        copyto!(gbl.event_status, CuVector(status_cpu))
         kernel = events_fun_gpu_kernel!(backend)
-        kernel(gbl.f, gbl.z, bus_arr, rfault_arr, status_arr, net_ptr; ndrange=length(events))
-        KernelAbstractions.synchronize(backend)
+        kernel(gbl.f, gbl.z, gbl.event_bus, gbl.event_rfault, gbl.event_status, net_ptr;
+               ndrange=length(events))
     end
 
+    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
 # -----------------------------------------------------------------------
-# GPU Jacobian evaluation (CPU roundtrip — Jacobian is used for KLU
-# factorization which is CPU-only. Phase 14b requirement is that the
-# RESIDUAL runs on GPU; Jacobian on CPU is acceptable.)
+# GPU Jacobian — batched (phase 14c D6)
+#
+# One kernel launch per device type covering all M scenarios.
 # -----------------------------------------------------------------------
 
 function _jacobian_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSystemDynamics,
                                       L::GradPower.SimulationLayout)
     M = gbl.M
-    z_cpu = Array(gbl.z)
-    u_cpu = Array(gbl.u)
-    p_cpu = Array(gbl.p)
-    nnz_J = size(gbl.J_nzval, 2)
-    J_nzval_cpu = zeros(Float64, M, nnz_J)
-    J_colptr_cpu = Array(gbl.J_colptr)
-    J_rowval_cpu = Array(gbl.J_rowval)
+    backend = CUDABackend()
+    diff_dim = gbl.diff_dim
+    alg_dim  = gbl.alg_dim
+    net_ptr  = diff_dim + alg_dim
+    twopi60  = 2.0 * π * 60.0
 
-    J_buf = SparseMatrixCSC(gbl.sys_dim, gbl.sys_dim,
-                             J_colptr_cpu, J_rowval_cpu,
-                             zeros(Float64, nnz_J))
-    for m in 1:M
-        fill!(J_buf.nzval, 0.0)
-        z_row = view(z_cpu, m, :)
-        u_row = view(u_cpu, m, :)
-        p_row = view(p_cpu, m, :)
-        GradPower._rhs_jac_batched!(J_buf, z_row, u_row, p_row, dyn, gbl.ybus_cpu, L)
-        J_nzval_cpu[m, :] .= J_buf.nzval
+    gt = gbl.gpu_genrou
+    zt = gbl.gpu_zipload
+    st = gbl.gpu_static_gen
+    ig = gbl.gpu_ieesgo
+    tg = gbl.gpu_tgov1
+    sx = gbl.gpu_sexs
+    ex = gbl.gpu_esdc1a
+    pss = gbl.gpu_ieeest
+    ybus_nnz = length(gbl.ybus_nzval_cpu)
+
+    # 1. Zero J_nzval
+    fill!(gbl.J_nzval, 0.0)
+
+    # 2. Copy −ybus into J_nzval (all M scenarios)
+    if ybus_nnz > 0
+        kernel = ybus_to_jnzval_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.ybus_nzval_gpu, gbl.ybus_to_jnz, M; ndrange=ybus_nnz)
     end
-    copyto!(gbl.J_nzval, CuMatrix(J_nzval_cpu))
+
+    # 3. Device Jacobians — one launch per type
+    if gt.n > 0
+        kernel = genrou_jacobian_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.z, gbl.p, gt.online,
+               gt.diff_ptr, gt.alg_ptr, gt.par_ptr, gt.bus, gt.jac_pos,
+               gt.has_gov, gt.has_exc,
+               diff_dim, net_ptr, twopi60, M; ndrange=gt.n)
+    end
+    if ig.n > 0
+        kernel = ieesgo_jacobian_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.p, ig.online,
+               ig.par_ptr, ig.jac_pos, M; ndrange=ig.n)
+    end
+    if tg.n > 0
+        kernel = tgov1_jacobian_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.p, tg.online,
+               tg.par_ptr, tg.jac_pos, M; ndrange=tg.n)
+    end
+    if sx.n > 0
+        kernel = sexs_jacobian_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.z, gbl.p, sx.online,
+               sx.par_ptr, sx.vr_idx, sx.vs_idx, sx.jac_pos, M; ndrange=sx.n)
+    end
+    if ex.n > 0
+        kernel = esdc1a_jacobian_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.z, gbl.p, ex.online,
+               ex.par_ptr, ex.vr_idx, ex.vs_idx, ex.diff_ptr, ex.jac_pos, M; ndrange=ex.n)
+    end
+    if pss.n > 0
+        kernel = ieeest_jacobian_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.z, gbl.p, pss.online,
+               pss.par_ptr, pss.diff_ptr, pss.alg_ptr, pss.w_idx, pss.jac_pos,
+               diff_dim, M; ndrange=pss.n)
+    end
+    if zt.n > 0
+        kernel = zipload_jacobian_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.z, gbl.p, zt.online,
+               zt.bus, zt.par_ptr, zt.jac_pos, net_ptr, M; ndrange=zt.n)
+    end
+    if st.n > 0
+        kernel = static_gen_jacobian_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.z, gbl.p, st.online,
+               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.jac_pos, M; ndrange=st.n)
+    end
+
+    # 4. Event Jacobian: add -1/rfault to bus diagonals for active faults
+    events = dyn.events
+    if !isempty(events)
+        status_cpu = Bool[ev.status for ev in events]
+        copyto!(gbl.event_status, CuVector(status_cpu))
+        kernel = events_jac_gpu_kernel!(backend)
+        kernel(gbl.J_nzval, gbl.event_rfault, gbl.event_status,
+               gbl.event_jac_diag_pos, M; ndrange=length(events))
+    end
+
+    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
 # -----------------------------------------------------------------------
-# GPU backward Euler
+# GPU backward Euler — batched (phase 14c D6)
 # -----------------------------------------------------------------------
 
 function _beuler_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSystemDynamics,
@@ -466,8 +1178,9 @@ function _beuler_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerS
 
     if gbl.diff_indices !== nothing
         backend = CUDABackend()
-        kernel = beuler_diff_gpu_kernel!(backend)
-        kernel(gbl.f, gbl.z, gbl.zold, gbl.diff_indices, dt; ndrange=length(gbl.diff_indices))
+        kernel = beuler_diff_batched_ka!(backend)
+        kernel(gbl.f, gbl.z, gbl.zold, gbl.diff_indices, dt, gbl.M;
+               ndrange=length(gbl.diff_indices))
         KernelAbstractions.synchronize(backend)
     else
         f_cpu = Array(gbl.f)
@@ -485,37 +1198,22 @@ function _beuler_jac_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Po
                                          L::GradPower.SimulationLayout, dt::Float64)
     _jacobian_all_scenarios_gpu!(gbl, dyn, L)
 
-    # Apply backward Euler scaling on CPU (Jacobian nzval is small enough)
-    J_nzval_cpu = Array(gbl.J_nzval)
-    J_colptr_cpu = Array(gbl.J_colptr)
-    J_rowval_cpu = Array(gbl.J_rowval)
+    # Apply backward Euler scaling — batched, one launch
+    backend = CUDABackend()
     is_diff = dyn.is_diff
-    n_da = is_diff !== nothing ? length(is_diff) : gbl.diff_dim
+    sys_dim = gbl.sys_dim
 
-    @inbounds for m in 1:gbl.M
-        nzv = view(J_nzval_cpu, m, :)
-        for col in 1:gbl.sys_dim
-            for nz_idx in J_colptr_cpu[col]:(J_colptr_cpu[col+1]-1)
-                row = J_rowval_cpu[nz_idx]
-                if is_diff !== nothing
-                    if row <= n_da && is_diff[row]
-                        nzv[nz_idx] *= -dt
-                        if row == col
-                            nzv[nz_idx] += 1.0
-                        end
-                    end
-                else
-                    if row <= gbl.diff_dim
-                        nzv[nz_idx] *= -dt
-                        if row == col
-                            nzv[nz_idx] += 1.0
-                        end
-                    end
-                end
-            end
-        end
+    if is_diff !== nothing
+        n_da = length(is_diff)
+        kernel = beuler_jac_scale_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.J_colptr, gbl.J_rowval, gbl.is_diff,
+               n_da, sys_dim, dt, gbl.M; ndrange=sys_dim)
+    else
+        kernel = beuler_jac_scale_simple_batched_ka!(backend)
+        kernel(gbl.J_nzval, gbl.J_colptr, gbl.J_rowval,
+               gbl.diff_dim, sys_dim, dt, gbl.M; ndrange=sys_dim)
     end
-    copyto!(gbl.J_nzval, CuMatrix(J_nzval_cpu))
+    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -541,20 +1239,15 @@ function _newton_step_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSystemDyna
     for iter in 1:itermax
         _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
 
-        f_cpu = Array(gbl.f)
-        max_norm = 0.0
-        @inbounds for m in 1:M
-            for i in 1:sys_dim
-                a = abs(f_cpu[m, i])
-                if a > max_norm; max_norm = a; end
-            end
-        end
+        # D7: GPU convergence check — no full download
+        max_norm = CUDA.mapreduce(abs, max, gbl.f)
         max_norm < tol && return true
 
         _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
 
         J_nzval_cpu = Array(gbl.J_nzval)
         z_cpu = Array(gbl.z)
+        f_cpu = Array(gbl.f)
 
         for m in 1:M
             copyto!(J_bufs[m].nzval, view(J_nzval_cpu, m, :))
@@ -704,38 +1397,509 @@ function gpu_batched_lu_solve!(glu::GpuBatchedLU)
 end
 
 # -----------------------------------------------------------------------
-# GPU Schur complement operator (D4)
+# GPU Schur complement operator (D4) — matrix-free
 #
-# TODO: Matrix-free GPU Schur operator (S·x = Y·x − Σ_k C_k A_k⁻¹ B_k·x)
-# is deferred. The current implementation uses the assembled S matrix on
-# CPU for correctness. The GpuBatchedLU factor/solve is tested independently
-# in G3. Full matrix-free GPU path is planned for phase 14c.
+# Computes S·x = D·x − Σ_k C_k A_k⁻¹ B_k·x without assembling S.
+# D is the reduced subblock of J (voltage + trivial rows/cols).
+# Cluster elimination uses cuBLAS batched LU (GpuBatchedLU).
 # -----------------------------------------------------------------------
 
 """
     GpuSchurOperator
 
-Operator computing S·x via the assembled S matrix on CPU.
-Implements mul!, size, eltype for Krylov.jl compatibility.
+GPU-resident matrix-free Schur complement operator.
+Implements size, eltype, mul! for Krylov.jl compatibility.
 
-Known limitation: this uses the CPU-assembled S matrix, not the
-matrix-free GPU formula S·x = Y·x − Σ_k C_k A_k⁻¹ B_k·x.
-The GpuBatchedLU factor/solve path is validated independently (G3).
-The full matrix-free GPU Schur operator is planned for phase 14c.
+D·x uses cuSPARSE SpMV. A_k⁻¹ uses pre-factored GpuBatchedLU.
+B_k and C_k are stored on CPU (small, 2×w_k) and applied in a
+host-side loop per cluster group.
 """
 struct GpuSchurOperator
     n_red::Int
-    # CPU-side Schur assembly (reuses existing SchurWorkspace)
-    sw::GradPower.SchurWorkspace
+    D_gpu::CuSparseMatrixCSR{Float64, Int32}
+    batched_lus::Vector{GpuBatchedLU}
+    B_cpu::Vector{Vector{Matrix{Float64}}}
+    C_cpu::Vector{Vector{Matrix{Float64}}}
+    group_bus_reduced::Vector{Vector{Tuple{Int,Int}}}
 end
 
 Base.size(op::GpuSchurOperator) = (op.n_red, op.n_red)
 Base.eltype(::GpuSchurOperator) = Float64
 
-function LinearAlgebra.mul!(y::AbstractVector, op::GpuSchurOperator, x::AbstractVector)
-    # S * x via the assembled S matrix (CPU path — known limitation, see docstring)
-    mul!(y, op.sw.S, x)
+"""
+    GpuSchurOperator(sw, J, ct, net_ptr)
+
+Construct from an assembled SchurWorkspace and the Jacobian J.
+Re-extracts A_k/B_k/C_k from J (assemble_schur! overwrites A_k_bufs
+with LU factors). Recovers D = S + Σ D_k and uploads to GPU.
+"""
+function GpuSchurOperator(sw::GradPower.SchurWorkspace, J::SparseMatrixCSC,
+                           ct::GradPower.ClusterTable, net_ptr::Int)
+    n_red = length(sw.reduced_idx)
+    g2r = sw.global_to_reduced
+
+    # D = S + Σ D_k  (undo the Schur elimination to recover D)
+    D_cpu = copy(sw.S)
+    for (g, group) in enumerate(sw.nt_groups), (ki, ci) in enumerate(group)
+        cl = ct.clusters[ci]
+        vr_l = g2r[net_ptr + 2*(cl.bus - 1) + 1]
+        vi_l = g2r[net_ptr + 2*(cl.bus - 1) + 2]
+        GradPower._subtract_2x2_from_sparse!(D_cpu, vr_l, vi_l, -sw.D_k_bufs[g][ki])
+    end
+
+    ng = length(sw.nt_groups)
+    batched_lus = Vector{GpuBatchedLU}(undef, ng)
+    B_all = Vector{Vector{Matrix{Float64}}}(undef, ng)
+    C_all = Vector{Vector{Matrix{Float64}}}(undef, ng)
+    bus_all = Vector{Vector{Tuple{Int,Int}}}(undef, ng)
+
+    for g in 1:ng
+        group = sw.nt_groups[g]
+        nc = length(group)
+        wk = ct.clusters[group[1]].w_size
+        glu = GpuBatchedLU(wk, nc, 1)
+        A_pk = zeros(Float64, wk, wk, nc)
+        Bv = Vector{Matrix{Float64}}(undef, nc)
+        Cv = Vector{Matrix{Float64}}(undef, nc)
+        bv = Vector{Tuple{Int,Int}}(undef, nc)
+        for (ki, ci) in enumerate(group)
+            cl = ct.clusters[ci]
+            A_buf = zeros(wk, wk); B_buf = zeros(wk, 2); C_buf = zeros(2, wk)
+            GradPower.extract_Ak!(A_buf, J, cl)
+            GradPower.extract_Bk_Ck!(B_buf, C_buf, J, cl, net_ptr)
+            A_pk[:,:,ki] .= A_buf; Bv[ki] = B_buf; Cv[ki] = C_buf
+            bv[ki] = (g2r[net_ptr + 2*(cl.bus-1) + 1], g2r[net_ptr + 2*(cl.bus-1) + 2])
+        end
+        copyto!(glu.A_packed, CuArray(A_pk))
+        gpu_batched_lu_factor!(glu)
+        batched_lus[g] = glu; B_all[g] = Bv; C_all[g] = Cv; bus_all[g] = bv
+    end
+
+    return GpuSchurOperator(n_red, CuSparseMatrixCSR(D_cpu),
+                             batched_lus, B_all, C_all, bus_all)
+end
+
+function LinearAlgebra.mul!(y::CuVector{Float64}, op::GpuSchurOperator,
+                             x::CuVector{Float64})
+    # 1. y = D * x  (cuSPARSE SpMV)
+    CUSPARSE.mv!('N', 1.0, op.D_gpu, x, 0.0, y, 'O')
+
+    # 2. y_bus -= C_k A_k⁻¹ B_k x_bus  for each non-trivial cluster group
+    x_h = Array(x); y_h = Array(y)
+    for g in eachindex(op.batched_lus)
+        glu = op.batched_lus[g]
+        nc = glu.n_clusters; wk = glu.w_k
+        rhs = zeros(Float64, wk, 2, nc)
+        for ki in 1:nc
+            vr_l, vi_l = op.group_bus_reduced[g][ki]
+            B = op.B_cpu[g][ki]; xv = x_h[vr_l]; xi = x_h[vi_l]
+            @inbounds for i in 1:wk
+                rhs[i, 1, ki] = B[i,1]*xv + B[i,2]*xi
+            end
+        end
+        copyto!(glu.B_packed, CuArray(rhs))
+        gpu_batched_lu_solve!(glu)
+        sol = Array(glu.B_packed)
+        for ki in 1:nc
+            vr_l, vi_l = op.group_bus_reduced[g][ki]
+            C = op.C_cpu[g][ki]
+            @inbounds for i in 1:wk
+                y_h[vr_l] -= C[1,i] * sol[i,1,ki]
+                y_h[vi_l] -= C[2,i] * sol[i,1,ki]
+            end
+        end
+    end
+    copyto!(y, CuVector(y_h))
     return y
+end
+
+# AbstractVector fallback for Krylov.jl compatibility
+function LinearAlgebra.mul!(y::AbstractVector, op::GpuSchurOperator,
+                             x::AbstractVector)
+    x_d = x isa CuVector ? x : CuVector(Float64.(x))
+    y_d = y isa CuVector ? y : CUDA.zeros(Float64, op.n_red)
+    mul!(y_d, op, x_d)
+    y isa CuVector || copyto!(y, Array(y_d))
+    return y
+end
+
+# -----------------------------------------------------------------------
+# Schur-complement Newton step for GPU batched layout
+# -----------------------------------------------------------------------
+
+"""
+    _newton_step_schur_gpu!(gbl, dyn, L, sw, dt; itermax=30, tol=1e-10)
+
+Backward-Euler Newton loop using Schur-complement reduction.
+Residual on GPU, Jacobian + Schur assembly + KLU solve on CPU per scenario.
+"""
+function _newton_step_schur_gpu!(
+    gbl::GpuBatchedLayout,
+    dyn::GradPower.PowerSystemDynamics,
+    L::GradPower.SimulationLayout,
+    sw::GradPower.SchurWorkspace,
+    dt::Float64;
+    itermax::Int = 30,
+    tol::Float64 = 1e-10,
+)
+    M       = gbl.M
+    sys_dim = gbl.sys_dim
+    ct      = dyn.clusters::GradPower.ClusterTable
+    net_ptr = dyn.diff_dim + dyn.alg_dim
+    n_red   = length(sw.reduced_idx)
+
+    J_colptr_cpu = Array(gbl.J_colptr)
+    J_rowval_cpu = Array(gbl.J_rowval)
+    nnz_J = size(gbl.J_nzval, 2)
+
+    J_m = SparseMatrixCSC(sys_dim, sys_dim,
+                          copy(J_colptr_cpu), copy(J_rowval_cpu),
+                          zeros(Float64, nnz_J))
+
+    first_klu = true
+
+    for iter in 1:itermax
+        _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
+
+        # D7: GPU convergence check
+        max_norm = CUDA.mapreduce(abs, max, gbl.f)
+        max_norm < tol && return true
+
+        _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
+        J_nzval_cpu = Array(gbl.J_nzval)
+        z_cpu = Array(gbl.z)
+        f_cpu = Array(gbl.f)
+
+        for m in 1:M
+            copyto!(J_m.nzval, view(J_nzval_cpu, m, :))
+
+            GradPower.assemble_schur!(sw, J_m, ct, net_ptr)
+
+            @inbounds for i in 1:n_red
+                sw.rhs_red[i] = f_cpu[m, sw.reduced_idx[i]]
+            end
+
+            for (g, group) in enumerate(sw.nt_groups)
+                for (ki, ci) in enumerate(group)
+                    cl = ct.clusters[ci]
+                    wk = cl.w_size; ws = cl.w_start; bus = cl.bus
+                    vr_g = net_ptr + 2*(bus - 1) + 1
+                    vr_l = sw.global_to_reduced[vr_g]
+                    vi_l = sw.global_to_reduced[vr_g + 1]
+
+                    A    = sw.A_k_bufs[g][ki]
+                    C    = sw.C_k_bufs[g][ki]
+                    ipiv = sw.lu_pivots[g][ki]
+                    tmp  = sw.tmp_w[g][ki]
+
+                    @inbounds for i in 1:wk; tmp[i] = f_cpu[m, ws + i - 1]; end
+                    GradPower._lu_solve!(A, ipiv, tmp, wk)
+
+                    @inbounds for i in 1:wk
+                        sw.rhs_red[vr_l] -= C[1, i] * tmp[i]
+                        sw.rhs_red[vi_l] -= C[2, i] * tmp[i]
+                    end
+                end
+            end
+
+            @inbounds for i in 1:n_red; sw.rhs_red[i] = -sw.rhs_red[i]; end
+
+            if first_klu
+                sw.S_fact[] = klu(sw.S)
+            else
+                klu!(sw.S_fact[], sw.S)
+            end
+            ldiv!(sw.S_fact[], sw.rhs_red)
+
+            @inbounds for i in 1:n_red
+                sw.dz[sw.reduced_idx[i]] = sw.rhs_red[i]
+            end
+
+            for (g, group) in enumerate(sw.nt_groups)
+                for (ki, ci) in enumerate(group)
+                    cl = ct.clusters[ci]
+                    wk = cl.w_size; ws = cl.w_start; bus = cl.bus
+                    vr_g = net_ptr + 2*(bus - 1) + 1
+
+                    A    = sw.A_k_bufs[g][ki]
+                    B    = sw.B_k_bufs[g][ki]
+                    ipiv = sw.lu_pivots[g][ki]
+                    tmp  = sw.tmp_w[g][ki]
+
+                    dv1 = sw.dz[vr_g]
+                    dv2 = sw.dz[vr_g + 1]
+
+                    @inbounds for i in 1:wk
+                        tmp[i] = f_cpu[m, ws + i - 1] + B[i, 1] * dv1 + B[i, 2] * dv2
+                    end
+                    GradPower._lu_solve!(A, ipiv, tmp, wk)
+
+                    @inbounds for i in 1:wk
+                        sw.dz[ws + i - 1] = -tmp[i]
+                    end
+                end
+            end
+
+            @inbounds for k in 1:sys_dim
+                z_cpu[m, k] += sw.dz[k]
+            end
+        end
+
+        first_klu = false
+        copyto!(gbl.z, CuMatrix(z_cpu))
+    end
+
+    return false
+end
+
+# -----------------------------------------------------------------------
+# integrate_gpu_schur! — uses Schur-complement Newton
+# -----------------------------------------------------------------------
+
+"""
+    integrate_gpu_schur!(gbl, ps, sw, tf; dt=1/120, newton_tol=1e-10)
+
+GPU-resident batched integration using Schur-complement Newton steps.
+Residual on GPU, Jacobian + Schur reduction + KLU solve on CPU.
+"""
+function integrate_gpu_schur!(
+    gbl::GpuBatchedLayout,
+    ps::GradPower.PowerSystem,
+    sw::GradPower.SchurWorkspace,
+    tf::Float64;
+    dt::Float64 = 1.0 / 120.0,
+    newton_tol::Float64 = 1e-10,
+)
+    dyn     = ps.dynamic::GradPower.PowerSystemDynamics
+    L       = dyn.layout::GradPower.SimulationLayout
+    M       = gbl.M
+    sys_dim = gbl.sys_dim
+
+    nsteps = Int(round(tf / dt))
+    tvec   = collect(0:dt:tf)
+
+    events = dyn.events
+    event_schedule = Tuple{Int,Int,Symbol}[]
+    for (ei, ev) in enumerate(events)
+        push!(event_schedule, (Int(round(ev.ton / dt)), ei, :on))
+        push!(event_schedule, (Int(round(ev.toff / dt)), ei, :off))
+    end
+    sort!(event_schedule, by = x -> x[1])
+
+    z0_cpu = Array(gbl.z)
+    trajs  = [zeros(Float64, sys_dim, nsteps + 1) for _ in 1:M]
+    for m in 1:M
+        trajs[m][:, 1] .= z0_cpu[m, :]
+    end
+
+    copyto!(gbl.zold, gbl.z)
+
+    sched_idx = 1
+    for k in 1:nsteps
+        copyto!(gbl.zold, gbl.z)
+
+        _newton_step_schur_gpu!(gbl, dyn, L, sw, dt; tol = newton_tol)
+
+        z_cpu = Array(gbl.z)
+        for m in 1:M
+            trajs[m][:, k + 1] .= z_cpu[m, :]
+        end
+
+        any_event = false
+        while sched_idx <= length(event_schedule) && event_schedule[sched_idx][1] == k
+            _, idx, action = event_schedule[sched_idx]
+            if action === :on
+                GradPower.activate!(events[idx])
+            elseif action === :off
+                GradPower.deactivate!(events[idx])
+            end
+            any_event = true
+            sched_idx += 1
+        end
+
+        if any_event
+            copyto!(gbl.zold, gbl.z)
+            _newton_step_schur_gpu!(gbl, dyn, L, sw, 0.0; tol = newton_tol)
+        end
+    end
+
+    for event in events
+        GradPower.deactivate!(event)
+    end
+
+    return tvec, trajs
+end
+
+# -----------------------------------------------------------------------
+# CSC→CSR nzval gather kernel (for cuDSS)
+# -----------------------------------------------------------------------
+
+@kernel function csc_to_csr_gather_ka!(csr_nzval, csc_nzval, perm)
+    k = @index(Global)
+    @inbounds csr_nzval[k] = csc_nzval[perm[k]]
+end
+
+# -----------------------------------------------------------------------
+# GPU monolithic Newton step via cuDSS direct solve
+#
+# Everything on GPU. Zero host↔device transfers per Newton iteration.
+# Per scenario: gather J_nzval[m,:] into CSR order, cuDSS refactorize,
+# cuDSS solve, update z[m,:].
+# -----------------------------------------------------------------------
+
+function _newton_step_cudss_gpu!(
+    gbl::GpuBatchedLayout,
+    dyn::GradPower.PowerSystemDynamics,
+    L::GradPower.SimulationLayout,
+    dt::Float64;
+    itermax::Int = 30,
+    tol::Float64 = 1e-10,
+)
+    M       = gbl.M
+    sys_dim = gbl.sys_dim
+    nnz_J   = size(gbl.J_nzval, 2)
+    backend = CUDABackend()
+
+    # Scratch buffer for one scenario's CSC nzvals (1D view from 2D J_nzval)
+    csc_buf = CUDA.zeros(Float64, nnz_J)
+    f_flat = reshape(gbl.f, :)
+    n_flat = length(f_flat)
+    tol_l2 = tol * sqrt(Float64(sys_dim * M))
+
+    for iter in 1:itermax
+        # 1. Residual + backward Euler on GPU
+        _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
+
+        # 2. Convergence check — CUBLAS nrm2 (no full download)
+        norm_f = CUDA.CUBLAS.nrm2(f_flat)
+        norm_f < tol_l2 && return true
+
+        # 3. Jacobian + backward Euler scaling on GPU
+        _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
+
+        # 4. Per-scenario: cuDSS factorize + solve
+        for m in 1:M
+            # 4a. Extract scenario m's nzvals (CSC order) into contiguous buffer
+            copyto!(csc_buf, view(gbl.J_nzval, m, :))
+
+            # 4b. Gather into CSR order in-place on the solver's CSR
+            kernel = csc_to_csr_gather_ka!(backend)
+            kernel(gbl.cudss_csr.nzVal, csc_buf, gbl.csc_to_csr_perm; ndrange=nnz_J)
+            KernelAbstractions.synchronize(backend)
+
+            # 4c. Numeric refactorization (symbolic already done at setup)
+            cudss("factorization", gbl.cudss_solver, gbl.cudss_sol, gbl.cudss_rhs)
+
+            # 4d. Build RHS = -f[m, :]
+            copyto!(gbl.cudss_rhs, view(gbl.f, m, :))
+            CUDA.CUBLAS.scal!(sys_dim, -1.0, gbl.cudss_rhs)
+
+            # 4e. Solve J * dz = -f
+            cudss("solve", gbl.cudss_solver, gbl.cudss_sol, gbl.cudss_rhs)
+
+            # 4f. Update z[m, :] += dz
+            # Use a kernel to add sol into z[m, :]
+            _add_to_row!(gbl.z, gbl.cudss_sol, m, sys_dim, backend)
+        end
+    end
+
+    return false
+end
+
+@kernel function _add_to_row_ka!(z, dz, @Const(m), @Const(n))
+    j = @index(Global)
+    @inbounds if j <= n
+        z[m, j] += dz[j]
+    end
+end
+
+function _add_to_row!(z::CuMatrix, dz::CuVector, m::Int, n::Int, backend)
+    kernel = _add_to_row_ka!(backend)
+    kernel(z, dz, m, n; ndrange=n)
+    KernelAbstractions.synchronize(backend)
+end
+
+# -----------------------------------------------------------------------
+# integrate_gpu_cudss! — fully GPU-resident with cuDSS direct solve
+# -----------------------------------------------------------------------
+
+"""
+    integrate_gpu_cudss!(gbl, ps, tf; dt=1/120, newton_tol=1e-10)
+
+GPU-resident batched integration with cuDSS monolithic direct solve.
+Zero CPU↔GPU transfers in the Newton loop. Trajectory snapshots
+downloaded once per time step.
+"""
+function integrate_gpu_cudss!(
+    gbl::GpuBatchedLayout,
+    ps::GradPower.PowerSystem,
+    tf::Float64;
+    dt::Float64 = 1.0 / 120.0,
+    newton_tol::Float64 = 1e-10,
+)
+    dyn     = ps.dynamic::GradPower.PowerSystemDynamics
+    L       = dyn.layout::GradPower.SimulationLayout
+    M       = gbl.M
+    sys_dim = gbl.sys_dim
+
+    nsteps = Int(round(tf / dt))
+    tvec   = collect(0:dt:tf)
+
+    events = dyn.events
+    event_schedule = Tuple{Int,Int,Symbol}[]
+    for (ei, ev) in enumerate(events)
+        push!(event_schedule, (Int(round(ev.ton / dt)), ei, :on))
+        push!(event_schedule, (Int(round(ev.toff / dt)), ei, :off))
+    end
+    sort!(event_schedule, by = x -> x[1])
+
+    z0_cpu = Array(gbl.z)
+    trajs  = [zeros(Float64, sys_dim, nsteps + 1) for _ in 1:M]
+    for m in 1:M
+        trajs[m][:, 1] .= z0_cpu[m, :]
+    end
+
+    copyto!(gbl.zold, gbl.z)
+
+    sched_idx = 1
+    for k in 1:nsteps
+        copyto!(gbl.zold, gbl.z)
+
+        _newton_step_cudss_gpu!(gbl, dyn, L, dt; tol = newton_tol)
+
+        # Trajectory snapshot (one download per step)
+        z_cpu = Array(gbl.z)
+        for m in 1:M
+            trajs[m][:, k + 1] .= z_cpu[m, :]
+        end
+
+        any_event = false
+        while sched_idx <= length(event_schedule) && event_schedule[sched_idx][1] == k
+            _, idx, action = event_schedule[sched_idx]
+            if action === :on
+                GradPower.activate!(events[idx])
+            elseif action === :off
+                GradPower.deactivate!(events[idx])
+            end
+            any_event = true
+            sched_idx += 1
+        end
+
+        if any_event
+            # Update event arrays on GPU
+            for (ei, ev) in enumerate(events)
+                CUDA.@allowscalar gbl.event_status[ei] = ev.status
+            end
+            copyto!(gbl.zold, gbl.z)
+            _newton_step_cudss_gpu!(gbl, dyn, L, 0.0; tol = newton_tol)
+        end
+    end
+
+    for event in events
+        GradPower.deactivate!(event)
+    end
+
+    return tvec, trajs
 end
 
 end # module GradPowerCUDAExt

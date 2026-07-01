@@ -50,6 +50,145 @@ end
     end
 end
 
+# -----------------------------------------------------------------------
+# Controller KA @kernel wrappers (phase 14c D1)
+# -----------------------------------------------------------------------
+
+@kernel function ieesgo_residual_ka!(f, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        @Const(diff_dim))
+    k = @index(Global)
+    if @inbounds online[k]
+        _ieesgo_residual_one!(f, z, p,
+            diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+            k, diff_dim)
+    end
+end
+
+@kernel function tgov1_residual_ka!(f, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        @Const(diff_dim))
+    k = @index(Global)
+    if @inbounds online[k]
+        _tgov1_residual_one!(f, z, p,
+            diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+            k, diff_dim)
+    end
+end
+
+@kernel function sexs_residual_ka!(f, z, p, online,
+        diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr)
+    k = @index(Global)
+    if @inbounds online[k]
+        _sexs_residual_one!(f, z, p,
+            diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr,
+            k)
+    end
+end
+
+@kernel function esdc1a_residual_ka!(f, z, p, online,
+        diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr)
+    k = @index(Global)
+    if @inbounds online[k]
+        _esdc1a_residual_one!(f, z, p,
+            diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr,
+            k)
+    end
+end
+
+@kernel function ieeest_residual_ka!(f, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        @Const(diff_dim))
+    k = @index(Global)
+    if @inbounds online[k]
+        _ieeest_residual_one!(f, z, p,
+            diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+            diff_dim, k)
+    end
+end
+
+# -----------------------------------------------------------------------
+# Jacobian KA @kernel wrappers (phase 14c D2)
+# -----------------------------------------------------------------------
+
+@kernel function genrou_jacobian_ka!(nz, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+        @Const(diff_dim), @Const(net_ptr), @Const(twopi60))
+    k = @index(Global)
+    if @inbounds online[k]
+        _genrou_jacobian_one!(nz, z, p,
+            diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+            k, diff_dim, net_ptr, twopi60)
+    end
+end
+
+@kernel function ieesgo_jacobian_ka!(nz, p, online,
+        par_ptr, jac_pos)
+    k = @index(Global)
+    if @inbounds online[k]
+        _ieesgo_jacobian_one!(nz, p,
+            par_ptr, jac_pos, k)
+    end
+end
+
+@kernel function tgov1_jacobian_ka!(nz, p, online,
+        par_ptr, jac_pos)
+    k = @index(Global)
+    if @inbounds online[k]
+        _tgov1_jacobian_one!(nz, p,
+            par_ptr, jac_pos, k)
+    end
+end
+
+@kernel function sexs_jacobian_ka!(nz, z, p, online,
+        par_ptr, vr_idx_arr, vs_idx_arr, jac_pos)
+    k = @index(Global)
+    if @inbounds online[k]
+        _sexs_jacobian_one!(nz, z, p,
+            par_ptr, vr_idx_arr, vs_idx_arr, jac_pos, k)
+    end
+end
+
+@kernel function esdc1a_jacobian_ka!(nz, z, p, online,
+        par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos)
+    k = @index(Global)
+    if @inbounds online[k]
+        _esdc1a_jacobian_one!(nz, z, p,
+            par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos, k)
+    end
+end
+
+@kernel function ieeest_jacobian_ka!(nz, z, p, online,
+        par_ptr, diff_ptr, alg_ptr, w_idx_arr, jac_pos,
+        @Const(diff_dim))
+    k = @index(Global)
+    if @inbounds online[k]
+        _ieeest_jacobian_one!(nz, z, p,
+            par_ptr, diff_ptr, alg_ptr, w_idx_arr, jac_pos,
+            diff_dim, k)
+    end
+end
+
+@kernel function zipload_jacobian_ka!(nz, z, p, online,
+        bus_arr, par_ptr, jac_pos,
+        @Const(net_ptr))
+    k = @index(Global)
+    if @inbounds online[k]
+        _zipload_jacobian_one!(nz, z, p,
+            bus_arr, par_ptr, jac_pos,
+            k, net_ptr)
+    end
+end
+
+@kernel function static_gen_jacobian_ka!(nz, z, p, online,
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos)
+    k = @index(Global)
+    if @inbounds online[k]
+        _static_gen_jacobian_one!(nz, z, p,
+            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos, k)
+    end
+end
+
 @kernel function bus_injection_reduce_ka!(f, inj, bus_map, @Const(net_ptr))
     ik = @index(Global)
     @inbounds begin
@@ -144,12 +283,44 @@ function _rhs_fun_ka_cpu!(f::AbstractArray, z::AbstractArray, u::AbstractArray,
                diff_dim, net_ptr, twopi60; ndrange=gt.n)
     end
 
-    # Controllers (no network injection — call existing batch functions)
-    ieesgo_residual_batch!(f, z, p, L.ieesgo, diff_dim)
-    tgov1_residual_batch!(f, z, p, L.tgov1, diff_dim)
-    ieeest_residual_batch!(f, z, p, L.ieeest, diff_dim)
-    sexs_residual_batch!(f, z, p, L.sexs)
-    esdc1a_residual_batch!(f, z, p, L.esdc1a)
+    # Controllers (KA kernels — no network injection)
+    ig = L.ieesgo
+    if ig.n > 0
+        kernel = ieesgo_residual_ka!(backend)
+        kernel(f, z, p, ig.online,
+               ig.diff_ptr, ig.alg_ptr, ig.par_ptr, ig.w_idx,
+               diff_dim; ndrange=ig.n)
+    end
+
+    tg = L.tgov1
+    if tg.n > 0
+        kernel = tgov1_residual_ka!(backend)
+        kernel(f, z, p, tg.online,
+               tg.diff_ptr, tg.alg_ptr, tg.par_ptr, tg.w_idx,
+               diff_dim; ndrange=tg.n)
+    end
+
+    pss = L.ieeest
+    if pss.n > 0
+        kernel = ieeest_residual_ka!(backend)
+        kernel(f, z, p, pss.online,
+               pss.diff_ptr, pss.alg_ptr, pss.par_ptr, pss.w_idx,
+               diff_dim; ndrange=pss.n)
+    end
+
+    sx = L.sexs
+    if sx.n > 0
+        kernel = sexs_residual_ka!(backend)
+        kernel(f, z, p, sx.online,
+               sx.diff_ptr, sx.par_ptr, sx.vr_idx, sx.vs_idx; ndrange=sx.n)
+    end
+
+    ex = L.esdc1a
+    if ex.n > 0
+        kernel = esdc1a_residual_ka!(backend)
+        kernel(f, z, p, ex.online,
+               ex.diff_ptr, ex.par_ptr, ex.vr_idx, ex.vs_idx; ndrange=ex.n)
+    end
 
     # ZIPLoad: inj slots n_genrou+1..n_genrou+n_zipload
     zt = L.zipload

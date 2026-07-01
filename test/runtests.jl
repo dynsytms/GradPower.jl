@@ -49,3 +49,6 @@ end
 @testset "gpu_backend" begin
     include("test_gpu_backend.jl")
 end
+@testset "lockstep" begin
+    include("test_lockstep.jl")
+end
