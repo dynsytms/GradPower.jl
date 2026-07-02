@@ -797,26 +797,14 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     cudss_rhs = CUDA.zeros(Float64, bl_cpu.sys_dim)
     cudss_sol = CUDA.zeros(Float64, bl_cpu.sys_dim)
 
-    # --- cuDSS batched monolithic solver (uniform batch) ---
-    # CSR sparsity (shared across all M scenarios)
-    J_csr_cpu = copy(J_csc_ones')  # CSR layout
-    csr_rowPtr = CuVector(Int32.(J_csr_cpu.colptr))  # CSR rowPtr = CSC colptr of transpose
-    csr_colVal = CuVector(Int32.(rowvals(J_csr_cpu)))
-    # nzVal as CuMatrix(nnz, M) — each column is one scenario's CSR nzvals
-    cudss_batch_nzval = CUDA.ones(Float64, nnz_J, M)
-    # Create solver with uniform batch
-    cudss_batch_solver = CudssSolver(csr_rowPtr, csr_colVal, cudss_batch_nzval, "G", 'F')
-    cudss_set(cudss_batch_solver, "ubatch_size", M)
-    # RHS and solution as CuMatrix(sys_dim, M)
-    cudss_batch_rhs = CUDA.zeros(Float64, bl_cpu.sys_dim, M)
-    cudss_batch_sol = CUDA.zeros(Float64, bl_cpu.sys_dim, M)
-    # Wrap in CudssMatrix for the API
-    _cb_rhs = CudssMatrix(Float64, bl_cpu.sys_dim; nbatch=M)
-    cudss_update(_cb_rhs, cudss_batch_rhs)
-    _cb_sol = CudssMatrix(Float64, bl_cpu.sys_dim; nbatch=M)
-    cudss_update(_cb_sol, cudss_batch_sol)
-    # Symbolic analysis (once)
-    cudss("analysis", cudss_batch_solver, _cb_sol, _cb_rhs)
+    # Batched cuDSS fields disabled — a single 217k LU factorization already
+    # saturates the GPU, so batching provides no throughput gain (≤1.3×) and
+    # becomes pathological at M≥16.  The sequential per-scenario path reuses
+    # one cuDSS workspace and scales predictably.
+    cudss_batch_solver = nothing
+    cudss_batch_nzval  = nothing
+    cudss_batch_rhs    = nothing
+    cudss_batch_sol    = nothing
 
     return GpuBatchedLayout(M, bl_cpu.sys_dim, bl_cpu.diff_dim, bl_cpu.alg_dim,
                              bl_cpu.nbus,
@@ -857,7 +845,7 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
                              cudss_rhs, cudss_sol,
                              cudss_batch_solver, cudss_batch_nzval,
                              cudss_batch_rhs, cudss_batch_sol,
-                             csr_rowPtr, csr_colVal)
+                             nothing, nothing)
 end
 
 # -----------------------------------------------------------------------
@@ -2764,7 +2752,8 @@ function integrate_gpu_schur_cudss!(
 end
 
 # -----------------------------------------------------------------------
-# integrate_gpu_cudss_batched! — batched cuDSS, all M in one call
+# integrate_gpu_cudss_batched! — uses sequential per-scenario cuDSS (see note
+# in GpuBatchedLayout constructor on why batched cuDSS is disabled)
 # -----------------------------------------------------------------------
 
 function integrate_gpu_cudss_batched!(
@@ -2802,7 +2791,7 @@ function integrate_gpu_cudss_batched!(
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
 
-        _newton_step_cudss_batched_gpu!(gbl, dyn, L, dt; tol=newton_tol)
+        _newton_step_cudss_gpu!(gbl, dyn, L, dt; tol=newton_tol)
 
         snap(z_hist, gbl.z, k + 1, M; ndrange=sys_dim)
         KernelAbstractions.synchronize(backend)
@@ -2824,7 +2813,7 @@ function integrate_gpu_cudss_batched!(
                 CUDA.@allowscalar gbl.event_status[ei] = ev.status
             end
             copyto!(gbl.zold, gbl.z)
-            _newton_step_cudss_batched_gpu!(gbl, dyn, L, 0.0; tol=newton_tol)
+            _newton_step_cudss_gpu!(gbl, dyn, L, 0.0; tol=newton_tol)
         end
     end
 
