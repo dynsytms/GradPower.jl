@@ -140,8 +140,7 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         z[diff_dim + alg_dim + 2*(i - 1) + 2] = vm*sin(va)
     end
 
-    # TODO: write initialization function for load
-    # set initial voltage magnitude in ZIPLoad devices.
+    # Initialize ZIPLoad devices with power-flow voltage magnitudes.
     for (i, device) in enumerate(ps.dynamic.devices)
         if device.dtype isa ZIPLoad
             device.dtype.v0mag = ps.buses[ps.dynamic.map.bus[i]].v0m
@@ -151,10 +150,9 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         end
     end
     
-    # fill parameter vector.
-    # TODO: I need to re-think this design. To fill pvec I first need to set the load parameters with the
-    # updated power-flow solution. But Ideally I should initialize all the devices after I fill the pvec.
-    # In this case the load becomes an special case.
+    # Fill parameter vector.
+    # NOTE: ZIPLoad parameters depend on the power-flow solution (v0mag, yreal, yimag),
+    # so pvec must be filled after the ZIPLoad initialization above.
     for (i, device) in enumerate(ps.dynamic.devices)
         fill_pvec!(@view(dp.pvec[device.par_ptr:device.par_ptr+device.dtype.par_size-1]), device.dtype)
     end
@@ -328,7 +326,7 @@ end
     return nothing
 end
 
-# NOTE: TODO: Implement different objective types using multiple dispatch.
+# Sum-of-squares speed objective. Extend via multiple dispatch for other objectives.
 function functional(z::AbstractArray, u::AbstractArray, p::AbstractArray, sys::PowerSystem)
     idxs = gen_speeds(sys)
     val = 0.0
@@ -512,7 +510,7 @@ function integrate!(
     newton_tol::Float64=1e-10,
     newton_norm::Symbol=:inf,
 )
-    # TODO: here we should have some checks to ensure that the problem is initialized
+    # NOTE: Assumes initialize_dynamics!(dp, ps) has been called.
 
     # calculate number of steps
     nsteps = Int(round(tf/dt))

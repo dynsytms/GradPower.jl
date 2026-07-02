@@ -189,7 +189,7 @@ mutable struct PowerSystemDynamics
     disconnect_events::Vector{DisconnectDeviceEvent}
     trip_events::Vector{TripLineEvent}
     layout::Union{Nothing,SimulationLayout}
-    clusters::Any  # Union{Nothing,ClusterTable} — defined after PSD
+    clusters::Any  # Union{Nothing,ClusterTable} — can't use ClusterTable here (defined later in clusters.jl)
     diff_indices::Union{Nothing,Vector{Int}}  # z-positions of differential states after cluster reordering
     is_diff::Union{Nothing,BitVector}  # precomputed mask: is_diff[i] = true iff z[i] is a diff state
 end
@@ -728,9 +728,13 @@ include("display.jl")
 # Exports
 export Bus, Gen, Load, Branch, Shunt, PowerSystem
 export build_network!
-export runpf
+export runpf, runpf!
 export DynamicDevice, PowerSystemDynamics
+export DynamicProblem, ContingencyEvent, DisconnectDeviceEvent, TripLineEvent
 export add_device!
+export add_event!, add_disconnect_event!, add_trip_event!, create_trip_line_event
+export initialize_dynamics!, integrate!
+export set_dynamics!
 export from_psse
 export SolverLog
 

@@ -237,7 +237,7 @@ function update_jacobian!(
     pq_idx::Vector{Int64}, 
     pqv_idx::Vector{Int64}
 )
-    # TODO: refactor
+    # Rebuild sparsity structure from scratch (Jacobian pattern may change between solves)
     row_jac = zeros(Int64, length(jac_mat.nzval))
     col_jac = zeros(Int64, length(jac_mat.nzval))
     val_jac = zeros(Float64, length(jac_mat.nzval))
@@ -342,7 +342,7 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
         f0 = zero(x0)
         df = OnceDifferentiable(func!, jac!, x0, f0, J0)
         @timeit prF "pflow: nlsolve - jac" result = nlsolve(df, x0, method=:newton, iterations=50, show_trace=verbose)
-        # TODO: better interface to select solver
+        # Alternative: custom Newton solver (currently using NLsolve)
         #@timeit prF "pflow: newton" result, success = newton(x0, J0, func!, jac!, tol = 1e-8, verbose = true)
     end
 

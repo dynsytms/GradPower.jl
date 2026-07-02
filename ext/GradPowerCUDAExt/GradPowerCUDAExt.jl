@@ -318,6 +318,9 @@ struct GpuBatchedLayout
     J_rowval::CuVector{Int}
     # Admittance matrix (sparse on GPU)
     ybus_csr::CuSparseMatrixCSR{Float64, Int32}
+    # Pre-allocated buffers for Ybus SpMV (avoid per-iteration GPU allocs)
+    v_buf::CuVector{Float64}
+    fv_buf::CuVector{Float64}
     # CPU-side ybus for host-side operations
     ybus_cpu::SparseMatrixCSC{Float64, Int}
     # Injection metadata
@@ -413,13 +416,6 @@ struct GpuBatchedLayout
     csc_to_csr_perm::Union{Nothing, CuVector{Int32}}              # nzval reorder map
     cudss_rhs::Union{Nothing, CuVector{Float64}}                  # reusable RHS buffer
     cudss_sol::Union{Nothing, CuVector{Float64}}                  # reusable solution buffer
-    # cuDSS batched monolithic solver — all M scenarios in one call
-    cudss_batch_solver::Union{Nothing, CudssSolver{Float64, Int32}}
-    cudss_batch_nzval::Union{Nothing, CuMatrix{Float64}}          # nnz × M, CSR order
-    cudss_batch_rhs::Union{Nothing, CuMatrix{Float64}}            # sys_dim × M
-    cudss_batch_sol::Union{Nothing, CuMatrix{Float64}}            # sys_dim × M
-    cudss_batch_rowPtr::Union{Nothing, CuVector{Int32}}           # shared CSR sparsity
-    cudss_batch_colVal::Union{Nothing, CuVector{Int32}}           # shared CSR sparsity
 end
 
 """
@@ -448,6 +444,9 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
 
     # Admittance matrix on GPU (CSR for cuSPARSE SpMV)
     ybus_csr = CuSparseMatrixCSR(bl_cpu.ybus)
+    nv = 2 * length(ps.buses)
+    v_buf  = CuVector{Float64}(undef, max(nv, 1))
+    fv_buf = CuVector{Float64}(undef, max(nv, 1))
     ybus_cpu = bl_cpu.ybus
 
     # Injection metadata
@@ -797,20 +796,12 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     cudss_rhs = CUDA.zeros(Float64, bl_cpu.sys_dim)
     cudss_sol = CUDA.zeros(Float64, bl_cpu.sys_dim)
 
-    # Batched cuDSS fields disabled — a single 217k LU factorization already
-    # saturates the GPU, so batching provides no throughput gain (≤1.3×) and
-    # becomes pathological at M≥16.  The sequential per-scenario path reuses
-    # one cuDSS workspace and scales predictably.
-    cudss_batch_solver = nothing
-    cudss_batch_nzval  = nothing
-    cudss_batch_rhs    = nothing
-    cudss_batch_sol    = nothing
-
     return GpuBatchedLayout(M, bl_cpu.sys_dim, bl_cpu.diff_dim, bl_cpu.alg_dim,
                              bl_cpu.nbus,
                              z, p, u, f, zold, inj, J_nzval,
                              J_colptr, J_rowval,
-                             ybus_csr, ybus_cpu,
+                             ybus_csr, v_buf, fv_buf,
+                             ybus_cpu,
                              bus_map_gpu,
                              bl_cpu.inj_meta.n_genrou,
                              bl_cpu.inj_meta.n_zipload,
@@ -842,10 +833,7 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
                              schur_fwk_packed_v, schur_dz_gpu_v, schur_S_csc_buf_v,
                              schur_w_start_gpu_v, schur_vr_l_gpu_v, schur_vi_l_gpu_v,
                              cudss_solver, cudss_csr, csc_to_csr_perm,
-                             cudss_rhs, cudss_sol,
-                             cudss_batch_solver, cudss_batch_nzval,
-                             cudss_batch_rhs, cudss_batch_sol,
-                             nothing, nothing)
+                             cudss_rhs, cudss_sol)
 end
 
 # -----------------------------------------------------------------------
@@ -1306,11 +1294,10 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
     fill!(gbl.inj, 0.0)
 
     # 2. Batched ybus SpMV via per-scenario cuSPARSE mv!
-    # Uses pre-allocated v_buf/fv_buf stored alongside gbl
     nv = 2 * gbl.nbus
     if nv > 0
-        v_buf = CuVector{Float64}(undef, nv)
-        fv_buf = CuVector{Float64}(undef, nv)
+        v_buf  = gbl.v_buf
+        fv_buf = gbl.fv_buf
         for m in 1:M
             # Extract voltage subvector: v_buf = z[m, net_ptr+1:end]
             _extract_row_range!(v_buf, gbl.z, m, net_ptr+1, nv)
@@ -2392,108 +2379,6 @@ end
     @inbounds for m in 1:M
         z_hist[j, m, step] = z[m, j]
     end
-end
-
-# CSC→CSR permute all M scenarios: J_nzval[M, nnz_csc] → batch_nzval[nnz_csr, M]
-@kernel function csc_to_csr_batched_ka!(batch_nzval, J_nzval, perm, @Const(M))
-    k = @index(Global)  # CSR nzval index
-    @inbounds begin
-        p = perm[k]  # corresponding CSC nzval index
-        for m in 1:M
-            batch_nzval[k, m] = J_nzval[m, p]
-        end
-    end
-end
-
-# Scatter batched solution into z: z[m, j] += sol[j, m]
-@kernel function scatter_batched_sol_ka!(z, sol, @Const(M), @Const(n))
-    j = @index(Global)
-    @inbounds for m in 1:M
-        z[m, j] += sol[j, m]
-    end
-end
-
-# Build batched RHS: rhs[j, m] = -f[m, j]
-@kernel function build_batched_rhs_ka!(rhs, f, @Const(M), @Const(n))
-    j = @index(Global)
-    @inbounds for m in 1:M
-        rhs[j, m] = -f[m, j]
-    end
-end
-
-# -----------------------------------------------------------------------
-# GPU batched monolithic Newton step via cuDSS uniform batch
-#
-# All M scenarios factorized and solved in ONE cuDSS call.
-# -----------------------------------------------------------------------
-
-function _newton_step_cudss_batched_gpu!(
-    gbl::GpuBatchedLayout,
-    dyn::GradPower.PowerSystemDynamics,
-    L::GradPower.SimulationLayout,
-    dt::Float64;
-    itermax::Int = 30,
-    tol::Float64 = 1e-10,
-)
-    M       = gbl.M
-    sys_dim = gbl.sys_dim
-    nnz_J   = size(gbl.J_nzval, 2)
-    backend = CUDABackend()
-
-    f_flat = reshape(gbl.f, :)
-    tol_l2 = tol * sqrt(Float64(sys_dim * M))
-
-    # CudssMatrix wrappers (reuse across iterations)
-    cb_rhs = CudssMatrix(Float64, sys_dim; nbatch=M)
-    cb_sol = CudssMatrix(Float64, sys_dim; nbatch=M)
-
-    first_factor = true
-    for iter in 1:itermax
-        # 1. Residual + backward Euler on GPU
-        _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
-
-        # 2. Convergence check
-        norm_f = CUDA.CUBLAS.nrm2(f_flat)
-        norm_f < tol_l2 && return true
-
-        # 3. Jacobian + backward Euler scaling on GPU
-        _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
-
-        # 4. Permute all M scenarios from CSC to CSR in one kernel
-        kernel_perm = csc_to_csr_batched_ka!(backend)
-        kernel_perm(gbl.cudss_batch_nzval, gbl.J_nzval, gbl.csc_to_csr_perm, M;
-                    ndrange=nnz_J)
-        KernelAbstractions.synchronize(backend)
-
-        # 5. Build batched RHS = -f (transposed: sys_dim × M)
-        kernel_rhs = build_batched_rhs_ka!(backend)
-        kernel_rhs(gbl.cudss_batch_rhs, gbl.f, M, sys_dim; ndrange=sys_dim)
-        KernelAbstractions.synchronize(backend)
-
-        # 6. Update cuDSS with new nzvals and factorize all M systems at once
-        cudss_update(gbl.cudss_batch_solver,
-                     gbl.cudss_batch_rowPtr, gbl.cudss_batch_colVal,
-                     gbl.cudss_batch_nzval)
-        cudss_update(cb_rhs, gbl.cudss_batch_rhs)
-        cudss_update(cb_sol, gbl.cudss_batch_sol)
-
-        if first_factor
-            cudss("factorization", gbl.cudss_batch_solver, cb_sol, cb_rhs)
-            first_factor = false
-        else
-            cudss("refactorization", gbl.cudss_batch_solver, cb_sol, cb_rhs)
-        end
-
-        # 7. Solve all M systems at once
-        cudss("solve", gbl.cudss_batch_solver, cb_sol, cb_rhs)
-
-        # 8. Scatter solution: z[m, j] += sol[j, m]
-        kernel_scatter = scatter_batched_sol_ka!(backend)
-        kernel_scatter(gbl.z, gbl.cudss_batch_sol, M, sys_dim; ndrange=sys_dim)
-        KernelAbstractions.synchronize(backend)
-    end
-
-    return false
 end
 
 # -----------------------------------------------------------------------

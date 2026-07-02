@@ -1,6 +1,6 @@
 name = "GradPower"
 uuid = "5211b32c-a125-4187-bd0f-53521f0f3afa"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["D. Adrian Maldonado <maldonadod@anl.gov>", "François Pacaud <francois.pacaud@minesparis.psl.eu>", "Michel Schanen <mschanen@anl.gov>"]
 
 [deps]
