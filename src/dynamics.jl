@@ -510,6 +510,7 @@ function integrate!(
     log::Union{Nothing,SolverLog}=nothing,
     solver::Symbol=:monolithic,
     newton_tol::Float64=1e-10,
+    newton_norm::Symbol=:inf,
 )
     # TODO: here we should have some checks to ensure that the problem is initialized
 
@@ -591,11 +592,11 @@ function integrate!(
     for k in 1:nsteps
         verbose && println("Time-stepping. t = $(tvec[k]) s.")
         if use_schur
-            newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log)
+            newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
         elseif use_schur_gmres
-            newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log)
+            newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
         else
-            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log)
+            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm)
         end
         traj[:,k+1] .= zold
 
@@ -637,11 +638,11 @@ function integrate!(
         # re-solve at dt=0 after any event state change
         if any_event
             if use_schur
-                newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log)
+                newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
             elseif use_schur_gmres
-                newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log)
+                newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
             else
-                newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log)
+                newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm)
             end
         end
 

@@ -265,6 +265,7 @@ function newton_step_schur!(
     verbose::Bool=false,
     zwork::Union{Nothing,AbstractVector}=nothing,
     log::Union{Nothing,SolverLog}=nothing,
+    newton_norm::Symbol=:inf,
 )
     z_buf = zwork === nothing ? similar(z0) : zwork
     copyto!(z_buf, z0)
@@ -279,7 +280,7 @@ function newton_step_schur!(
     n_red = length(sw.reduced_idx)
 
     success = false
-    verbose && @printf("   Iter     Residual inf-norm\n")
+    verbose && @printf("   Iter     Residual norm\n")
 
     for iter = 1:itermax
         # 1. Evaluate backward-Euler residual
@@ -291,9 +292,15 @@ function newton_step_schur!(
         else
             beuler_batched!(f0, z_buf, zold, u, p, dyn, ybus, L, diff_dim, dt)
         end
-        norm_f = norm(f0, Inf)
+        if newton_norm === :l2
+            norm_f = norm(f0, 2)
+            tol_eff = tol * sqrt(Float64(length(f0)))
+        else
+            norm_f = norm(f0, Inf)
+            tol_eff = tol
+        end
         verbose && @printf("   %2d     %.6e\n", iter-1, norm_f)
-        if norm_f < tol
+        if norm_f < tol_eff
             success = true
             break
         end
@@ -761,6 +768,7 @@ function newton_step_schur_gmres!(
     verbose::Bool=false,
     zwork::Union{Nothing,AbstractVector}=nothing,
     log::Union{Nothing,SolverLog}=nothing,
+    newton_norm::Symbol=:inf,
 )
     sw = gsw.sw
     z_buf = zwork === nothing ? similar(z0) : zwork
@@ -788,8 +796,14 @@ function newton_step_schur_gmres!(
         else
             beuler_batched!(f0, z_buf, zold, u, p, dyn, ybus, L, diff_dim, dt)
         end
-        norm_f = norm(f0, Inf)
-        if norm_f < tol
+        if newton_norm === :l2
+            norm_f = norm(f0, 2)
+            tol_eff = tol * sqrt(Float64(length(f0)))
+        else
+            norm_f = norm(f0, Inf)
+            tol_eff = tol
+        end
+        if norm_f < tol_eff
             verbose && @printf("   %2d     %.6e\n", iter-1, norm_f)
             success = true
             break

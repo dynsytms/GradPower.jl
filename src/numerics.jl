@@ -69,12 +69,13 @@ function newton_step!(
     dx::Union{Nothing,AbstractVector}=nothing,
     zwork::Union{Nothing,AbstractVector}=nothing,
     log::Union{Nothing,SolverLog}=nothing,
+    newton_norm::Symbol=:inf,
 )
 
     jac_verify = false
     # Initialize
     success = false
-    verbose && @printf("   Iter     Residual inf-norm\n")
+    verbose && @printf("   Iter     Residual norm\n")
     # Reuse caller-provided scratch when supplied; otherwise allocate
     # once per Newton call (legacy path for callers that do not pass
     # scratch).
@@ -97,9 +98,15 @@ function newton_step!(
         else
             beuler_batched!(f0, z_buf, zold, u, p, dyn, net.ybus_real, L, diff_dim, dt)
         end
-        norm_f = norm(f0, Inf)
+        if newton_norm === :l2
+            norm_f = norm(f0, 2)
+            tol_eff = tol * sqrt(Float64(length(f0)))
+        else
+            norm_f = norm(f0, Inf)
+            tol_eff = tol
+        end
         verbose && @printf("   %2d     %.6e\n", i-1, norm_f)
-        if norm_f < tol
+        if norm_f < tol_eff
             success = true
             break
         end
