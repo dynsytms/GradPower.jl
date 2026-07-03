@@ -72,7 +72,6 @@ function newton_step!(
     newton_norm::Symbol=:inf,
 )
 
-    jac_verify = false
     # Initialize
     success = false
     verbose && @printf("   Iter     Residual norm\n")
@@ -136,19 +135,19 @@ function newton_step!(
             @assert false "Jacobian verification passed"
         end
 
-        # Solve. First iter does full symbolic+numeric factor (refresh
-        # ordering — dt may have changed, or z drifted enough to invalidate
-        # the prior pivot order). Subsequent iters reuse the symbolic and
-        # only re-do numeric, which is ~3× cheaper. The iter-1 `klu` call
-        # allocates inside KLU.jl and is the single per-Newton allocation
-        # the integrate! loop cannot avoid without a forked solver; all
-        # later iterations of the inner loop are zero-alloc on our side.
+        # Numeric re-factorization: reuse the symbolic analysis from the
+        # caller-provided `fact` (created once in `integrate!` with tuned
+        # KLU settings). Only the numeric values are updated each iteration.
+        # If klu! hits a zero pivot (SingularException), fall back to a
+        # fresh klu() with new symbolic analysis — this is rare but can
+        # happen after large state jumps (e.g. fault clearing).
         if log !== nothing
             _t0 = time_ns()
-            if i == 1
-                fact = klu(J0)
-            else
+            try
                 klu!(fact, J0)
+            catch e
+                e isa LinearAlgebra.SingularException || rethrow()
+                fact = klu(J0)
             end
             log.lsolve_factor_ns += time_ns() - _t0
             log.lsolve_factor_count += 1
@@ -158,10 +157,11 @@ function newton_step!(
             log.lsolve_solve_ns += time_ns() - _t0
             log.lsolve_solve_count += 1
         else
-            if i == 1
-                fact = klu(J0)
-            else
+            try
                 klu!(fact, J0)
+            catch e
+                e isa LinearAlgebra.SingularException || rethrow()
+                fact = klu(J0)
             end
             ldiv!(dx_buf, fact, f0)
         end
