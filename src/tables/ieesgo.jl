@@ -93,9 +93,10 @@ function _build_ieesgo_table_impl(psd)
         w_idx[k] = Int32(w_routed)
     end
 
+    online = fill(true, n)
     return IEESGOTable(n, bus, diff_ptr, alg_ptr, ctrl_ptr, par_ptr,
         T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin, pref,
-        w_idx, jac_pos)
+        w_idx, jac_pos, online)
 end
 
 """

@@ -45,6 +45,101 @@ independent of `PowerSystem`. Caller:
     alg_dim  = sys.dynamic.alg_dim
     net_ptr  = diff_dim + alg_dim
 """
+@inline function _genrou_residual_one!(
+        f, z, u, p,
+        diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr,
+        k::Int, diff_dim::Int, net_ptr::Int, twopi60::Float64,
+        inj=nothing, inj_slot::Int=0,
+)
+    @inbounds begin
+    # ----- pointers -----
+    dp = Int(diff_ptr[k])
+    ap = Int(alg_ptr[k])
+    cp = Int(ctrl_ptr[k])
+    pp = Int(par_ptr[k])
+    bus = Int(bus_arr[k])
+
+    # ----- parameters (from pvec; single source of truth for AD path) -----
+    x_d    = p[pp]
+    x_q    = p[pp + 1]
+    x_dp   = p[pp + 2]
+    x_qp   = p[pp + 3]
+    x_ddp  = p[pp + 4]
+    xl     = p[pp + 5]
+    H      = p[pp + 6]
+    D      = p[pp + 7]
+    T_d0p  = p[pp + 8]
+    T_q0p  = p[pp + 9]
+    T_d0dp = p[pp + 10]
+    T_q0dp = p[pp + 11]
+    S1     = p[pp + 12]
+    S2     = p[pp + 13]
+    x_qdp  = x_ddp
+
+    # ----- states (global z vector) -----
+    e_qp   = z[dp]
+    e_dp   = z[dp + 1]
+    phi_1d = z[dp + 2]
+    phi_2q = z[dp + 3]
+    w      = z[dp + 4]
+    delta  = z[dp + 5]
+    v_q    = z[diff_dim + ap]
+    v_d    = z[diff_dim + ap + 1]
+    i_q    = z[diff_dim + ap + 2]
+    i_d    = z[diff_dim + ap + 3]
+
+    # ----- voltages -----
+    vr_idx = net_ptr + 2*(bus - 1) + 1
+    vi_idx = vr_idx + 1
+    vr = z[vr_idx]
+    vi = z[vi_idx]
+
+    # ----- controls (zero if not wired) -----
+    e_fd = u[cp]
+    p_m  = u[cp + 1]
+
+    # ----- auxiliary -----
+    psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
+             (x_dp  - x_ddp)/(x_dp - xl)*phi_1d
+    psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
+              (x_qp  - x_ddp)/(x_qp - xl)*phi_2q
+
+    # Quadratic open-circuit saturation: adds -Se*psi_de to the e_qp eq.
+    sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
+    psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
+    Se = _genrou_sat_se(psi2, sat_a, sat_b)
+
+    # ----- diff residuals -----
+    f[dp]     = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp)*(-e_qp + i_d*(x_dp - xl) + phi_1d)/((x_dp - xl)^2)) * (x_d - x_dp) - Se*psi_de) / T_d0p
+    f[dp + 1] = (-e_dp +        (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl) + phi_2q)/((x_qp - xl)^2)) * (x_q - x_qp)) / T_q0p
+    f[dp + 2] = ( e_qp - i_d*(x_dp - xl) - phi_1d) / T_d0dp
+    f[dp + 3] = (-e_dp - i_q*(x_qp - xl) - phi_2q) / T_q0dp
+    f[dp + 4] = (p_m - D*w - psi_de*i_q + psi_qe*i_d) / (2.0 * H)
+    f[dp + 5] = twopi60 * w
+
+    # ----- alg residuals (stator currents + park projection) -----
+    f[diff_dim + ap]     = i_d - ((x_ddp - xl)/(x_dp - xl)*e_qp +
+                                   (x_dp - x_ddp)/(x_dp - xl)*phi_1d - v_q) / x_ddp
+    f[diff_dim + ap + 1] = i_q - (-(x_qdp - xl)/(x_qp - xl)*e_dp +
+                                   (x_qp - x_qdp)/(x_qp - xl)*phi_2q + v_d) / x_qdp
+    sd, cd = sincos(delta)
+    f[diff_dim + ap + 2] = v_d - (vr*sd - vi*cd)
+    f[diff_dim + ap + 3] = v_q - (vr*cd + vi*sd)
+
+    # ----- network current injection -----
+    if inj === nothing
+        # Plain-loop path: accumulate directly into f (races on GPU).
+        f[vr_idx] += sd*i_d + cd*i_q
+        f[vi_idx] += -cd*i_d + sd*i_q
+    else
+        # KA path: write to per-device injection buffer (reduced per bus later).
+        inj[2*inj_slot - 1] = sd*i_d + cd*i_q
+        inj[2*inj_slot]     = -cd*i_d + sd*i_q
+    end
+    end
+    return nothing
+end
+
 @inline function genrou_residual_batch!(
         f::AbstractArray, z::AbstractArray, u::AbstractArray, p::AbstractArray,
         table::GenrouTable, diff_dim::Int, net_ptr::Int,
@@ -52,87 +147,11 @@ independent of `PowerSystem`. Caller:
     n = table.n
     n == 0 && return nothing
     twopi60 = 2.0 * π * 60.0
-
     @inbounds for k in 1:n
-        # ----- pointers -----
-        dp = Int(table.diff_ptr[k])
-        ap = Int(table.alg_ptr[k])
-        cp = Int(table.ctrl_ptr[k])
-        pp = Int(table.par_ptr[k])
-        bus = Int(table.bus[k])
-
-        # ----- parameters (from pvec; single source of truth for AD path) -----
-        x_d    = p[pp]
-        x_q    = p[pp + 1]
-        x_dp   = p[pp + 2]
-        x_qp   = p[pp + 3]
-        x_ddp  = p[pp + 4]
-        xl     = p[pp + 5]
-        H      = p[pp + 6]
-        D      = p[pp + 7]
-        T_d0p  = p[pp + 8]
-        T_q0p  = p[pp + 9]
-        T_d0dp = p[pp + 10]
-        T_q0dp = p[pp + 11]
-        S1     = p[pp + 12]
-        S2     = p[pp + 13]
-        x_qdp  = x_ddp
-
-        # ----- states (global z vector) -----
-        e_qp   = z[dp]
-        e_dp   = z[dp + 1]
-        phi_1d = z[dp + 2]
-        phi_2q = z[dp + 3]
-        w      = z[dp + 4]
-        delta  = z[dp + 5]
-        v_q    = z[diff_dim + ap]
-        v_d    = z[diff_dim + ap + 1]
-        i_q    = z[diff_dim + ap + 2]
-        i_d    = z[diff_dim + ap + 3]
-
-        # ----- voltages -----
-        vr_idx = net_ptr + 2*(bus - 1) + 1
-        vi_idx = vr_idx + 1
-        vr = z[vr_idx]
-        vi = z[vi_idx]
-
-        # ----- controls (zero if not wired) -----
-        e_fd = u[cp]
-        p_m  = u[cp + 1]
-
-        # ----- auxiliary -----
-        # Swing eq: f5 = (Pm - D*w - psi_de*iq + psi_qe*id)/(2H).
-        # No 1/(1+w) factor on tmech — historical PSS/E form omitted.
-        psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
-                 (x_dp  - x_ddp)/(x_dp - xl)*phi_1d
-        psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
-                  (x_qp  - x_ddp)/(x_qp - xl)*phi_2q
-
-        # Quadratic open-circuit saturation: adds -Se*psi_de to the e_qp eq.
-        sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
-        psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
-        Se = _genrou_sat_se(psi2, sat_a, sat_b)
-
-        # ----- diff residuals -----
-        f[dp]     = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp)*(-e_qp + i_d*(x_dp - xl) + phi_1d)/((x_dp - xl)^2)) * (x_d - x_dp) - Se*psi_de) / T_d0p
-        f[dp + 1] = (-e_dp +        (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl) + phi_2q)/((x_qp - xl)^2)) * (x_q - x_qp)) / T_q0p
-        f[dp + 2] = ( e_qp - i_d*(x_dp - xl) - phi_1d) / T_d0dp
-        f[dp + 3] = (-e_dp - i_q*(x_qp - xl) - phi_2q) / T_q0dp
-        f[dp + 4] = (p_m - D*w - psi_de*i_q + psi_qe*i_d) / (2.0 * H)
-        f[dp + 5] = twopi60 * w
-
-        # ----- alg residuals (stator currents + park projection) -----
-        f[diff_dim + ap]     = i_d - ((x_ddp - xl)/(x_dp - xl)*e_qp +
-                                       (x_dp - x_ddp)/(x_dp - xl)*phi_1d - v_q) / x_ddp
-        f[diff_dim + ap + 1] = i_q - (-(x_qdp - xl)/(x_qp - xl)*e_dp +
-                                       (x_qp - x_qdp)/(x_qp - xl)*phi_2q + v_d) / x_qdp
-        sd, cd = sincos(delta)
-        f[diff_dim + ap + 2] = v_d - (vr*sd - vi*cd)
-        f[diff_dim + ap + 3] = v_q - (vr*cd + vi*sd)
-
-        # ----- network current injection (accumulate, NOT assign) -----
-        f[vr_idx] += sd*i_d + cd*i_q
-        f[vi_idx] += -cd*i_d + sd*i_q
+        table.online[k] || continue
+        _genrou_residual_one!(f, z, u, p,
+            table.diff_ptr, table.alg_ptr, table.ctrl_ptr, table.par_ptr, table.bus,
+            k, diff_dim, net_ptr, twopi60)
     end
     return nothing
 end
@@ -385,6 +404,160 @@ All other rows are assigned (`=`) because they're 1:1 with a single
 device and the cumulative Jacobian-zero fill in `beuler_jac!` already
 cleared them.
 """
+@inline function _genrou_jacobian_one!(
+        nz, z, p,
+        diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+        k::Int, diff_dim::Int, net_ptr::Int, twopi60::Float64,
+)
+    @inbounds begin
+    # ----- pointers -----
+    dp = Int(diff_ptr[k])
+    ap = Int(alg_ptr[k])
+    pp = Int(par_ptr[k])
+    bus = Int(bus_arr[k])
+
+    # ----- parameters (from pvec) -----
+    x_d    = p[pp]
+    x_q    = p[pp + 1]
+    x_dp   = p[pp + 2]
+    x_qp   = p[pp + 3]
+    x_ddp  = p[pp + 4]
+    xl     = p[pp + 5]
+    H      = p[pp + 6]
+    D      = p[pp + 7]
+    T_d0p  = p[pp + 8]
+    T_q0p  = p[pp + 9]
+    T_d0dp = p[pp + 10]
+    T_q0dp = p[pp + 11]
+    S1     = p[pp + 12]
+    S2     = p[pp + 13]
+    x_qdp  = x_ddp
+
+    # ----- states -----
+    e_qp   = z[dp]
+    e_dp   = z[dp + 1]
+    phi_1d = z[dp + 2]
+    phi_2q = z[dp + 3]
+    w      = z[dp + 4]
+    delta  = z[dp + 5]
+    i_q    = z[diff_dim + ap + 2]
+    i_d    = z[diff_dim + ap + 3]
+
+    sd, cd = sincos(delta)
+
+    # ----- saturation contributions to row dp (e_qp eq) -----
+    psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
+             (x_dp  - x_ddp)/(x_dp - xl)*phi_1d
+    psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
+              (x_qp  - x_ddp)/(x_qp - xl)*phi_2q
+    sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
+    psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
+    Se = _genrou_sat_se(psi2, sat_a, sat_b)
+    if sat_b == 0.0 || psi2 <= sat_a || psi2 == 0.0
+        dSe_dpsi = 0.0
+    else
+        g = psi2 - sat_a
+        dSe_dpsi = sat_b * (2.0 * g * psi2 - g * g) / (psi2 * psi2)
+    end
+    dpsi_dpsi_de = psi2 == 0.0 ? 0.0 : psi_de / psi2
+    dpsi_dpsi_qe = psi2 == 0.0 ? 0.0 : psi_qe / psi2
+    dpsi_de_deqp   = (x_ddp - xl) / (x_dp - xl)
+    dpsi_de_phi1d  = (x_dp - x_ddp) / (x_dp - xl)
+    dpsi_qe_dedp   = -(x_ddp - xl) / (x_qp - xl)
+    dpsi_qe_phi2q  = (x_qp - x_ddp) / (x_qp - xl)
+    dSe_dpsi_de = dSe_dpsi * dpsi_dpsi_de
+    dSe_dpsi_qe = dSe_dpsi * dpsi_dpsi_qe
+    # d(-Se*psi_de)/d*: chain rule via psi_de and psi_qe (both feed psi2 -> Se).
+    dT_dpsi_de = -(dSe_dpsi_de * psi_de + Se)
+    dT_dpsi_qe = -(dSe_dpsi_qe * psi_de)
+    dT_deqp_sat   = dT_dpsi_de * dpsi_de_deqp / T_d0p
+    dT_dphi1d_sat = dT_dpsi_de * dpsi_de_phi1d / T_d0p
+    dT_dedp_sat   = dT_dpsi_qe * dpsi_qe_dedp / T_d0p
+    dT_dphi2q_sat = dT_dpsi_qe * dpsi_qe_phi2q / T_d0p
+
+    # ===== diff row 1 =====
+    nz[jac_pos[k, J_GR_R1_eqp]]   = (-(x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) - 1) / T_d0p + dT_deqp_sat
+    nz[jac_pos[k, J_GR_R1_phi1d]] =  (x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) / T_d0p + dT_dphi1d_sat
+    nz[jac_pos[k, J_GR_R1_id]]    = -(x_d - x_dp)*(-(-x_ddp + x_dp)*(x_dp - xl)^(-1.0) + 1) / T_d0p
+    nz[jac_pos[k, J_GR_R1_edp]]   = dT_dedp_sat
+    nz[jac_pos[k, J_GR_R1_phi2q]] = dT_dphi2q_sat
+    # Optional cross-coupling df1/de_fd = 1/T_d0p (only when wired to an exciter).
+    if has_exc[k]
+        nz[jac_pos[k, J_GR_R1_efd]] = 1.0 / T_d0p
+    end
+
+    # ===== diff row 2 =====
+    nz[jac_pos[k, J_GR_R2_edp]]   = (-(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) - 1) / T_q0p
+    nz[jac_pos[k, J_GR_R2_phi2q]] = -(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) / T_q0p
+    nz[jac_pos[k, J_GR_R2_iq]]    =  (x_q - x_qp)*(-(-x_qdp + x_qp)*(x_qp - xl)^(-1.0) + 1) / T_q0p
+
+    # ===== diff row 3 =====
+    nz[jac_pos[k, J_GR_R3_eqp]]   =  1.0 / T_d0dp
+    nz[jac_pos[k, J_GR_R3_phi1d]] = -1.0 / T_d0dp
+    nz[jac_pos[k, J_GR_R3_id]]    = (-x_dp + xl) / T_d0dp
+
+    # ===== diff row 4 =====
+    nz[jac_pos[k, J_GR_R4_edp]]   = -1.0 / T_q0dp
+    nz[jac_pos[k, J_GR_R4_phi2q]] = -1.0 / T_q0dp
+    nz[jac_pos[k, J_GR_R4_iq]]    = (-x_qp + xl) / T_q0dp
+
+    # ===== diff row 5 =====
+    nz[jac_pos[k, J_GR_R5_eqp]]   = -0.5 * i_q * (x_ddp - xl) / (H * (x_dp - xl))
+    nz[jac_pos[k, J_GR_R5_edp]]   =  0.5 * i_d * (-x_ddp + xl) / (H * (x_qp - xl))
+    nz[jac_pos[k, J_GR_R5_phi1d]] = -0.5 * i_q * (-x_ddp + x_dp) / (H * (x_dp - xl))
+    nz[jac_pos[k, J_GR_R5_phi2q]] =  0.5 * i_d * (-x_ddp + x_qp) / (H * (x_qp - xl))
+    nz[jac_pos[k, J_GR_R5_w]]     = -0.5 * D / H
+    # Optional cross-coupling df5/dp_m = 1/(2H), only when wired.
+    if has_gov[k]
+        nz[jac_pos[k, J_GR_R5_pm]] = 0.5 / H
+    end
+    nz[jac_pos[k, J_GR_R5_iq]]    =  0.5 * (-e_qp * (x_ddp - xl) / (x_dp - xl) - phi_1d * (-x_ddp + x_dp) / (x_dp - xl)) / H
+    nz[jac_pos[k, J_GR_R5_id]]    =  0.5 * ( e_dp * (-x_ddp + xl) / (x_qp - xl) + phi_2q * (-x_ddp + x_qp) / (x_qp - xl)) / H
+
+    # ===== diff row 6 =====
+    nz[jac_pos[k, J_GR_R6_w]]     = twopi60
+
+    # ===== alg row 1 =====
+    nz[jac_pos[k, J_GR_A1_eqp]]   = -(x_ddp - xl) / (x_ddp * (x_dp - xl))
+    nz[jac_pos[k, J_GR_A1_phi1d]] = -(-x_ddp + x_dp) / (x_ddp * (x_dp - xl))
+    nz[jac_pos[k, J_GR_A1_vq]]    =  1.0 / x_ddp
+    nz[jac_pos[k, J_GR_A1_id]]    =  1.0
+
+    # ===== alg row 2 =====
+    nz[jac_pos[k, J_GR_A2_edp]]   = -(-x_qdp + xl) / (x_qdp * (x_qp - xl))
+    nz[jac_pos[k, J_GR_A2_phi2q]] = -(-x_qdp + x_qp) / (x_qdp * (x_qp - xl))
+    nz[jac_pos[k, J_GR_A2_vd]]    = -1.0 / x_qdp
+    nz[jac_pos[k, J_GR_A2_iq]]    =  1.0
+
+    # ===== alg row 3 =====
+    vr_idx = net_ptr + 2*(bus - 1) + 1
+    vi_idx = vr_idx + 1
+    vr = z[vr_idx]
+    vi = z[vi_idx]
+    nz[jac_pos[k, J_GR_A3_delta]] = -vr*cd - vi*sd
+    nz[jac_pos[k, J_GR_A3_vd]]    =  1.0
+    nz[jac_pos[k, J_GR_A3_vr]]    = -sd
+    nz[jac_pos[k, J_GR_A3_vi]]    =  cd
+
+    # ===== alg row 4 =====
+    nz[jac_pos[k, J_GR_A4_delta]] = vr*sd - vi*cd
+    nz[jac_pos[k, J_GR_A4_vq]]    = 1.0
+    nz[jac_pos[k, J_GR_A4_vr]]    = -cd
+    nz[jac_pos[k, J_GR_A4_vi]]    = -sd
+
+    # ===== network rows (current injection, ACCUMULATE via +=) =====
+    # vr-row entries
+    nz[jac_pos[k, J_GR_NR_delta]] += i_d*cd - i_q*sd
+    nz[jac_pos[k, J_GR_NR_iq]]    += cd
+    nz[jac_pos[k, J_GR_NR_id]]    += sd
+    # vi-row entries
+    nz[jac_pos[k, J_GR_NI_delta]] += i_d*sd + i_q*cd
+    nz[jac_pos[k, J_GR_NI_iq]]    += sd
+    nz[jac_pos[k, J_GR_NI_id]]    += -cd
+    end
+    return nothing
+end
+
 @inline function genrou_jacobian_batch!(
         J::SparseMatrixCSC, z::AbstractArray, u::AbstractArray, p::AbstractArray,
         table::GenrouTable, diff_dim::Int, net_ptr::Int,
@@ -393,155 +566,12 @@ cleared them.
     n == 0 && return nothing
     nz = nonzeros(J)
     twopi60 = 2.0 * π * 60.0
-
     @inbounds for k in 1:n
-        # ----- pointers -----
-        dp = Int(table.diff_ptr[k])
-        ap = Int(table.alg_ptr[k])
-        pp = Int(table.par_ptr[k])
-        bus = Int(table.bus[k])
-
-        # ----- parameters (from pvec) -----
-        x_d    = p[pp]
-        x_q    = p[pp + 1]
-        x_dp   = p[pp + 2]
-        x_qp   = p[pp + 3]
-        x_ddp  = p[pp + 4]
-        xl     = p[pp + 5]
-        H      = p[pp + 6]
-        D      = p[pp + 7]
-        T_d0p  = p[pp + 8]
-        T_q0p  = p[pp + 9]
-        T_d0dp = p[pp + 10]
-        T_q0dp = p[pp + 11]
-        S1     = p[pp + 12]
-        S2     = p[pp + 13]
-        x_qdp  = x_ddp
-
-        # ----- states -----
-        e_qp   = z[dp]
-        e_dp   = z[dp + 1]
-        phi_1d = z[dp + 2]
-        phi_2q = z[dp + 3]
-        w      = z[dp + 4]
-        delta  = z[dp + 5]
-        i_q    = z[diff_dim + ap + 2]
-        i_d    = z[diff_dim + ap + 3]
-
-        sd, cd = sincos(delta)
-
-        # ----- saturation contributions to row dp (e_qp eq) -----
-        # Slots J_GR_R1_edp / J_GR_R1_phi2q are always allocated; when
-        # saturation is off (S2≤0 or psi2 ≤ sat_a) Se=dSe_dpsi=0 and the
-        # increments collapse to 0.
-        psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
-                 (x_dp  - x_ddp)/(x_dp - xl)*phi_1d
-        psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
-                  (x_qp  - x_ddp)/(x_qp - xl)*phi_2q
-        sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
-        psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
-        Se = _genrou_sat_se(psi2, sat_a, sat_b)
-        if sat_b == 0.0 || psi2 <= sat_a || psi2 == 0.0
-            dSe_dpsi = 0.0
-        else
-            g = psi2 - sat_a
-            dSe_dpsi = sat_b * (2.0 * g * psi2 - g * g) / (psi2 * psi2)
-        end
-        dpsi_dpsi_de = psi2 == 0.0 ? 0.0 : psi_de / psi2
-        dpsi_dpsi_qe = psi2 == 0.0 ? 0.0 : psi_qe / psi2
-        dpsi_de_deqp   = (x_ddp - xl) / (x_dp - xl)
-        dpsi_de_phi1d  = (x_dp - x_ddp) / (x_dp - xl)
-        dpsi_qe_dedp   = -(x_ddp - xl) / (x_qp - xl)
-        dpsi_qe_phi2q  = (x_qp - x_ddp) / (x_qp - xl)
-        dSe_dpsi_de = dSe_dpsi * dpsi_dpsi_de
-        dSe_dpsi_qe = dSe_dpsi * dpsi_dpsi_qe
-        # d(-Se*psi_de)/d*: chain rule via psi_de and psi_qe (both feed psi2 → Se).
-        dT_dpsi_de = -(dSe_dpsi_de * psi_de + Se)
-        dT_dpsi_qe = -(dSe_dpsi_qe * psi_de)
-        dT_deqp_sat   = dT_dpsi_de * dpsi_de_deqp / T_d0p
-        dT_dphi1d_sat = dT_dpsi_de * dpsi_de_phi1d / T_d0p
-        dT_dedp_sat   = dT_dpsi_qe * dpsi_qe_dedp / T_d0p
-        dT_dphi2q_sat = dT_dpsi_qe * dpsi_qe_phi2q / T_d0p
-
-        # ===== diff row 1 =====
-        nz[table.jac_pos[k, J_GR_R1_eqp]]   = (-(x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) - 1) / T_d0p + dT_deqp_sat
-        nz[table.jac_pos[k, J_GR_R1_phi1d]] =  (x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) / T_d0p + dT_dphi1d_sat
-        nz[table.jac_pos[k, J_GR_R1_id]]    = -(x_d - x_dp)*(-(-x_ddp + x_dp)*(x_dp - xl)^(-1.0) + 1) / T_d0p
-        nz[table.jac_pos[k, J_GR_R1_edp]]   = dT_dedp_sat
-        nz[table.jac_pos[k, J_GR_R1_phi2q]] = dT_dphi2q_sat
-        # Optional cross-coupling ∂f1/∂e_fd = 1/T_d0p (only when wired to an exciter).
-        if table.has_exc[k]
-            nz[table.jac_pos[k, J_GR_R1_efd]] = 1.0 / T_d0p
-        end
-
-        # ===== diff row 2 =====
-        nz[table.jac_pos[k, J_GR_R2_edp]]   = (-(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) - 1) / T_q0p
-        nz[table.jac_pos[k, J_GR_R2_phi2q]] = -(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) / T_q0p
-        nz[table.jac_pos[k, J_GR_R2_iq]]    =  (x_q - x_qp)*(-(-x_qdp + x_qp)*(x_qp - xl)^(-1.0) + 1) / T_q0p
-
-        # ===== diff row 3 =====
-        nz[table.jac_pos[k, J_GR_R3_eqp]]   =  1.0 / T_d0dp
-        nz[table.jac_pos[k, J_GR_R3_phi1d]] = -1.0 / T_d0dp
-        nz[table.jac_pos[k, J_GR_R3_id]]    = (-x_dp + xl) / T_d0dp
-
-        # ===== diff row 4 =====
-        nz[table.jac_pos[k, J_GR_R4_edp]]   = -1.0 / T_q0dp
-        nz[table.jac_pos[k, J_GR_R4_phi2q]] = -1.0 / T_q0dp
-        nz[table.jac_pos[k, J_GR_R4_iq]]    = (-x_qp + xl) / T_q0dp
-
-        # ===== diff row 5 =====
-        nz[table.jac_pos[k, J_GR_R5_eqp]]   = -0.5 * i_q * (x_ddp - xl) / (H * (x_dp - xl))
-        nz[table.jac_pos[k, J_GR_R5_edp]]   =  0.5 * i_d * (-x_ddp + xl) / (H * (x_qp - xl))
-        nz[table.jac_pos[k, J_GR_R5_phi1d]] = -0.5 * i_q * (-x_ddp + x_dp) / (H * (x_dp - xl))
-        nz[table.jac_pos[k, J_GR_R5_phi2q]] =  0.5 * i_d * (-x_ddp + x_qp) / (H * (x_qp - xl))
-        nz[table.jac_pos[k, J_GR_R5_w]]     = -0.5 * D / H
-        # Optional cross-coupling ∂f5/∂p_m = 1/(2H), only when wired.
-        if table.has_gov[k]
-            nz[table.jac_pos[k, J_GR_R5_pm]] = 0.5 / H
-        end
-        nz[table.jac_pos[k, J_GR_R5_iq]]    =  0.5 * (-e_qp * (x_ddp - xl) / (x_dp - xl) - phi_1d * (-x_ddp + x_dp) / (x_dp - xl)) / H
-        nz[table.jac_pos[k, J_GR_R5_id]]    =  0.5 * ( e_dp * (-x_ddp + xl) / (x_qp - xl) + phi_2q * (-x_ddp + x_qp) / (x_qp - xl)) / H
-
-        # ===== diff row 6 =====
-        nz[table.jac_pos[k, J_GR_R6_w]]     = twopi60
-
-        # ===== alg row 1 =====
-        nz[table.jac_pos[k, J_GR_A1_eqp]]   = -(x_ddp - xl) / (x_ddp * (x_dp - xl))
-        nz[table.jac_pos[k, J_GR_A1_phi1d]] = -(-x_ddp + x_dp) / (x_ddp * (x_dp - xl))
-        nz[table.jac_pos[k, J_GR_A1_vq]]    =  1.0 / x_ddp
-        nz[table.jac_pos[k, J_GR_A1_id]]    =  1.0
-
-        # ===== alg row 2 =====
-        nz[table.jac_pos[k, J_GR_A2_edp]]   = -(-x_qdp + xl) / (x_qdp * (x_qp - xl))
-        nz[table.jac_pos[k, J_GR_A2_phi2q]] = -(-x_qdp + x_qp) / (x_qdp * (x_qp - xl))
-        nz[table.jac_pos[k, J_GR_A2_vd]]    = -1.0 / x_qdp
-        nz[table.jac_pos[k, J_GR_A2_iq]]    =  1.0
-
-        # ===== alg row 3 =====
-        vr_idx = net_ptr + 2*(bus - 1) + 1
-        vi_idx = vr_idx + 1
-        vr = z[vr_idx]
-        vi = z[vi_idx]
-        nz[table.jac_pos[k, J_GR_A3_delta]] = -vr*cd - vi*sd
-        nz[table.jac_pos[k, J_GR_A3_vd]]    =  1.0
-        nz[table.jac_pos[k, J_GR_A3_vr]]    = -sd
-        nz[table.jac_pos[k, J_GR_A3_vi]]    =  cd
-
-        # ===== alg row 4 =====
-        nz[table.jac_pos[k, J_GR_A4_delta]] = vr*sd - vi*cd
-        nz[table.jac_pos[k, J_GR_A4_vq]]    = 1.0
-        nz[table.jac_pos[k, J_GR_A4_vr]]    = -cd
-        nz[table.jac_pos[k, J_GR_A4_vi]]    = -sd
-
-        # ===== network rows (current injection, ACCUMULATE via +=) =====
-        # vr-row entries
-        nz[table.jac_pos[k, J_GR_NR_delta]] += i_d*cd - i_q*sd
-        nz[table.jac_pos[k, J_GR_NR_iq]]    += cd
-        nz[table.jac_pos[k, J_GR_NR_id]]    += sd
-        # vi-row entries
-        nz[table.jac_pos[k, J_GR_NI_delta]] += i_d*sd + i_q*cd
-        nz[table.jac_pos[k, J_GR_NI_iq]]    += sd
-        nz[table.jac_pos[k, J_GR_NI_id]]    += -cd
+        table.online[k] || continue
+        _genrou_jacobian_one!(nz, z, p,
+            table.diff_ptr, table.alg_ptr, table.par_ptr, table.bus, table.jac_pos,
+            table.has_gov, table.has_exc,
+            k, diff_dim, net_ptr, twopi60)
     end
     return nothing
 end

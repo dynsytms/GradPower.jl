@@ -107,6 +107,8 @@ const DEVICE_TYPE_MAP = Dict(
     "IEESGO" => IEESGO,
     "TGOV1"  => TGOV1,
     "SEXS"   => SEXS,
+    "ESDC1A" => ESDC1A,
+    "IEEEST" => IEEEST,
     # add more device types here
 )
 
@@ -440,6 +442,7 @@ function create_device_vector(devices;
     # Pass 2: keep controllers (governor, exciter) only if their target Genrou
     # at the same (bus, id) survived pass 1. Otherwise the controller would
     # wire to nothing and produce silent NaNs.
+    kept_exc_keys = Set{Tuple{Int64,String}}()
     for (dev, _) in parsed
         dev isa AbstractGeneratorType && continue
         if dev isa AbstractGenControlType
@@ -448,8 +451,26 @@ function create_device_vector(devices;
                 skipped_orphan_ctrl += 1
                 continue
             end
+            if dev isa AbstractStabilizerType
+                # defer stabilizers to pass 3
+                continue
+            end
+            if dev isa AbstractExciterType
+                kept_exc_keys = push!(kept_exc_keys, key)
+            end
         end
         push!(psse_devices, dev)
+    end
+
+    # Pass 3: keep stabilizers only if their target exciter was kept.
+    for (dev, _) in parsed
+        dev isa AbstractStabilizerType || continue
+        key = (dev.bus, _normalize_id(dev.id))
+        if key in kept_gen_keys && key in kept_exc_keys
+            push!(psse_devices, dev)
+        else
+            skipped_orphan_ctrl += 1
+        end
     end
 
     if skipped_inactive_gen > 0

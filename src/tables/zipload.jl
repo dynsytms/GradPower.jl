@@ -84,9 +84,10 @@ function _build_zipload_table_impl(psd)
         yimag[k]  = load.yimag
     end
 
+    online = fill(true, n)
     return ZIPLoadTable(n, bus, par_ptr,
         pinj, qinj, α, β, γ, weight, v0mag, yreal, yimag,
-        jac_pos)
+        jac_pos, online)
 end
 
 """

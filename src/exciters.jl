@@ -28,12 +28,50 @@ function ESDC1A(bus, id, Ka, Ta, Kf, Tf, Ke, Te, Tr, Ae, Be)
     return exciter
 end
 
+"""
+    _esdc1a_sat_coefficients(E1, SE1, E2, SE2) -> (sat_a, sat_b)
+
+Quadratic saturation: Se(e_fd) = sat_b * (e_fd - sat_a)^2 for e_fd > sat_a,
+zero otherwise. Coefficients chosen so Se(E1)=SE1·E1, Se(E2)=SE2·E2.
+Returns (0.0, 0.0) when any of the inputs is non-positive (no saturation).
+Returns (0.0, 0.0) when saturation data is absent.
+"""
+function _esdc1a_sat_coefficients(E1::Float64, SE1::Float64, E2::Float64, SE2::Float64)
+    if E1 <= 0.0 || E2 <= 0.0 || SE1 <= 0.0 || SE2 <= 0.0
+        return 0.0, 0.0
+    end
+    a = sqrt(SE1*E1 / (SE2*E2))
+    if a == 1.0
+        return 0.0, 0.0
+    end
+    sat_a = E2 - (E1 - E2)/(a - 1.0)
+    sat_b = SE2*E2 * (a - 1.0)^2 / (E1 - E2)^2
+    return sat_a, sat_b
+end
+
 function from_data_fields(::Type{ESDC1A}, fields::Vector{SubString{String}})
     bus = parse(Int64, fields[1])
     id = String(fields[3])
 
-    # Ignore the parsed ESDC1A DYR parameters and instantiate a fixed model.
-    ESDC1A(bus, id, 20.0, 1.0, 0.7, 0.7, 7.0, 0.5, 20.4, 0.006, 0.9)
+    # PSS/E ESDC1A record fields (after bus, type, id):
+    #   Tr, Ka, Ta, Tb, Tc, Vrmax, Vrmin, Ke, Te, Kf, Tf, Sw, E1, SE1, E2, SE2
+    # The reduced model in this kernel ignores Tb, Tc, Vrmax, Vrmin, Sw and
+    # the Tr first-order filter on vm. Saturation is the quadratic form with
+    # sat_a/sat_b precomputed from (E1, SE1, E2, SE2) — stored in the
+    # struct's Ae/Be slots (legacy field names).
+    Tr  = parse(Float64, fields[4])
+    Ka  = parse(Float64, fields[5])
+    Ta  = parse(Float64, fields[6])
+    Ke  = parse(Float64, fields[11])
+    Te  = parse(Float64, fields[12])
+    Kf  = parse(Float64, fields[13])
+    Tf  = parse(Float64, fields[14])
+    E1  = parse(Float64, fields[16])
+    SE1 = parse(Float64, fields[17])
+    E2  = parse(Float64, fields[18])
+    SE2 = parse(Float64, fields[19])
+    sat_a, sat_b = _esdc1a_sat_coefficients(E1, SE1, E2, SE2)
+    ESDC1A(bus, id, Ka, Ta, Kf, Tf, Ke, Te, Tr, sat_a, sat_b)
 end
 
 function fill_pvec!(pvec::AbstractArray, dtype::ESDC1A)
@@ -60,17 +98,91 @@ function init_exciter!(
     Kf = pvec[3]
     Tf = pvec[4]
     Ke = pvec[5]
-    Ae = pvec[8]
-    Be = pvec[9]
+    sat_a = pvec[8]
+    sat_b = pvec[9]
 
-    vr1 = e_fd0*(Ke + Ae*exp(Be*vm))
+    sat = (sat_b == 0.0 || e_fd0 <= sat_a) ? 0.0 : sat_b * (e_fd0 - sat_a)^2
+    vr1 = Ke*e_fd0 + sat
     vr2 = -(Kf/Tf)*e_fd0
-    vref = vm + vr2 + (Kf/Tf)*e_fd0 + vr1/Ka
+    vref = vm + vr1/Ka
 
     xdiff[1] = vr1
     xdiff[2] = vr2
     xdiff[3] = e_fd0
     dtype.vref = vref
+    return nothing
+end
+
+# Standard initialization-path hooks (called by `initialize_device`).
+# These mirror SEXS's flow: `initial_guess!` writes both the state
+# guesses and `dtype.vref` (the init-derived parameter); the residual
+# returned by `initialize_dynamics!` is identically zero at the guess
+# so nlsolve converges in 0 iterations. `extract_init_params!`
+# (defined in src/dynamics.jl) mirrors the converged vref into the
+# parameter vector.
+function initial_guess!(
+        x0::AbstractArray,
+        pvec::AbstractArray,
+        pg::Float64,
+        qg::Float64,
+        vm::Float64,
+        va::Float64,
+        dtype::ESDC1A
+)
+    Ka = pvec[1]
+    Kf = pvec[3]
+    Tf = pvec[4]
+    Ke = pvec[5]
+    sat_a = pvec[8]
+    sat_b = pvec[9]
+    # pre-init: `dtype.vref` carries the matched Genrou's post-PF e_fd0,
+    # stashed by initialize_dynamics! before this controller is initialized.
+    e_fd0 = dtype.vref
+
+    sat = (sat_b == 0.0 || e_fd0 <= sat_a) ? 0.0 : sat_b * (e_fd0 - sat_a)^2
+    vr1 = Ke*e_fd0 + sat
+    vr2 = -(Kf/Tf)*e_fd0
+    vref = vm + vr1/Ka
+
+    x0[1] = vr1
+    x0[2] = vr2
+    x0[3] = e_fd0
+    # Mirror vref into pvec slot 10 now so `initialize_dynamics!` sees it.
+    pvec[10] = vref
+    # Store vref on the struct so `extract_init_params!(::ESDC1A)` and
+    # `refresh_esdc1a_table!` can pick it up.
+    dtype.vref = vref
+    return nothing
+end
+
+function initialize_dynamics!(
+        f::AbstractArray,
+        x0::AbstractArray,
+        pvec::AbstractArray,
+        pg::Float64,
+        qg::Float64,
+        vm::Float64,
+        va::Float64,
+        dtype::ESDC1A
+)
+    Ka = pvec[1]
+    Ta = pvec[2]
+    Kf = pvec[3]
+    Tf = pvec[4]
+    Ke = pvec[5]
+    Te = pvec[6]
+    sat_a = pvec[8]
+    sat_b = pvec[9]
+    vref = pvec[10]
+
+    vr1  = x0[1]
+    vr2  = x0[2]
+    e_fd = x0[3]
+
+    sat = (sat_b == 0.0 || e_fd <= sat_a) ? 0.0 : sat_b * (e_fd - sat_a)^2
+    f[1] = (Ka*(vref - vm - vr2 - (Kf/Tf)*e_fd) - vr1) / Ta
+    f[2] = -((Kf/Tf)*e_fd + vr2) / Tf
+    f[3] = (vr1 - Ke*e_fd - sat) / Te
     return nothing
 end
 
@@ -102,18 +214,19 @@ function rhs_fun!(
     Tf = p[4]
     Ke = p[5]
     Te = p[6]
-    Ae = p[8]
-    Be = p[9]
+    sat_a = p[8]
+    sat_b = p[9]
     vref = p[10]
 
     vr1 = x[1]
     vr2 = x[2]
     e_fd = x[3]
     vm = hypot(v[1], v[2])
+    sat = (sat_b == 0.0 || e_fd <= sat_a) ? 0.0 : sat_b * (e_fd - sat_a)^2
 
     f_diff[1] = (Ka*(vref - vm - vr2 - (Kf/Tf)*e_fd) - vr1)/Ta
     f_diff[2] = -((Kf/Tf)*e_fd + vr2)/Tf
-    f_diff[3] = -(e_fd*(Ke + Ae*exp(Be*vm)) - vr1)/Te
+    f_diff[3] = (vr1 - Ke*e_fd - sat)/Te
 end
 
 function preallocate_jacobian!(
@@ -158,8 +271,8 @@ function rhs_jac!(
     Tf = p[4]
     Ke = p[5]
     Te = p[6]
-    Ae = p[8]
-    Be = p[9]
+    sat_a = p[8]
+    sat_b = p[9]
 
     e_fd = x[3]
     vr = v[1]
@@ -186,11 +299,9 @@ function rhs_jac!(
     jac[row, e_fd_idx] = -Kf/(Tf^2)
 
     row = dp + 2
-    exp_term = exp(Be*vm)
+    dsat = (sat_b == 0.0 || e_fd <= sat_a) ? 0.0 : 2.0*sat_b*(e_fd - sat_a)
     jac[row, vr1_idx] = 1.0/Te
-    jac[row, e_fd_idx] = -(Ke + Ae*exp_term)/Te
-    jac[row, vr_idx] = -e_fd*(Ae*Be*exp_term)/Te*dvm_dvr
-    jac[row, vi_idx] = -e_fd*(Ae*Be*exp_term)/Te*dvm_dvi
+    jac[row, e_fd_idx] = -(Ke + dsat)/Te
 end
 
 # ===========================

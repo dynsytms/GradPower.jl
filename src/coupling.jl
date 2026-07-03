@@ -93,6 +93,37 @@ produces_signals(::Type{SEXS}) = (
 )
 consumes_signals(::Type{SEXS}) = ()
 
+# ESDC1A exciter: attaches to Genrou, produces e_fd at its 3rd diff state
+# (zero-based offset 2), reads vm via the bus index baked into the SoA
+# table — no consumes_signals entry needed.
+attaches_to(::Type{ESDC1A}) = Genrou
+produces_signals(::Type{ESDC1A}) = (
+    (target_ctrl_offset = 0,                # Genrou ctrl[0] = e_fd
+     source_kind        = :diff_at,
+     source_offset      = 2),               # ESDC1A diff[2] = e_fd
+)
+consumes_signals(::Type{ESDC1A}) = ()
+
+# IEEEST PSS: attaches to the exciter sharing its (bus, id), but
+# ultimately needs omega from the generator. The two-hop lookup is
+# implemented in wire_controls! below: PSS -> exciter -> generator.
+#
+# wire_controls! does a two-hop lookup (PSS -> exciter -> generator)
+# to find the generator's w z-index and writes it into the PSS's
+# ctrl slot. No extra fields on the exciter table are needed.
+attaches_to(::Type{IEEEST}) = AbstractExciterType
+
+# PSS produces v_s: written into the exciter's vs_idx table column.
+# Since vs_idx is a table column (not a ctrl slot), the standard
+# `produces_signals` / `uvec_idx` path doesn't apply. Instead,
+# wire_controls! handles PSS wiring specially (see below).
+produces_signals(::Type{IEEEST}) = ()
+
+# PSS consumes omega from the generator. Resolved via two-hop in
+# wire_controls! (PSS -> exciter -> generator), not via the standard
+# consumes_signals path.
+consumes_signals(::Type{IEEEST}) = ()
+
 # ------------------------------------------------------------------------
 # Generic wire_controls!
 #
@@ -183,6 +214,42 @@ function wire_controls!(psd, dmap)
                 error("Unknown state_kind $(sig.state_kind) in consumes_signals($(typeof(device.dtype)))")
             end
             psd.uvec_idx[ctrl_slot] = source_z
+        end
+
+        # PSS two-hop wiring: PSS attaches to an exciter; the PSS needs
+        # omega from the generator that the exciter itself attaches to.
+        # Find the exciter's parent generator and wire the PSS's ctrl
+        # slot to that generator's w state.
+        if device.dtype isa AbstractStabilizerType
+            # target is the exciter. Find the exciter's parent generator.
+            exc_target_class = attaches_to(typeof(target.dtype))
+            if exc_target_class !== nothing
+                exc_bus = target.dtype.bus
+                exc_id  = _normalize_id(target.dtype.id)
+                gen_idx = 0
+                for (g, gdev) in enumerate(psd.devices)
+                    if gdev.dtype isa exc_target_class &&
+                       gdev.dtype.bus == exc_bus &&
+                       _normalize_id(gdev.dtype.id) == exc_id
+                        gen_idx = g
+                        break
+                    end
+                end
+                if gen_idx > 0
+                    gen_dev = psd.devices[gen_idx]
+                    # Wire PSS ctrl slot 0 -> generator's w state
+                    ctrl_slot = device.ctrl_ptr  # offset 0
+                    source_z = gen_dev.diff_ptr + w_offset(typeof(gen_dev.dtype))
+                    psd.uvec_idx[ctrl_slot] = source_z
+
+                    # Propagate parent-generator index so PSS init can
+                    # read pg/qg (though PSS init doesn't need them, this
+                    # keeps the pattern consistent).
+                    dmap.gen[i] = dmap.gen[gen_idx]
+                else
+                    @warn "IEEEST: could not find parent generator for exciter at bus=$exc_bus, id=$exc_id"
+                end
+            end
         end
     end
     return nothing

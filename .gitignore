@@ -1,0 +1,31 @@
+# Julia
+Manifest.toml
+*.jl.cov
+*.jl.mem
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Scratch / profiling / benchmarks
+scratch/
+
+# Build artifacts
+artifacts/
+
+# Loose data files in root (should be under examples/)
+*.raw
+*.dyr
+*.npz
+
+# Regression / verification runners (tracked under test/regression/ and scripts/)
+regression/
+verify/
+refs/

@@ -44,6 +44,7 @@ struct StaticGenTable
     # using the external-bus index; remapped in fix_static_gen_bus_idx!)
     vr_idx::Vector{Int32}
     jac_pos::Matrix{Int32}
+    online::Vector{Bool}
 end
 
 function _build_static_gen_table_impl(psd)
@@ -82,8 +83,9 @@ function _build_static_gen_table_impl(psd)
         vr_idx[k]   = Int32(net_ptr + 2*(Int(sg.bus) - 1) + 1)
     end
 
+    online = fill(true, n)
     return StaticGenTable(n, bus, bus_type, alg_ptr, par_ptr,
-                          p, q, vset, aset, vr_idx, jac_pos)
+                          p, q, vset, aset, vr_idx, jac_pos, online)
 end
 
 # Remap bus (external PSS/E number) → internal 1-based index and rebuild

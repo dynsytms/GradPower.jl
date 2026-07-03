@@ -70,33 +70,77 @@ function tgov1_jac_positions!(table::TGOV1Table, J::SparseMatrixCSC,
     return nothing
 end
 
+@inline function _tgov1_residual_one!(f, z, p,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        k::Int, diff_dim::Int)
+    @inbounds begin
+    dp = Int(diff_ptr[k])
+    ap = Int(alg_ptr[k]) + diff_dim
+    pp = Int(par_ptr[k])
+    w_idx = Int(w_idx_arr[k])
+
+    R  = p[pp]
+    T1 = p[pp + 1]
+    T2 = p[pp + 4]
+    T3 = p[pp + 5]
+    DT = p[pp + 6]
+    pref = p[pp + 7]
+
+    x1 = z[dp]
+    x2 = z[dp + 1]
+    p_m = z[ap]
+    w = w_idx == 0 ? 0.0 : z[w_idx]
+
+    t2_over_t3 = T2 / T3
+    f[dp]     = (-x1 + (1.0 - t2_over_t3) * x2) / T3
+    f[dp + 1] = ((pref - w) / R - x2) / T1
+    f[ap]     = x1 + t2_over_t3 * x2 - DT * w - p_m
+    end
+    return nothing
+end
+
 @inline function tgov1_residual_batch!(f::AbstractArray, z::AbstractArray,
                                         p::AbstractArray, table::TGOV1Table,
                                         diff_dim::Int)
     n = table.n
     n == 0 && return nothing
     @inbounds for k in 1:n
-        dp = Int(table.diff_ptr[k])
-        ap = Int(table.alg_ptr[k]) + diff_dim
-        pp = Int(table.par_ptr[k])
-        w_idx = Int(table.w_idx[k])
+        table.online[k] || continue
+        _tgov1_residual_one!(f, z, p,
+            table.diff_ptr, table.alg_ptr, table.par_ptr, table.w_idx,
+            k, diff_dim)
+    end
+    return nothing
+end
 
-        R  = p[pp]
-        T1 = p[pp + 1]
-        T2 = p[pp + 4]
-        T3 = p[pp + 5]
-        DT = p[pp + 6]
-        pref = p[pp + 7]
+@inline function _tgov1_jacobian_one!(nz, p,
+        par_ptr, jac_pos,
+        k::Int)
+    @inbounds begin
+    pp = Int(par_ptr[k])
+    R  = p[pp]
+    T1 = p[pp + 1]
+    T2 = p[pp + 4]
+    T3 = p[pp + 5]
+    DT = p[pp + 6]
+    t2_over_t3 = T2 / T3
 
-        x1 = z[dp]
-        x2 = z[dp + 1]
-        p_m = z[ap]
-        w = w_idx == 0 ? 0.0 : z[w_idx]
+    nz[jac_pos[k, J_TG_R1_x1]] = -1.0 / T3
+    nz[jac_pos[k, J_TG_R1_x2]] = (1.0 - t2_over_t3) / T3
 
-        t2_over_t3 = T2 / T3
-        f[dp]     = (-x1 + (1.0 - t2_over_t3) * x2) / T3
-        f[dp + 1] = ((pref - w) / R - x2) / T1
-        f[ap]     = x1 + t2_over_t3 * x2 - DT * w - p_m
+    nz[jac_pos[k, J_TG_R2_x2]] = -1.0 / T1
+    pos_w2 = jac_pos[k, J_TG_R2_w]
+    if pos_w2 != 0
+        nz[pos_w2] = -1.0 / (R * T1)
+    end
+
+    nz[jac_pos[k, J_TG_A_x1]] = 1.0
+    nz[jac_pos[k, J_TG_A_x2]] = t2_over_t3
+    pos_wa = jac_pos[k, J_TG_A_w]
+    if pos_wa != 0
+        nz[pos_wa] = -DT
+    end
+    nz[jac_pos[k, J_TG_A_pm]] = -1.0
     end
     return nothing
 end
@@ -107,30 +151,10 @@ end
     n == 0 && return nothing
     nz = nonzeros(J)
     @inbounds for k in 1:n
-        pp = Int(table.par_ptr[k])
-        R  = p[pp]
-        T1 = p[pp + 1]
-        T2 = p[pp + 4]
-        T3 = p[pp + 5]
-        DT = p[pp + 6]
-        t2_over_t3 = T2 / T3
-
-        nz[table.jac_pos[k, J_TG_R1_x1]] = -1.0 / T3
-        nz[table.jac_pos[k, J_TG_R1_x2]] = (1.0 - t2_over_t3) / T3
-
-        nz[table.jac_pos[k, J_TG_R2_x2]] = -1.0 / T1
-        pos_w2 = table.jac_pos[k, J_TG_R2_w]
-        if pos_w2 != 0
-            nz[pos_w2] = -1.0 / (R * T1)
-        end
-
-        nz[table.jac_pos[k, J_TG_A_x1]] = 1.0
-        nz[table.jac_pos[k, J_TG_A_x2]] = t2_over_t3
-        pos_wa = table.jac_pos[k, J_TG_A_w]
-        if pos_wa != 0
-            nz[pos_wa] = -DT
-        end
-        nz[table.jac_pos[k, J_TG_A_pm]] = -1.0
+        table.online[k] || continue
+        _tgov1_jacobian_one!(nz, p,
+            table.par_ptr, table.jac_pos,
+            k)
     end
     return nothing
 end
