@@ -1057,29 +1057,19 @@ end
     end
 end
 
-# Row extraction/placement kernels for cuSPARSE SpMV on 2D arrays
-@kernel function _extract_row_ka!(dst, src, @Const(m), @Const(col_start), @Const(n))
-    i = @index(Global)
-    @inbounds dst[i] = src[m, col_start + i - 1]
-end
-
-@kernel function _place_row_ka!(dst, src, @Const(m), @Const(col_start), @Const(n))
-    i = @index(Global)
-    @inbounds dst[m, col_start + i - 1] = src[i]
-end
-
-function _extract_row_range!(dst::CuVector, src::CuMatrix, m::Int, col_start::Int, n::Int)
-    backend = CUDABackend()
-    kernel = _extract_row_ka!(backend)
-    kernel(dst, src, m, col_start, n; ndrange=n)
-    KernelAbstractions.synchronize(backend)
-end
-
-function _place_row_range!(dst::CuMatrix, src::CuVector, m::Int, col_start::Int, n::Int)
-    backend = CUDABackend()
-    kernel = _place_row_ka!(backend)
-    kernel(dst, src, m, col_start, n; ndrange=n)
-    KernelAbstractions.synchronize(backend)
+# Batched Ybus SpMV kernel: one thread per (row, scenario)
+# Computes f[m, net_ptr + row] = -sum(nzval[idx] * z[m, net_ptr + col]) for each CSR row
+@kernel function ybus_spmv_batched_ka!(f, z, rowptr, colval, nzval,
+                                        @Const(net_ptr), @Const(nv))
+    row, m = @index(Global, NTuple)
+    @inbounds if row <= nv
+        val = 0.0
+        for idx in rowptr[row]:(rowptr[row+1]-1)
+            col = colval[idx]
+            val += nzval[idx] * z[m, net_ptr + col]
+        end
+        f[m, net_ptr + row] = -val
+    end
 end
 
 # Batched Jacobian kernels (D6) — same pattern, loop M internally
@@ -1242,18 +1232,12 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
     fill!(gbl.f, 0.0)
     fill!(gbl.inj, 0.0)
 
-    # 2. Batched ybus SpMV via per-scenario cuSPARSE mv!
+    # 2. Batched ybus SpMV via 2D kernel (one thread per row per scenario)
     nv = 2 * gbl.nbus
     if nv > 0
-        v_buf  = gbl.v_buf
-        fv_buf = gbl.fv_buf
-        for m in 1:M
-            # Extract voltage subvector: v_buf = z[m, net_ptr+1:end]
-            _extract_row_range!(v_buf, gbl.z, m, net_ptr+1, nv)
-            CUSPARSE.mv!('N', -1.0, gbl.ybus_csr, v_buf, 0.0, fv_buf, 'O')
-            # Place result: f[m, net_ptr+1:end] = fv_buf
-            _place_row_range!(gbl.f, fv_buf, m, net_ptr+1, nv)
-        end
+        kernel = ybus_spmv_batched_ka!(backend)
+        kernel(gbl.f, gbl.z, gbl.ybus_csr.rowPtr, gbl.ybus_csr.colVal,
+               gbl.ybus_csr.nzVal, net_ptr, nv; ndrange=(nv, M))
     end
 
     # 3. uvec routing (2D: one thread per (uvec_slot, scenario))
