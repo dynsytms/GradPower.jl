@@ -416,6 +416,13 @@ struct GpuBatchedLayout
     csc_to_csr_perm::Union{Nothing, CuVector{Int32}}              # nzval reorder map
     cudss_rhs::Union{Nothing, CuVector{Float64}}                  # reusable RHS buffer
     cudss_sol::Union{Nothing, CuVector{Float64}}                  # reusable solution buffer
+    # cuDSS uniform batched solver — all M scenarios in one call
+    csr_nzval_batched::CuMatrix{Float64}         # (nnz_csr, M)
+    cudss_solver_batched::CudssSolver             # uniform batch solver
+    cudss_rhs_batched::CudssMatrix                # (sys_dim, M)
+    cudss_sol_batched::CudssMatrix                # (sys_dim, M)
+    sol_buf::CuMatrix{Float64}                    # (sys_dim, M)
+    rhs_buf::CuMatrix{Float64}                    # (sys_dim, M)
 end
 
 """
@@ -796,6 +803,23 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     cudss_rhs = CUDA.zeros(Float64, bl_cpu.sys_dim)
     cudss_sol = CUDA.zeros(Float64, bl_cpu.sys_dim)
 
+    # --- cuDSS uniform batched solver setup ---
+    nnz_csr = length(csc_to_csr_perm)
+    csr_nzval_batched = CUDA.zeros(Float64, nnz_csr, M)
+
+    solver_batched = CudssSolver(cudss_csr.rowPtr, cudss_csr.colVal,
+                                  csr_nzval_batched, "G", 'F')
+    cudss_set(solver_batched, "ubatch_size", M)
+
+    rhs_buf = CUDA.zeros(Float64, bl_cpu.sys_dim, M)
+    sol_buf = CUDA.zeros(Float64, bl_cpu.sys_dim, M)
+    cudss_rhs_b = CudssMatrix(Float64, bl_cpu.sys_dim; nbatch=M)
+    cudss_update(cudss_rhs_b, rhs_buf)
+    cudss_sol_b = CudssMatrix(Float64, bl_cpu.sys_dim; nbatch=M)
+    cudss_update(cudss_sol_b, sol_buf)
+
+    cudss("analysis", solver_batched, cudss_sol_b, cudss_rhs_b)
+
     return GpuBatchedLayout(M, bl_cpu.sys_dim, bl_cpu.diff_dim, bl_cpu.alg_dim,
                              bl_cpu.nbus,
                              z, p, u, f, zold, inj, J_nzval,
@@ -833,7 +857,10 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
                              schur_fwk_packed_v, schur_dz_gpu_v, schur_S_csc_buf_v,
                              schur_w_start_gpu_v, schur_vr_l_gpu_v, schur_vi_l_gpu_v,
                              cudss_solver, cudss_csr, csc_to_csr_perm,
-                             cudss_rhs, cudss_sol)
+                             cudss_rhs, cudss_sol,
+                             csr_nzval_batched, solver_batched,
+                             cudss_rhs_b, cudss_sol_b,
+                             sol_buf, rhs_buf)
 end
 
 # -----------------------------------------------------------------------
@@ -1922,6 +1949,25 @@ end
     @inbounds csr_nzval[k] = csc_nzval[perm[k]]
 end
 
+# Batched CSC→CSR gather: for CSR position i, csr_nz[i, m] = csc_nz[m, perm[i]]
+# perm maps CSR position -> CSC position (same as single-scenario csc_to_csr_gather_ka!)
+@kernel function csc_to_csr_batched_ka!(csr_nz, csc_nz, perm)
+    i, m = @index(Global, NTuple)
+    @inbounds csr_nz[i, m] = csc_nz[m, perm[i]]
+end
+
+# Transpose and negate: dst is (sys_dim, M), src is (M, sys_dim)
+@kernel function _transpose_negate_ka!(dst, src)
+    j, m = @index(Global, NTuple)
+    @inbounds dst[j, m] = -src[m, j]
+end
+
+# Add solution back to z: z is (M, sys_dim), sol is (sys_dim, M)
+@kernel function _add_sol_to_z_ka!(z, sol)
+    j, m = @index(Global, NTuple)
+    @inbounds z[m, j] += sol[j, m]
+end
+
 # -----------------------------------------------------------------------
 # GPU Schur extraction kernels
 # -----------------------------------------------------------------------
@@ -2333,10 +2379,7 @@ function _newton_step_cudss_gpu!(
     nnz_J   = size(gbl.J_nzval, 2)
     backend = CUDABackend()
 
-    # Scratch buffer for one scenario's CSC nzvals (1D view from 2D J_nzval)
-    csc_buf = CUDA.zeros(Float64, nnz_J)
     f_flat = reshape(gbl.f, :)
-    n_flat = length(f_flat)
     tol_l2 = tol * sqrt(Float64(sys_dim * M))
 
     first_factor = true
@@ -2351,35 +2394,38 @@ function _newton_step_cudss_gpu!(
         # 3. Jacobian + backward Euler scaling on GPU
         _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
 
-        # 4. Per-scenario: cuDSS factorize + solve
-        for m in 1:M
-            # 4a. Extract scenario m's nzvals (CSC order) into contiguous buffer
-            copyto!(csc_buf, view(gbl.J_nzval, m, :))
+        # 4. Batched CSC→CSR permutation (all M scenarios at once)
+        kernel = csc_to_csr_batched_ka!(backend)
+        kernel(gbl.csr_nzval_batched, gbl.J_nzval, gbl.csc_to_csr_perm;
+               ndrange=(nnz_J, M))
+        KernelAbstractions.synchronize(backend)
 
-            # 4b. Gather into CSR order in-place on the solver's CSR
-            kernel = csc_to_csr_gather_ka!(backend)
-            kernel(gbl.cudss_csr.nzVal, csc_buf, gbl.csc_to_csr_perm; ndrange=nnz_J)
-            KernelAbstractions.synchronize(backend)
-
-            # 4c. Numeric factorization (first) or refactorization (reuse symbolic)
-            if first_factor
-                cudss("factorization", gbl.cudss_solver, gbl.cudss_sol, gbl.cudss_rhs)
-                first_factor = false
-            else
-                cudss("refactorization", gbl.cudss_solver, gbl.cudss_sol, gbl.cudss_rhs)
-            end
-
-            # 4d. Build RHS = -f[m, :]
-            copyto!(gbl.cudss_rhs, view(gbl.f, m, :))
-            CUDA.CUBLAS.scal!(sys_dim, -1.0, gbl.cudss_rhs)
-
-            # 4e. Solve J * dz = -f
-            cudss("solve", gbl.cudss_solver, gbl.cudss_sol, gbl.cudss_rhs)
-
-            # 4f. Update z[m, :] += dz
-            # Use a kernel to add sol into z[m, :]
-            _add_to_row!(gbl.z, gbl.cudss_sol, m, sys_dim, backend)
+        # 5. Batched factorization (all M scenarios at once)
+        cudss_update(gbl.cudss_solver_batched, gbl.cudss_csr.rowPtr,
+                     gbl.cudss_csr.colVal, gbl.csr_nzval_batched)
+        if first_factor
+            cudss("factorization", gbl.cudss_solver_batched,
+                  gbl.cudss_sol_batched, gbl.cudss_rhs_batched; asynchronous=false)
+            first_factor = false
+        else
+            cudss("refactorization", gbl.cudss_solver_batched,
+                  gbl.cudss_sol_batched, gbl.cudss_rhs_batched; asynchronous=false)
         end
+
+        # 6. Build batched RHS = -f^T  (f is (M, sys_dim), rhs_buf is (sys_dim, M))
+        kernel = _transpose_negate_ka!(backend)
+        kernel(gbl.rhs_buf, gbl.f; ndrange=(sys_dim, M))
+        KernelAbstractions.synchronize(backend)
+        cudss_update(gbl.cudss_rhs_batched, gbl.rhs_buf)
+
+        # 7. Batched solve (all M scenarios at once)
+        cudss("solve", gbl.cudss_solver_batched,
+              gbl.cudss_sol_batched, gbl.cudss_rhs_batched; asynchronous=false)
+
+        # 8. Update z from solution: z is (M, sys_dim), sol_buf is (sys_dim, M)
+        kernel = _add_sol_to_z_ka!(backend)
+        kernel(gbl.z, gbl.sol_buf; ndrange=(sys_dim, M))
+        KernelAbstractions.synchronize(backend)
     end
 
     return false
