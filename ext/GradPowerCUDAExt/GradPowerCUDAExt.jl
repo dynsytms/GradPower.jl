@@ -967,98 +967,82 @@ end
 
 @kernel function genrou_residual_batched_ka!(f, z, u, p, inj, online,
         diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr,
-        @Const(diff_dim), @Const(net_ptr), @Const(twopi60), @Const(M))
-    k = @index(Global)
+        @Const(diff_dim), @Const(net_ptr), @Const(twopi60))
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._genrou_residual_one!(
-                @view(f[m,:]), @view(z[m,:]), @view(u[m,:]), @view(p[m,:]),
-                diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr,
-                k, diff_dim, net_ptr, twopi60, @view(inj[m,:]), k)
-        end
+        GradPower._genrou_residual_one!(
+            @view(f[m,:]), @view(z[m,:]), @view(u[m,:]), @view(p[m,:]),
+            diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr,
+            k, diff_dim, net_ptr, twopi60, @view(inj[m,:]), k)
     end
 end
 
 @kernel function ieesgo_residual_batched_ka!(f, z, p, online,
         diff_ptr, alg_ptr, par_ptr, w_idx_arr,
-        @Const(diff_dim), @Const(M))
-    k = @index(Global)
+        @Const(diff_dim))
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._ieesgo_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
-                diff_ptr, alg_ptr, par_ptr, w_idx_arr, k, diff_dim)
-        end
+        GradPower._ieesgo_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+            diff_ptr, alg_ptr, par_ptr, w_idx_arr, k, diff_dim)
     end
 end
 
 @kernel function tgov1_residual_batched_ka!(f, z, p, online,
         diff_ptr, alg_ptr, par_ptr, w_idx_arr,
-        @Const(diff_dim), @Const(M))
-    k = @index(Global)
+        @Const(diff_dim))
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._tgov1_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
-                diff_ptr, alg_ptr, par_ptr, w_idx_arr, k, diff_dim)
-        end
+        GradPower._tgov1_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+            diff_ptr, alg_ptr, par_ptr, w_idx_arr, k, diff_dim)
     end
 end
 
 @kernel function sexs_residual_batched_ka!(f, z, p, online,
-        diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, @Const(M))
-    k = @index(Global)
+        diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr)
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._sexs_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
-                diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, k)
-        end
+        GradPower._sexs_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+            diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, k)
     end
 end
 
 @kernel function esdc1a_residual_batched_ka!(f, z, p, online,
-        diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, @Const(M))
-    k = @index(Global)
+        diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr)
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._esdc1a_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
-                diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, k)
-        end
+        GradPower._esdc1a_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+            diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, k)
     end
 end
 
 @kernel function ieeest_residual_batched_ka!(f, z, p, online,
         diff_ptr, alg_ptr, par_ptr, w_idx_arr,
-        @Const(diff_dim), @Const(M))
-    k = @index(Global)
+        @Const(diff_dim))
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._ieeest_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
-                diff_ptr, alg_ptr, par_ptr, w_idx_arr, diff_dim, k)
-        end
+        GradPower._ieeest_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+            diff_ptr, alg_ptr, par_ptr, w_idx_arr, diff_dim, k)
     end
 end
 
 @kernel function zipload_residual_batched_ka!(f, z, p, inj, online,
         bus_arr, par_ptr,
-        @Const(net_ptr), @Const(inj_offset), @Const(M))
-    k = @index(Global)
+        @Const(net_ptr), @Const(inj_offset))
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._zipload_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
-                bus_arr, par_ptr, k, net_ptr, @view(inj[m,:]), inj_offset + k)
-        end
+        GradPower._zipload_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+            bus_arr, par_ptr, k, net_ptr, @view(inj[m,:]), inj_offset + k)
     end
 end
 
 @kernel function static_gen_residual_batched_ka!(f, z, p, inj, online,
         vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
-        @Const(inj_offset), @Const(M))
-    k = @index(Global)
+        @Const(inj_offset))
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._static_gen_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
-                vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
-                k, @view(inj[m,:]), inj_offset + k)
-        end
+        GradPower._static_gen_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
+            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
+            k, @view(inj[m,:]), inj_offset + k)
     end
 end
 
@@ -1318,46 +1302,46 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
         kernel = genrou_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.u, gbl.p, gbl.inj, gt.online,
                gt.diff_ptr, gt.alg_ptr, gt.ctrl_ptr, gt.par_ptr, gt.bus,
-               diff_dim, net_ptr, twopi60, M; ndrange=gt.n)
+               diff_dim, net_ptr, twopi60; ndrange=(gt.n, M))
     end
     if ig.n > 0
         kernel = ieesgo_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, ig.online,
                ig.diff_ptr, ig.alg_ptr, ig.par_ptr, ig.w_idx,
-               diff_dim, M; ndrange=ig.n)
+               diff_dim; ndrange=(ig.n, M))
     end
     if tg.n > 0
         kernel = tgov1_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, tg.online,
                tg.diff_ptr, tg.alg_ptr, tg.par_ptr, tg.w_idx,
-               diff_dim, M; ndrange=tg.n)
+               diff_dim; ndrange=(tg.n, M))
     end
     if pss.n > 0
         kernel = ieeest_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, pss.online,
                pss.diff_ptr, pss.alg_ptr, pss.par_ptr, pss.w_idx,
-               diff_dim, M; ndrange=pss.n)
+               diff_dim; ndrange=(pss.n, M))
     end
     if sx.n > 0
         kernel = sexs_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, sx.online,
-               sx.diff_ptr, sx.par_ptr, sx.vr_idx, sx.vs_idx, M; ndrange=sx.n)
+               sx.diff_ptr, sx.par_ptr, sx.vr_idx, sx.vs_idx; ndrange=(sx.n, M))
     end
     if ex.n > 0
         kernel = esdc1a_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, ex.online,
-               ex.diff_ptr, ex.par_ptr, ex.vr_idx, ex.vs_idx, M; ndrange=ex.n)
+               ex.diff_ptr, ex.par_ptr, ex.vr_idx, ex.vs_idx; ndrange=(ex.n, M))
     end
     if zt.n > 0
         kernel = zipload_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, gbl.inj, zt.online,
-               zt.bus, zt.par_ptr, net_ptr, n_genrou, M; ndrange=zt.n)
+               zt.bus, zt.par_ptr, net_ptr, n_genrou; ndrange=(zt.n, M))
     end
     if st.n > 0
         kernel = static_gen_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, gbl.inj, st.online,
                st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type,
-               n_genrou + n_zipload, M; ndrange=st.n)
+               n_genrou + n_zipload; ndrange=(st.n, M))
     end
 
     # 5. Bus injection reduce — one launch, M-loop inside
