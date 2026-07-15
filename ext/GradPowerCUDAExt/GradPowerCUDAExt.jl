@@ -409,6 +409,12 @@ struct GpuBatchedLayout
     # Batched S assembly + RHS buffers (Step 2)
     S_nzval_batched::CuMatrix{Float64}                 # (S_nnz, M) — batched S nzvals
     schur_rhs_batched::CuMatrix{Float64}               # (n_red, M) — batched reduced RHS
+    # Batched cuDSS for reduced system S (Step 3)
+    S_csr_nzval_batched::CuMatrix{Float64}             # (S_nnz_csr, M) — CSR values for batched S
+    cudss_S_solver_batched::CudssSolver                # CudssSolver uniform batch
+    cudss_S_rhs_batched_wrap::CudssMatrix              # CudssMatrix wrapper for RHS
+    cudss_S_sol_batched_wrap::CudssMatrix              # CudssMatrix wrapper for solution
+    S_sol_buf::CuMatrix{Float64}                       # (n_red, M) — solution buffer
     # GPU copies of per-cluster metadata for fused kernels
     schur_w_start_gpu::Vector{CuVector{Int}}           # per group: w_start for each cluster
     schur_vr_l_gpu::Vector{CuVector{Int}}              # per group: reduced vr index
@@ -776,6 +782,19 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     S_nzval_batched_v = CUDA.zeros(Float64, S_nnz_val, M)
     schur_rhs_batched_v = CUDA.zeros(Float64, n_red, M)
 
+    # Batched cuDSS for reduced system S (Step 3)
+    S_nnz_csr = length(csc_to_csr_perm_S_v)
+    S_csr_nzval_batched_v = CUDA.zeros(Float64, S_nnz_csr, M)
+    solver_S_b = CudssSolver(cudss_S_csr_v.rowPtr, cudss_S_csr_v.colVal,
+                              S_csr_nzval_batched_v, "G", 'F')
+    cudss_set(solver_S_b, "ubatch_size", M)
+    S_sol_buf_v = CUDA.zeros(Float64, n_red, M)
+    cudss_S_sol_b_wrap = CudssMatrix(Float64, n_red; nbatch=M)
+    cudss_update(cudss_S_sol_b_wrap, S_sol_buf_v)
+    cudss_S_rhs_b_wrap = CudssMatrix(Float64, n_red; nbatch=M)
+    cudss_update(cudss_S_rhs_b_wrap, schur_rhs_batched_v)
+    cudss("analysis", solver_S_b, cudss_S_sol_b_wrap, cudss_S_rhs_b_wrap)
+
     # GPU copies of per-cluster metadata for fused kernels
     schur_w_start_gpu_v = CuVector{Int}[]
     schur_vr_l_gpu_v = CuVector{Int}[]
@@ -863,6 +882,8 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
                              cudss_S_rhs_v, cudss_S_sol_v,
                              schur_fwk_packed_v, schur_dz_gpu_v, schur_S_csc_buf_v,
                              S_nzval_batched_v, schur_rhs_batched_v,
+                             S_csr_nzval_batched_v, solver_S_b,
+                             cudss_S_rhs_b_wrap, cudss_S_sol_b_wrap, S_sol_buf_v,
                              schur_w_start_gpu_v, schur_vr_l_gpu_v, schur_vi_l_gpu_v,
                              cudss_solver, cudss_csr, csc_to_csr_perm,
                              cudss_rhs, cudss_sol,
@@ -2347,6 +2368,39 @@ end
     end
 end
 
+# Batched CSC→CSR for S: permute S_nzval_batched into S_csr_nzval_batched
+# perm maps CSR position -> CSC position (gather pattern, same as csc_to_csr_gather_ka!)
+# 2D ndrange: (S_nnz, M)
+@kernel function schur_csc_to_csr_batched_ka!(csr_nz, csc_nz, perm)
+    i, m = @index(Global, NTuple)
+    @inbounds csr_nz[i, m] = csc_nz[perm[i], m]
+end
+
+# Scatter dv solution into z for ALL scenarios.
+# 2D ndrange: (n_red, M)
+@kernel function schur_scatter_dv_batched_ka!(z, dv_b, reduced_idx)
+    i, m = @index(Global, NTuple)
+    @inbounds z[m, reduced_idx[i]] += dv_b[i, m]
+end
+
+# Back-substitute for ALL clusters in a group, ALL scenarios.
+# 2D ndrange: (nc, M)
+@kernel function schur_backsub_batched_ka!(z, fwk_solved, AinvBk, dv_sol_b,
+                                            w_start_arr, vr_l_arr, vi_l_arr,
+                                            @Const(wk), @Const(M))
+    ki, m = @index(Global, NTuple)
+    @inbounds begin
+        batch = (ki - 1) * M + m
+        w_start = w_start_arr[ki]
+        dv1 = dv_sol_b[vr_l_arr[ki], m]
+        dv2 = dv_sol_b[vi_l_arr[ki], m]
+        for j in 1:wk
+            dw = -(fwk_solved[j, 1, batch] + AinvBk[j, 1, batch] * dv1 + AinvBk[j, 2, batch] * dv2)
+            z[m, w_start + j - 1] += dw
+        end
+    end
+end
+
 """
     _newton_step_schur_cudss_gpu!(gbl, dyn, L, dt; ...)
 
@@ -2364,10 +2418,13 @@ function _newton_step_schur_cudss_gpu!(
     M       = gbl.M
     sys_dim = gbl.sys_dim
     n_red   = gbl.S_n
+    S_nnz   = gbl.S_nnz
     backend = CUDABackend()
 
     f_flat = reshape(gbl.f, :)
     tol_l2 = tol * sqrt(Float64(sys_dim * M))
+
+    first_factor = true
 
     for iter in 1:itermax
         # 1. Residual + backward Euler
@@ -2415,40 +2472,40 @@ function _newton_step_schur_cudss_gpu!(
         # 5d. Negate RHS for all scenarios at once
         CUDA.CUBLAS.scal!(n_red * M, -1.0, gbl.schur_rhs_batched)
 
-        # 5e-5g. Per scenario: cuDSS solve on S, scatter dv, backsub
-        for m in 1:M
-            # Copy S_nzval_batched[:, m] into the single-scenario S_nzval_gpu
-            copyto!(gbl.S_nzval_gpu, view(gbl.S_nzval_batched, :, m))
+        # 5e. Batched CSC→CSR for S (all M scenarios at once)
+        kernel_csr = schur_csc_to_csr_batched_ka!(backend)
+        kernel_csr(gbl.S_csr_nzval_batched, gbl.S_nzval_batched, gbl.csc_to_csr_perm_S;
+                   ndrange=(S_nnz, M))
+        KernelAbstractions.synchronize(backend)
 
-            # CSC→CSR for S
-            copyto!(gbl.schur_S_csc_buf, gbl.S_nzval_gpu)
-            kernel_csr = csc_to_csr_gather_ka!(backend)
-            kernel_csr(gbl.cudss_S_csr.nzVal, gbl.schur_S_csc_buf, gbl.csc_to_csr_perm_S;
-                       ndrange=gbl.S_nnz)
-            KernelAbstractions.synchronize(backend)
-
-            # Copy batched RHS into single-scenario buffer
-            copyto!(gbl.cudss_S_rhs, view(gbl.schur_rhs_batched, :, m))
-
-            # cuDSS factorize + solve
-            cudss("factorization", gbl.cudss_S_solver, gbl.cudss_S_sol, gbl.cudss_S_rhs)
-            cudss("solve", gbl.cudss_S_solver, gbl.cudss_S_sol, gbl.cudss_S_rhs)
-
-            # Scatter dv into z for reduced variables
-            kernel_dv = schur_scatter_dv_ka!(backend)
-            kernel_dv(gbl.z, gbl.cudss_S_sol, gbl.reduced_idx_gpu, m;
-                      ndrange=n_red)
-
-            # Back-sub — one fused launch per group
-            for (g, glu) in enumerate(gbl.schur_batched_lus)
-                nc = glu.n_clusters; wk = glu.w_k
-                kernel_bs = schur_backsub_fused_ka!(backend)
-                kernel_bs(gbl.z, gbl.schur_fwk_packed[g], glu.B_packed, gbl.cudss_S_sol,
-                          gbl.schur_w_start_gpu[g], gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
-                          wk, M, m; ndrange=nc)
-            end
-            KernelAbstractions.synchronize(backend)
+        # Batched cuDSS factorization of S
+        if first_factor
+            cudss("factorization", gbl.cudss_S_solver_batched,
+                  gbl.cudss_S_sol_batched_wrap, gbl.cudss_S_rhs_batched_wrap; asynchronous=false)
+            first_factor = false
+        else
+            cudss("refactorization", gbl.cudss_S_solver_batched,
+                  gbl.cudss_S_sol_batched_wrap, gbl.cudss_S_rhs_batched_wrap; asynchronous=false)
         end
+
+        # Batched cuDSS solve
+        cudss("solve", gbl.cudss_S_solver_batched,
+              gbl.cudss_S_sol_batched_wrap, gbl.cudss_S_rhs_batched_wrap; asynchronous=false)
+
+        # 5f. Scatter dv into z for all M scenarios
+        kernel_dv = schur_scatter_dv_batched_ka!(backend)
+        kernel_dv(gbl.z, gbl.S_sol_buf, gbl.reduced_idx_gpu; ndrange=(n_red, M))
+        KernelAbstractions.synchronize(backend)
+
+        # 5g. Back-sub for all M scenarios (one launch per group)
+        for (g, glu) in enumerate(gbl.schur_batched_lus)
+            nc = glu.n_clusters; wk = glu.w_k
+            kernel_bs = schur_backsub_batched_ka!(backend)
+            kernel_bs(gbl.z, gbl.schur_fwk_packed[g], glu.B_packed, gbl.S_sol_buf,
+                      gbl.schur_w_start_gpu[g], gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
+                      wk, M; ndrange=(nc, M))
+        end
+        KernelAbstractions.synchronize(backend)
     end
 
     return false
