@@ -1096,93 +1096,77 @@ end
 
 @kernel function genrou_jacobian_batched_ka!(nzval, z, p, online,
         diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
-        @Const(diff_dim), @Const(net_ptr), @Const(twopi60), @Const(M))
-    k = @index(Global)
+        @Const(diff_dim), @Const(net_ptr), @Const(twopi60))
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._genrou_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
-                diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
-                k, diff_dim, net_ptr, twopi60)
-        end
+        GradPower._genrou_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+            diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+            k, diff_dim, net_ptr, twopi60)
     end
 end
 
 @kernel function ieesgo_jacobian_batched_ka!(nzval, p, online,
-        par_ptr, jac_pos, @Const(M))
-    k = @index(Global)
+        par_ptr, jac_pos)
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._ieesgo_jacobian_one!(@view(nzval[m,:]), @view(p[m,:]),
-                par_ptr, jac_pos, k)
-        end
+        GradPower._ieesgo_jacobian_one!(@view(nzval[m,:]), @view(p[m,:]),
+            par_ptr, jac_pos, k)
     end
 end
 
 @kernel function tgov1_jacobian_batched_ka!(nzval, p, online,
-        par_ptr, jac_pos, @Const(M))
-    k = @index(Global)
+        par_ptr, jac_pos)
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._tgov1_jacobian_one!(@view(nzval[m,:]), @view(p[m,:]),
-                par_ptr, jac_pos, k)
-        end
+        GradPower._tgov1_jacobian_one!(@view(nzval[m,:]), @view(p[m,:]),
+            par_ptr, jac_pos, k)
     end
 end
 
 @kernel function sexs_jacobian_batched_ka!(nzval, z, p, online,
-        par_ptr, vr_idx_arr, vs_idx_arr, jac_pos, @Const(M))
-    k = @index(Global)
+        par_ptr, vr_idx_arr, vs_idx_arr, jac_pos)
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._sexs_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
-                par_ptr, vr_idx_arr, vs_idx_arr, jac_pos, k)
-        end
+        GradPower._sexs_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+            par_ptr, vr_idx_arr, vs_idx_arr, jac_pos, k)
     end
 end
 
 @kernel function esdc1a_jacobian_batched_ka!(nzval, z, p, online,
-        par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos, @Const(M))
-    k = @index(Global)
+        par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos)
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._esdc1a_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
-                par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos, k)
-        end
+        GradPower._esdc1a_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+            par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos, k)
     end
 end
 
 @kernel function ieeest_jacobian_batched_ka!(nzval, z, p, online,
         par_ptr, diff_ptr, alg_ptr, w_idx_arr, jac_pos,
-        @Const(diff_dim), @Const(M))
-    k = @index(Global)
+        @Const(diff_dim))
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._ieeest_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
-                par_ptr, diff_ptr, alg_ptr, w_idx_arr, jac_pos, diff_dim, k)
-        end
+        GradPower._ieeest_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+            par_ptr, diff_ptr, alg_ptr, w_idx_arr, jac_pos, diff_dim, k)
     end
 end
 
 @kernel function zipload_jacobian_batched_ka!(nzval, z, p, online,
         bus_arr, par_ptr, jac_pos,
-        @Const(net_ptr), @Const(M))
-    k = @index(Global)
+        @Const(net_ptr))
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._zipload_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
-                bus_arr, par_ptr, jac_pos, k, net_ptr)
-        end
+        GradPower._zipload_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+            bus_arr, par_ptr, jac_pos, k, net_ptr)
     end
 end
 
 @kernel function static_gen_jacobian_batched_ka!(nzval, z, p, online,
-        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos, @Const(M))
-    k = @index(Global)
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos)
+    k, m = @index(Global, NTuple)
     @inbounds if online[k]
-        for m in 1:M
-            GradPower._static_gen_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
-                vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos, k)
-        end
+        GradPower._static_gen_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
+            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos, k)
     end
 end
 
@@ -1405,43 +1389,43 @@ function _jacobian_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
         kernel(gbl.J_nzval, gbl.z, gbl.p, gt.online,
                gt.diff_ptr, gt.alg_ptr, gt.par_ptr, gt.bus, gt.jac_pos,
                gt.has_gov, gt.has_exc,
-               diff_dim, net_ptr, twopi60, M; ndrange=gt.n)
+               diff_dim, net_ptr, twopi60; ndrange=(gt.n, M))
     end
     if ig.n > 0
         kernel = ieesgo_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.p, ig.online,
-               ig.par_ptr, ig.jac_pos, M; ndrange=ig.n)
+               ig.par_ptr, ig.jac_pos; ndrange=(ig.n, M))
     end
     if tg.n > 0
         kernel = tgov1_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.p, tg.online,
-               tg.par_ptr, tg.jac_pos, M; ndrange=tg.n)
+               tg.par_ptr, tg.jac_pos; ndrange=(tg.n, M))
     end
     if sx.n > 0
         kernel = sexs_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.z, gbl.p, sx.online,
-               sx.par_ptr, sx.vr_idx, sx.vs_idx, sx.jac_pos, M; ndrange=sx.n)
+               sx.par_ptr, sx.vr_idx, sx.vs_idx, sx.jac_pos; ndrange=(sx.n, M))
     end
     if ex.n > 0
         kernel = esdc1a_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.z, gbl.p, ex.online,
-               ex.par_ptr, ex.vr_idx, ex.vs_idx, ex.diff_ptr, ex.jac_pos, M; ndrange=ex.n)
+               ex.par_ptr, ex.vr_idx, ex.vs_idx, ex.diff_ptr, ex.jac_pos; ndrange=(ex.n, M))
     end
     if pss.n > 0
         kernel = ieeest_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.z, gbl.p, pss.online,
                pss.par_ptr, pss.diff_ptr, pss.alg_ptr, pss.w_idx, pss.jac_pos,
-               diff_dim, M; ndrange=pss.n)
+               diff_dim; ndrange=(pss.n, M))
     end
     if zt.n > 0
         kernel = zipload_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.z, gbl.p, zt.online,
-               zt.bus, zt.par_ptr, zt.jac_pos, net_ptr, M; ndrange=zt.n)
+               zt.bus, zt.par_ptr, zt.jac_pos, net_ptr; ndrange=(zt.n, M))
     end
     if st.n > 0
         kernel = static_gen_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.z, gbl.p, st.online,
-               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.jac_pos, M; ndrange=st.n)
+               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.jac_pos; ndrange=(st.n, M))
     end
 
     # 4. Event Jacobian: add -1/rfault to bus diagonals for active faults
