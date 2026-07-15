@@ -1974,53 +1974,45 @@ end
 
 # Gather A_k entries from J_nzval[m, :] into A_packed[:, :, batch_idx]
 # for all scenarios m=1..M simultaneously.
-# idx indexes into the flat A_jnz / A_local arrays (one entry per structural nz).
-# M-loop inside kernel to avoid M × n_entries kernel launches.
+# 2D ndrange: (n_entries, M) — idx indexes structural nz, m indexes scenario.
 @kernel function schur_gather_A_ka!(A_packed, J_nzval, A_jnz, A_local,
                                      @Const(wk_sq), @Const(M))
-    idx = @index(Global)
+    idx, m = @index(Global, NTuple)
     @inbounds begin
         jnz = A_jnz[idx]          # J nzval position (1-based)
         encoded = A_local[idx]     # (ki-1)*wk² + local_pos  (1-based)
         ki_m1 = div(encoded - 1, wk_sq)  # 0-based cluster-within-group
         local_pos = encoded - ki_m1 * wk_sq  # 1-based linear index in wk×wk
-        for m in 1:M
-            b = ki_m1 * M + m      # 1-based batch index
-            val = J_nzval[m, jnz]
-            A_packed[local_pos, b] = val  # A_packed viewed as (wk², batch)
-        end
+        b = ki_m1 * M + m      # 1-based batch index
+        A_packed[local_pos, b] = J_nzval[m, jnz]  # A_packed viewed as (wk², batch)
     end
 end
 
 # Gather B_k entries from J_nzval
 @kernel function schur_gather_B_ka!(B_packed, J_nzval, B_jnz, B_local,
                                      @Const(wk_x2), @Const(M))
-    idx = @index(Global)
+    idx, m = @index(Global, NTuple)
     @inbounds begin
         jnz = B_jnz[idx]
         encoded = B_local[idx]     # (ki-1)*wk*2 + local_pos
         ki_m1 = div(encoded - 1, wk_x2)
         local_pos = encoded - ki_m1 * wk_x2
-        for m in 1:M
-            b = ki_m1 * M + m
-            B_packed[local_pos, b] = J_nzval[m, jnz]
-        end
+        b = ki_m1 * M + m
+        B_packed[local_pos, b] = J_nzval[m, jnz]
     end
 end
 
 # Gather C_k entries from J_nzval
 @kernel function schur_gather_C_ka!(C_packed, J_nzval, C_jnz, C_local,
                                      @Const(x2_wk), @Const(M))
-    idx = @index(Global)
+    idx, m = @index(Global, NTuple)
     @inbounds begin
         jnz = C_jnz[idx]
         encoded = C_local[idx]     # (ki-1)*2*wk + local_pos
         ki_m1 = div(encoded - 1, x2_wk)
         local_pos = encoded - ki_m1 * x2_wk
-        for m in 1:M
-            b = ki_m1 * M + m
-            C_packed[local_pos, b] = J_nzval[m, jnz]
-        end
+        b = ki_m1 * M + m
+        C_packed[local_pos, b] = J_nzval[m, jnz]
     end
 end
 
@@ -2102,7 +2094,7 @@ function _schur_extract_and_factor_gpu!(gbl::GpuBatchedLayout)
                      view(gbl.cluster_A_jnz, a_start:a_end),
                      view(gbl.cluster_A_local, a_start:a_end),
                      Int32(wk * wk), Int32(gbl.M);
-                     ndrange=n_a)
+                     ndrange=(n_a, gbl.M))
         end
 
         n_b = gbl.schur_group_B_offsets[g + 1] - gbl.schur_group_B_offsets[g]
@@ -2115,7 +2107,7 @@ function _schur_extract_and_factor_gpu!(gbl::GpuBatchedLayout)
                      view(gbl.cluster_B_jnz, b_start:b_end),
                      view(gbl.cluster_B_local, b_start:b_end),
                      Int32(wk * 2), Int32(gbl.M);
-                     ndrange=n_b)
+                     ndrange=(n_b, gbl.M))
         end
 
         n_c = gbl.schur_group_C_offsets[g + 1] - gbl.schur_group_C_offsets[g]
@@ -2128,7 +2120,7 @@ function _schur_extract_and_factor_gpu!(gbl::GpuBatchedLayout)
                      view(gbl.cluster_C_jnz, c_start:c_end),
                      view(gbl.cluster_C_local, c_start:c_end),
                      Int32(2 * wk), Int32(gbl.M);
-                     ndrange=n_c)
+                     ndrange=(n_c, gbl.M))
         end
 
         KernelAbstractions.synchronize(backend)
@@ -2198,17 +2190,15 @@ end
 # ── Fused kernels: one launch covers ALL clusters in a group ──
 
 # Gather f_wk for ALL clusters in a group, ALL scenarios.
-# ndrange = nc (one thread per cluster), M-loop inside.
+# 2D ndrange: (nc, M) — ki indexes cluster, m indexes scenario.
 @kernel function schur_gather_fwk_fused_ka!(fwk_packed, f, w_start_arr,
                                              @Const(wk), @Const(M))
-    ki = @index(Global)
+    ki, m = @index(Global, NTuple)
     @inbounds begin
         w_start = w_start_arr[ki]
-        for m in 1:M
-            b = (ki - 1) * M + m
-            for j in 1:wk
-                fwk_packed[j, 1, b] = f[m, w_start + j - 1]
-            end
+        b = (ki - 1) * M + m
+        for j in 1:wk
+            fwk_packed[j, 1, b] = f[m, w_start + j - 1]
         end
     end
 end
@@ -2293,7 +2283,7 @@ function _newton_step_schur_cudss_gpu!(
             nc = glu.n_clusters; wk = glu.w_k
             fwk = gbl.schur_fwk_packed[g]
             kernel_fw = schur_gather_fwk_fused_ka!(backend)
-            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=nc)
+            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=(nc, M))
             KernelAbstractions.synchronize(backend)
             CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, fwk, glu.ipiv)
         end
@@ -2401,8 +2391,8 @@ function _newton_step_cudss_gpu!(
         KernelAbstractions.synchronize(backend)
 
         # 5. Batched factorization (all M scenarios at once)
-        cudss_update(gbl.cudss_solver_batched, gbl.cudss_csr.rowPtr,
-                     gbl.cudss_csr.colVal, gbl.csr_nzval_batched)
+        # No cudss_update needed — solver already holds a pointer to
+        # csr_nzval_batched, which the kernel updated in-place above.
         if first_factor
             cudss("factorization", gbl.cudss_solver_batched,
                   gbl.cudss_sol_batched, gbl.cudss_rhs_batched; asynchronous=false)
@@ -2416,7 +2406,8 @@ function _newton_step_cudss_gpu!(
         kernel = _transpose_negate_ka!(backend)
         kernel(gbl.rhs_buf, gbl.f; ndrange=(sys_dim, M))
         KernelAbstractions.synchronize(backend)
-        cudss_update(gbl.cudss_rhs_batched, gbl.rhs_buf)
+        # No cudss_update needed — rhs_batched already holds a pointer to
+        # rhs_buf, which the kernel updated in-place above.
 
         # 7. Batched solve (all M scenarios at once)
         cudss("solve", gbl.cudss_solver_batched,
