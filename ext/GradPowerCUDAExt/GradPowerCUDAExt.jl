@@ -841,47 +841,39 @@ end
 # -----------------------------------------------------------------------
 
 @kernel function uvec_routing_gpu_kernel!(u, z, uvec_idx)
-    j = @index(Global)
+    j, m = @index(Global, NTuple)
     @inbounds begin
         src = uvec_idx[j]
         if src != 0
-            M = size(u, 1)
-            for m in 1:M
-                u[m, j] = z[m, src]
-            end
+            u[m, j] = z[m, src]
         end
     end
 end
 
 # Event Jacobian kernel: adds -1/rfault to diagonal entries for active faults
-@kernel function events_jac_gpu_kernel!(nzval, rfault_arr, status_arr, diag_pos, @Const(M))
-    ei = @index(Global)
+@kernel function events_jac_gpu_kernel!(nzval, rfault_arr, status_arr, diag_pos)
+    ei, m = @index(Global, NTuple)
     @inbounds begin
         if status_arr[ei]
             yfault = 1.0 / rfault_arr[ei]
             vr_pos = diag_pos[2*ei - 1]
             vi_pos = diag_pos[2*ei]
-            for m in 1:M
-                nzval[m, vr_pos] += -yfault
-                nzval[m, vi_pos] += -yfault
-            end
+            nzval[m, vr_pos] += -yfault
+            nzval[m, vi_pos] += -yfault
         end
     end
 end
 
 @kernel function events_fun_gpu_kernel!(f, z, bus_arr, rfault_arr, status_arr, net_ptr)
-    ei = @index(Global)
+    ei, m = @index(Global, NTuple)
     @inbounds begin
         if status_arr[ei]
             bus = bus_arr[ei]
             yfault = 1.0 / rfault_arr[ei]
             vr_col = net_ptr + 2*(bus-1) + 1
             vi_col = vr_col + 1
-            M = size(f, 1)
-            for m in 1:M
-                f[m, vr_col] -= yfault * z[m, vr_col]
-                f[m, vi_col] -= yfault * z[m, vi_col]
-            end
+            f[m, vr_col] -= yfault * z[m, vr_col]
+            f[m, vi_col] -= yfault * z[m, vi_col]
         end
     end
 end
@@ -1048,22 +1040,20 @@ end
 
 # Per-bus injection reduce, batched over M scenarios
 @kernel function bus_injection_reduce_batched_ka!(f, inj, bus_inj_start, bus_inj_list,
-        @Const(nbus), @Const(net_ptr), @Const(M))
-    b = @index(Global)
+        @Const(nbus), @Const(net_ptr))
+    b, m = @index(Global, NTuple)
     @inbounds if b <= nbus
         vr_idx = net_ptr + 2 * (b - 1) + 1
         vi_idx = vr_idx + 1
-        for m in 1:M
-            s_re = zero(eltype(f))
-            s_im = zero(eltype(f))
-            for pos in bus_inj_start[b]:(bus_inj_start[b + 1] - Int32(1))
-                ik = Int(bus_inj_list[pos])
-                s_re += inj[m, 2*ik - 1]
-                s_im += inj[m, 2*ik]
-            end
-            f[m, vr_idx] += s_re
-            f[m, vi_idx] += s_im
+        s_re = zero(eltype(f))
+        s_im = zero(eltype(f))
+        for pos in bus_inj_start[b]:(bus_inj_start[b + 1] - Int32(1))
+            ik = Int(bus_inj_list[pos])
+            s_re += inj[m, 2*ik - 1]
+            s_im += inj[m, 2*ik]
         end
+        f[m, vr_idx] += s_re
+        f[m, vi_idx] += s_im
     end
 end
 
@@ -1171,60 +1161,51 @@ end
 end
 
 # Batched ybus → J_nzval copy (all M scenarios)
-@kernel function ybus_to_jnzval_batched_ka!(nzval, ybus_nzval, ybus_to_jnz, @Const(M))
-    i = @index(Global)
+@kernel function ybus_to_jnzval_batched_ka!(nzval, ybus_nzval, ybus_to_jnz)
+    i, m = @index(Global, NTuple)
     @inbounds begin
         jpos = ybus_to_jnz[i]
         if jpos > 0
-            val = -ybus_nzval[i]
-            for m in 1:M
-                nzval[m, jpos] = val
-            end
+            nzval[m, jpos] = -ybus_nzval[i]
         end
     end
 end
 
 # Batched backward Euler Jacobian scaling
 @kernel function beuler_jac_scale_batched_ka!(nzval, J_colptr, J_rowval, is_diff,
-        @Const(n_da), @Const(sys_dim), @Const(dt), @Const(M))
-    col = @index(Global)
+        @Const(n_da), @Const(sys_dim), @Const(dt))
+    col, m = @index(Global, NTuple)
     @inbounds for nz_idx in J_colptr[col]:(J_colptr[col+1]-1)
         row = J_rowval[nz_idx]
         if row <= n_da && is_diff[row]
-            for m in 1:M
-                nzval[m, nz_idx] *= -dt
-                if row == col
-                    nzval[m, nz_idx] += 1.0
-                end
+            nzval[m, nz_idx] *= -dt
+            if row == col
+                nzval[m, nz_idx] += 1.0
             end
         end
     end
 end
 
 @kernel function beuler_jac_scale_simple_batched_ka!(nzval, J_colptr, J_rowval,
-        @Const(diff_dim), @Const(sys_dim), @Const(dt), @Const(M))
-    col = @index(Global)
+        @Const(diff_dim), @Const(sys_dim), @Const(dt))
+    col, m = @index(Global, NTuple)
     @inbounds for nz_idx in J_colptr[col]:(J_colptr[col+1]-1)
         row = J_rowval[nz_idx]
         if row <= diff_dim
-            for m in 1:M
-                nzval[m, nz_idx] *= -dt
-                if row == col
-                    nzval[m, nz_idx] += 1.0
-                end
+            nzval[m, nz_idx] *= -dt
+            if row == col
+                nzval[m, nz_idx] += 1.0
             end
         end
     end
 end
 
 # Batched backward Euler diff residual scaling
-@kernel function beuler_diff_batched_ka!(f, z, zold, diff_indices, @Const(dt), @Const(M))
-    idx = @index(Global)
+@kernel function beuler_diff_batched_ka!(f, z, zold, diff_indices, @Const(dt))
+    idx, m = @index(Global, NTuple)
     @inbounds begin
         i = diff_indices[idx]
-        for m in 1:M
-            f[m, i] = z[m, i] - zold[m, i] - dt * f[m, i]
-        end
+        f[m, i] = z[m, i] - zold[m, i] - dt * f[m, i]
     end
 end
 
@@ -1275,10 +1256,10 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
         end
     end
 
-    # 3. uvec routing (one kernel, M-loop inside)
+    # 3. uvec routing (2D: one thread per (uvec_slot, scenario))
     if length(gbl.uvec_idx) > 0
         kernel = uvec_routing_gpu_kernel!(backend)
-        kernel(gbl.u, gbl.z, gbl.uvec_idx; ndrange=length(gbl.uvec_idx))
+        kernel(gbl.u, gbl.z, gbl.uvec_idx; ndrange=(length(gbl.uvec_idx), M))
     end
 
     # 4. Device residual kernels — one launch per device type
@@ -1332,7 +1313,7 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
     if n_total > 0
         kernel = bus_injection_reduce_batched_ka!(backend)
         kernel(gbl.f, gbl.inj, gbl.bus_inj_start, gbl.bus_inj_list,
-               gbl.nbus, net_ptr, M; ndrange=gbl.nbus)
+               gbl.nbus, net_ptr; ndrange=(gbl.nbus, M))
     end
 
     # 6. Events — update status from CPU (O(n_events), small)
@@ -1342,7 +1323,7 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
         copyto!(gbl.event_status, CuVector(status_cpu))
         kernel = events_fun_gpu_kernel!(backend)
         kernel(gbl.f, gbl.z, gbl.event_bus, gbl.event_rfault, gbl.event_status, net_ptr;
-               ndrange=length(events))
+               ndrange=(length(events), M))
     end
 
     KernelAbstractions.synchronize(backend)
@@ -1380,7 +1361,7 @@ function _jacobian_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
     # 2. Copy −ybus into J_nzval (all M scenarios)
     if ybus_nnz > 0
         kernel = ybus_to_jnzval_batched_ka!(backend)
-        kernel(gbl.J_nzval, gbl.ybus_nzval_gpu, gbl.ybus_to_jnz, M; ndrange=ybus_nnz)
+        kernel(gbl.J_nzval, gbl.ybus_nzval_gpu, gbl.ybus_to_jnz; ndrange=(ybus_nnz, M))
     end
 
     # 3. Device Jacobians — one launch per type
@@ -1435,7 +1416,7 @@ function _jacobian_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
         copyto!(gbl.event_status, CuVector(status_cpu))
         kernel = events_jac_gpu_kernel!(backend)
         kernel(gbl.J_nzval, gbl.event_rfault, gbl.event_status,
-               gbl.event_jac_diag_pos, M; ndrange=length(events))
+               gbl.event_jac_diag_pos; ndrange=(length(events), M))
     end
 
     KernelAbstractions.synchronize(backend)
@@ -1453,8 +1434,8 @@ function _beuler_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerS
     if gbl.diff_indices !== nothing
         backend = CUDABackend()
         kernel = beuler_diff_batched_ka!(backend)
-        kernel(gbl.f, gbl.z, gbl.zold, gbl.diff_indices, dt, gbl.M;
-               ndrange=length(gbl.diff_indices))
+        kernel(gbl.f, gbl.z, gbl.zold, gbl.diff_indices, dt;
+               ndrange=(length(gbl.diff_indices), gbl.M))
         KernelAbstractions.synchronize(backend)
     else
         f_cpu = Array(gbl.f)
@@ -1481,11 +1462,11 @@ function _beuler_jac_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Po
         n_da = length(is_diff)
         kernel = beuler_jac_scale_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.J_colptr, gbl.J_rowval, gbl.is_diff,
-               n_da, sys_dim, dt, gbl.M; ndrange=sys_dim)
+               n_da, sys_dim, dt; ndrange=(sys_dim, gbl.M))
     else
         kernel = beuler_jac_scale_simple_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.J_colptr, gbl.J_rowval,
-               gbl.diff_dim, sys_dim, dt, gbl.M; ndrange=sys_dim)
+               gbl.diff_dim, sys_dim, dt; ndrange=(sys_dim, gbl.M))
     end
     KernelAbstractions.synchronize(backend)
     return nothing
@@ -2342,11 +2323,9 @@ function _newton_step_schur_cudss_gpu!(
 end
 
 # Copy z[m, :] into z_hist[:, m, step] on GPU (one kernel, no download)
-@kernel function snapshot_z_ka!(z_hist, z, @Const(step), @Const(M))
-    j = @index(Global)  # state index
-    @inbounds for m in 1:M
-        z_hist[j, m, step] = z[m, j]
-    end
+@kernel function snapshot_z_ka!(z_hist, z, @Const(step))
+    j, m = @index(Global, NTuple)
+    @inbounds z_hist[j, m, step] = z[m, j]
 end
 
 # -----------------------------------------------------------------------
@@ -2473,7 +2452,7 @@ function integrate_gpu_cudss!(
     z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
     backend = CUDABackend()
     snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1, M; ndrange=sys_dim)
+    snap(z_hist, gbl.z, 1; ndrange=(sys_dim, M))
     KernelAbstractions.synchronize(backend)
 
     copyto!(gbl.zold, gbl.z)
@@ -2485,7 +2464,7 @@ function integrate_gpu_cudss!(
         _newton_step_cudss_gpu!(gbl, dyn, L, dt; tol = newton_tol)
 
         # Trajectory snapshot — GPU to GPU, no download
-        snap(z_hist, gbl.z, k + 1, M; ndrange=sys_dim)
+        snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
         KernelAbstractions.synchronize(backend)
 
         any_event = false
@@ -2557,7 +2536,7 @@ function integrate_gpu_schur_cudss!(
     z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
     backend = CUDABackend()
     snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1, M; ndrange=sys_dim)
+    snap(z_hist, gbl.z, 1; ndrange=(sys_dim, M))
     KernelAbstractions.synchronize(backend)
 
     copyto!(gbl.zold, gbl.z)
@@ -2569,7 +2548,7 @@ function integrate_gpu_schur_cudss!(
         _newton_step_schur_cudss_gpu!(gbl, dyn, L, dt; tol=newton_tol)
 
         # Trajectory snapshot — GPU to GPU, no download
-        snap(z_hist, gbl.z, k + 1, M; ndrange=sys_dim)
+        snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
         KernelAbstractions.synchronize(backend)
 
         any_event = false
@@ -2635,7 +2614,7 @@ function integrate_gpu_cudss_batched!(
     z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
     backend = CUDABackend()
     snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1, M; ndrange=sys_dim)
+    snap(z_hist, gbl.z, 1; ndrange=(sys_dim, M))
     KernelAbstractions.synchronize(backend)
 
     copyto!(gbl.zold, gbl.z)
@@ -2646,7 +2625,7 @@ function integrate_gpu_cudss_batched!(
 
         _newton_step_cudss_gpu!(gbl, dyn, L, dt; tol=newton_tol)
 
-        snap(z_hist, gbl.z, k + 1, M; ndrange=sys_dim)
+        snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
         KernelAbstractions.synchronize(backend)
 
         any_event = false
