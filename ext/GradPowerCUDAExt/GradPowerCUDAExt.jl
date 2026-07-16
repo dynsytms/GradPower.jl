@@ -419,6 +419,29 @@ struct GpuBatchedLayout
     schur_w_start_gpu::Vector{CuVector{Int}}           # per group: w_start for each cluster
     schur_vr_l_gpu::Vector{CuVector{Int}}              # per group: reduced vr index
     schur_vi_l_gpu::Vector{CuVector{Int}}              # per group: reduced vi index
+    # Shared-factor Schur solver (one P factorization, multi-RHS solve)
+    sf_P_solver::Union{Nothing, CudssSolver{Float64, Int32}}
+    sf_P_csr_nzval::Union{Nothing, CuVector{Float64}}        # P's CSR nzval
+    sf_P_rhs::Union{Nothing, CuMatrix{Float64}}              # (n_red, M) multi-RHS
+    sf_P_sol::Union{Nothing, CuMatrix{Float64}}              # (n_red, M) solution
+    sf_P_factored::Ref{Bool}
+    # Woodbury rank-2 correction for bus faults
+    sf_W::Union{Nothing, CuMatrix{Float64}}                  # (n_red, 2) — P⁻¹ U
+    sf_H_inv::Union{Nothing, CuMatrix{Float64}}              # (2, 2)
+    sf_woodbury_s::Union{Nothing, CuMatrix{Float64}}         # (2, M) scratch
+    sf_fault_vr_l::Int
+    sf_fault_vi_l::Int
+    sf_woodbury_active::Ref{Bool}
+    # Per-scenario Woodbury (Phase 4 — different fault per scenario)
+    sf_W_multi::Union{Nothing, CuMatrix{Float64}}            # (n_red, 2*M) — P⁻¹ U per scenario
+    sf_H_inv_multi::Union{Nothing, CuArray{Float64, 3}}      # (2, 2, M)
+    sf_fault_vr_l_gpu::Union{Nothing, CuVector{Int}}         # (M,) reduced vr index per scenario
+    sf_fault_vi_l_gpu::Union{Nothing, CuVector{Int}}         # (M,) reduced vi index per scenario
+    sf_fault_bus_gpu::Union{Nothing, CuVector{Int}}           # (M,) fault bus per scenario
+    sf_fault_rfault_gpu::Union{Nothing, CuVector{Float64}}    # (M,) fault impedance per scenario
+    sf_fault_active_gpu::Union{Nothing, CuVector{Bool}}       # (M,) per-scenario fault status
+    # CPU copy of global-to-reduced mapping (for Woodbury precomputation)
+    g2r_cpu::Vector{Int}
     # cuDSS monolithic direct solver (phase 14c) — single scenario (legacy)
     cudss_solver::Union{Nothing, CudssSolver{Float64, Int32}}
     cudss_csr::Union{Nothing, CuSparseMatrixCSR{Float64, Int32}}  # persistent CSR shell
@@ -805,6 +828,26 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
         push!(schur_vi_l_gpu_v, CuVector([br[2] for br in bus_red]))
     end
 
+    # --- Shared-factor Schur solver setup ---
+    sf_P_csr_nzval_v = CUDA.zeros(Float64, S_nnz_csr)
+    sf_P_solver_v = CudssSolver(cudss_S_csr_v.rowPtr, cudss_S_csr_v.colVal,
+                                 sf_P_csr_nzval_v, "G", 'F')
+    cudss("analysis", sf_P_solver_v, _tmp_sx, _tmp_sb)
+    sf_P_rhs_v = CUDA.zeros(Float64, n_red, M)
+    sf_P_sol_v = CUDA.zeros(Float64, n_red, M)
+    sf_W_v = CUDA.zeros(Float64, n_red, 2)
+    sf_H_inv_v = CUDA.zeros(Float64, 2, 2)
+    sf_woodbury_s_v = CUDA.zeros(Float64, 2, M)
+    # Per-scenario Woodbury (Phase 4)
+    sf_W_multi_v = CUDA.zeros(Float64, n_red, 2 * M)
+    sf_H_inv_multi_v = CUDA.zeros(Float64, 2, 2, M)
+    sf_fault_vr_l_gpu_v = CUDA.zeros(Int, M)
+    sf_fault_vi_l_gpu_v = CUDA.zeros(Int, M)
+    sf_fault_bus_gpu_v = CUDA.zeros(Int, M)
+    sf_fault_rfault_gpu_v = CUDA.zeros(Float64, M)
+    sf_fault_active_gpu_v = CUDA.zeros(Bool, M)
+    g2r_cpu_v = copy(sw_tmp.global_to_reduced)
+
     # --- cuDSS monolithic direct solver setup ---
     # Build CSC→CSR nzval permutation (computed once, fixed sparsity)
     nnz_J = length(bl_cpu.J_rowval)
@@ -885,6 +928,15 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
                              S_csr_nzval_batched_v, solver_S_b,
                              cudss_S_rhs_b_wrap, cudss_S_sol_b_wrap, S_sol_buf_v,
                              schur_w_start_gpu_v, schur_vr_l_gpu_v, schur_vi_l_gpu_v,
+                             sf_P_solver_v, sf_P_csr_nzval_v,
+                             sf_P_rhs_v, sf_P_sol_v, Ref(false),
+                             sf_W_v, sf_H_inv_v, sf_woodbury_s_v,
+                             0, 0, Ref(false),
+                             sf_W_multi_v, sf_H_inv_multi_v,
+                             sf_fault_vr_l_gpu_v, sf_fault_vi_l_gpu_v,
+                             sf_fault_bus_gpu_v, sf_fault_rfault_gpu_v,
+                             sf_fault_active_gpu_v,
+                             g2r_cpu_v,
                              cudss_solver, cudss_csr, csc_to_csr_perm,
                              cudss_rhs, cudss_sol,
                              csr_nzval_batched, solver_batched,
@@ -2399,6 +2451,590 @@ end
             z[m, w_start + j - 1] += dw
         end
     end
+end
+
+# -----------------------------------------------------------------------
+# Shared-factor Schur solver: kernels and helpers
+# -----------------------------------------------------------------------
+
+@kernel function csc_to_csr_single_ka!(csr_nz, csc_nz, perm)
+    i = @index(Global)
+    @inbounds csr_nz[i] = csc_nz[perm[i]]
+end
+
+@kernel function woodbury_dots_ka!(s_buf, sol, H_inv, @Const(vr_l), @Const(vi_l))
+    m = @index(Global)
+    @inbounds begin
+        t1 = sol[vr_l, m]; t2 = sol[vi_l, m]
+        s_buf[1, m] = H_inv[1, 1] * t1 + H_inv[1, 2] * t2
+        s_buf[2, m] = H_inv[2, 1] * t1 + H_inv[2, 2] * t2
+    end
+end
+
+@kernel function woodbury_update_ka!(sol, W, s_buf)
+    i, m = @index(Global, NTuple)
+    @inbounds sol[i, m] -= W[i, 1] * s_buf[1, m] + W[i, 2] * s_buf[2, m]
+end
+
+function _factor_shared_P_gpu!(
+    gbl::GpuBatchedLayout,
+    dyn::GradPower.PowerSystemDynamics,
+    L::GradPower.SimulationLayout,
+    dt::Float64,
+)
+    backend = CUDABackend()
+    S_nnz = gbl.S_nnz
+    n_red = gbl.S_n
+
+    _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
+    _schur_extract_and_factor_gpu!(gbl)
+    _schur_assemble_S_gpu!(gbl, 1)
+
+    kernel = csc_to_csr_single_ka!(backend)
+    kernel(gbl.sf_P_csr_nzval, gbl.S_nzval_gpu, gbl.csc_to_csr_perm_S;
+           ndrange=length(gbl.csc_to_csr_perm_S))
+    KernelAbstractions.synchronize(backend)
+
+    _tmp_x = CUDA.zeros(Float64, n_red)
+    _tmp_b = CUDA.zeros(Float64, n_red)
+    cudss("factorization", gbl.sf_P_solver, _tmp_x, _tmp_b; asynchronous=false)
+    gbl.sf_P_factored[] = true
+    return nothing
+end
+
+function _precompute_woodbury_gpu!(
+    gbl::GpuBatchedLayout,
+    fault_bus::Int,
+    rfault::Float64,
+)
+    n_red = gbl.S_n
+    net_ptr = gbl.diff_dim + gbl.alg_dim
+    vr_g = net_ptr + 2 * (fault_bus - 1) + 1
+    vi_g = vr_g + 1
+    vr_l = gbl.g2r_cpu[vr_g]
+    vi_l = gbl.g2r_cpu[vi_g]
+
+    rhs = CUDA.zeros(Float64, n_red, 2)
+    CUDA.@allowscalar rhs[vr_l, 1] = 1.0
+    CUDA.@allowscalar rhs[vi_l, 2] = 1.0
+    W_gpu = CUDA.zeros(Float64, n_red, 2)
+    cudss("solve", gbl.sf_P_solver, W_gpu, rhs; asynchronous=false)
+
+    W_cpu = Array(W_gpu)
+    H = [-rfault + W_cpu[vr_l, 1]  W_cpu[vr_l, 2];
+          W_cpu[vi_l, 1]           -rfault + W_cpu[vi_l, 2]]
+    H_inv_cpu = inv(H)
+
+    copyto!(gbl.sf_W, W_gpu)
+    copyto!(gbl.sf_H_inv, CuMatrix(H_inv_cpu))
+    # Store reduced indices (struct is immutable, but these are used via the Ref pattern)
+    # We pass them as kernel arguments instead
+    return (vr_l, vi_l)
+end
+
+# -----------------------------------------------------------------------
+# Shared-factor Newton step
+# -----------------------------------------------------------------------
+
+function _newton_step_shared_gpu!(
+    gbl::GpuBatchedLayout,
+    dyn::GradPower.PowerSystemDynamics,
+    L::GradPower.SimulationLayout,
+    dt::Float64,
+    sf_vr_l::Int,
+    sf_vi_l::Int;
+    itermax::Int = 30,
+    tol::Float64 = 1e-10,
+)
+    M       = gbl.M
+    sys_dim = gbl.sys_dim
+    n_red   = gbl.S_n
+    backend = CUDABackend()
+
+    f_flat = reshape(gbl.f, :)
+    tol_l2 = tol * sqrt(Float64(sys_dim * M))
+
+    for iter in 1:itermax
+        _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
+
+        norm_f = CUDA.CUBLAS.nrm2(f_flat)
+        norm_f < tol_l2 && return true
+
+        _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
+        _schur_extract_and_factor_gpu!(gbl)
+
+        for (g, glu) in enumerate(gbl.schur_batched_lus)
+            nc = glu.n_clusters; wk = glu.w_k
+            fwk = gbl.schur_fwk_packed[g]
+            kernel_fw = schur_gather_fwk_fused_ka!(backend)
+            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=(nc, M))
+            KernelAbstractions.synchronize(backend)
+            CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, fwk, glu.ipiv)
+        end
+
+        kernel_rhs = schur_gather_rhs_batched_ka!(backend)
+        kernel_rhs(gbl.schur_rhs_batched, gbl.f, gbl.reduced_idx_gpu;
+                   ndrange=(n_red, M))
+        KernelAbstractions.synchronize(backend)
+
+        for (g, glu) in enumerate(gbl.schur_batched_lus)
+            nc = glu.n_clusters; wk = glu.w_k
+            kernel_acc = schur_accum_Ck_fwk_batched_ka!(backend)
+            kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
+                       gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
+                       wk, M; ndrange=(nc, M))
+        end
+        KernelAbstractions.synchronize(backend)
+
+        CUDA.CUBLAS.scal!(n_red * M, -1.0, gbl.schur_rhs_batched)
+
+        copyto!(gbl.sf_P_rhs, gbl.schur_rhs_batched)
+        cudss("solve", gbl.sf_P_solver, gbl.sf_P_sol, gbl.sf_P_rhs; asynchronous=false)
+
+        if gbl.sf_woodbury_active[]
+            k1 = woodbury_dots_ka!(backend)
+            k1(gbl.sf_woodbury_s, gbl.sf_P_sol, gbl.sf_H_inv,
+               sf_vr_l, sf_vi_l; ndrange=M)
+            KernelAbstractions.synchronize(backend)
+            k2 = woodbury_update_ka!(backend)
+            k2(gbl.sf_P_sol, gbl.sf_W, gbl.sf_woodbury_s;
+               ndrange=(n_red, M))
+            KernelAbstractions.synchronize(backend)
+        end
+
+        kernel_dv = schur_scatter_dv_batched_ka!(backend)
+        kernel_dv(gbl.z, gbl.sf_P_sol, gbl.reduced_idx_gpu; ndrange=(n_red, M))
+        KernelAbstractions.synchronize(backend)
+
+        for (g, glu) in enumerate(gbl.schur_batched_lus)
+            nc = glu.n_clusters; wk = glu.w_k
+            kernel_bs = schur_backsub_batched_ka!(backend)
+            kernel_bs(gbl.z, gbl.schur_fwk_packed[g], glu.B_packed, gbl.sf_P_sol,
+                      gbl.schur_w_start_gpu[g], gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
+                      wk, M; ndrange=(nc, M))
+        end
+        KernelAbstractions.synchronize(backend)
+    end
+
+    return false
+end
+
+# -----------------------------------------------------------------------
+# integrate_gpu_shared! — shared-factor Schur with Woodbury
+# -----------------------------------------------------------------------
+
+function integrate_gpu_shared!(
+    gbl::GpuBatchedLayout,
+    ps::GradPower.PowerSystem,
+    tf::Float64;
+    dt::Float64 = 1.0 / 120.0,
+    newton_tol::Float64 = 1e-10,
+)
+    dyn     = ps.dynamic::GradPower.PowerSystemDynamics
+    L       = dyn.layout::GradPower.SimulationLayout
+    M       = gbl.M
+    sys_dim = gbl.sys_dim
+
+    nsteps = Int(round(tf / dt))
+    tvec   = collect(0:dt:tf)
+
+    events = dyn.events
+    event_schedule = Tuple{Int,Int,Symbol}[]
+    for (ei, ev) in enumerate(events)
+        push!(event_schedule, (Int(round(ev.ton / dt)), ei, :on))
+        push!(event_schedule, (Int(round(ev.toff / dt)), ei, :off))
+    end
+    sort!(event_schedule, by = x -> x[1])
+
+    z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
+    backend = CUDABackend()
+    snap = snapshot_z_ka!(backend)
+    snap(z_hist, gbl.z, 1; ndrange=(sys_dim, M))
+    KernelAbstractions.synchronize(backend)
+
+    copyto!(gbl.zold, gbl.z)
+
+    _factor_shared_P_gpu!(gbl, dyn, L, dt)
+
+    sf_vr_l = 0
+    sf_vi_l = 0
+    if !isempty(events)
+        ev = events[1]
+        sf_vr_l, sf_vi_l = _precompute_woodbury_gpu!(gbl, ev.bus, ev.rfault)
+    end
+
+    sched_idx = 1
+    for k in 1:nsteps
+        copyto!(gbl.zold, gbl.z)
+
+        _newton_step_shared_gpu!(gbl, dyn, L, dt, sf_vr_l, sf_vi_l; tol = newton_tol)
+
+        snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
+        KernelAbstractions.synchronize(backend)
+
+        any_event = false
+        while sched_idx <= length(event_schedule) && event_schedule[sched_idx][1] == k
+            _, idx, action = event_schedule[sched_idx]
+            if action === :on
+                GradPower.activate!(events[idx])
+                gbl.sf_woodbury_active[] = true
+            elseif action === :off
+                GradPower.deactivate!(events[idx])
+                gbl.sf_woodbury_active[] = false
+            end
+            any_event = true
+            sched_idx += 1
+        end
+
+        if any_event
+            for (ei, ev) in enumerate(events)
+                CUDA.@allowscalar gbl.event_status[ei] = ev.status
+            end
+            copyto!(gbl.zold, gbl.z)
+            _newton_step_shared_gpu!(gbl, dyn, L, 0.0, sf_vr_l, sf_vi_l; tol = newton_tol)
+        end
+    end
+
+    for event in events
+        GradPower.deactivate!(event)
+    end
+
+    z_hist_cpu = Array(z_hist)
+    trajs = [z_hist_cpu[:, m, :] for m in 1:M]
+
+    return tvec, trajs
+end
+
+# -----------------------------------------------------------------------
+# Phase 4: Per-scenario Woodbury — different fault per scenario
+# -----------------------------------------------------------------------
+
+@kernel function events_fun_per_scenario_ka!(f, z, fault_bus, fault_rfault,
+                                              fault_active, @Const(net_ptr))
+    m = @index(Global)
+    @inbounds begin
+        if fault_active[m]
+            bus = fault_bus[m]
+            yfault = 1.0 / fault_rfault[m]
+            vr_col = net_ptr + 2 * (bus - 1) + 1
+            vi_col = vr_col + 1
+            f[m, vr_col] -= yfault * z[m, vr_col]
+            f[m, vi_col] -= yfault * z[m, vi_col]
+        end
+    end
+end
+
+@kernel function events_jac_per_scenario_ka!(nzval, fault_rfault, fault_active,
+                                              fault_jac_vr_pos, fault_jac_vi_pos)
+    m = @index(Global)
+    @inbounds begin
+        if fault_active[m]
+            yfault = 1.0 / fault_rfault[m]
+            nzval[m, fault_jac_vr_pos[m]] += -yfault
+            nzval[m, fault_jac_vi_pos[m]] += -yfault
+        end
+    end
+end
+
+@kernel function woodbury_dots_multi_ka!(s_buf, sol, H_inv_multi,
+                                          fault_vr_l, fault_vi_l, fault_active)
+    m = @index(Global)
+    @inbounds begin
+        if fault_active[m]
+            t1 = sol[fault_vr_l[m], m]
+            t2 = sol[fault_vi_l[m], m]
+            s_buf[1, m] = H_inv_multi[1, 1, m] * t1 + H_inv_multi[1, 2, m] * t2
+            s_buf[2, m] = H_inv_multi[2, 1, m] * t1 + H_inv_multi[2, 2, m] * t2
+        else
+            s_buf[1, m] = 0.0
+            s_buf[2, m] = 0.0
+        end
+    end
+end
+
+@kernel function woodbury_update_multi_ka!(sol, W_multi, s_buf, @Const(M))
+    i, m = @index(Global, NTuple)
+    @inbounds begin
+        c1 = 2 * (m - 1) + 1
+        c2 = c1 + 1
+        sol[i, m] -= W_multi[i, c1] * s_buf[1, m] + W_multi[i, c2] * s_buf[2, m]
+    end
+end
+
+"""
+    _precompute_woodbury_multi_gpu!(gbl, fault_buses, rfaults)
+
+Precompute per-scenario Woodbury columns for M scenarios with different
+fault buses. Solves P [W_1 | ... | W_M] = [U_1 | ... | U_M] in one
+multi-RHS cuDSS call (2M columns).
+"""
+function _precompute_woodbury_multi_gpu!(
+    gbl::GpuBatchedLayout,
+    fault_buses::Vector{Int},
+    rfaults::Vector{Float64},
+)
+    M = gbl.M
+    n_red = gbl.S_n
+    net_ptr = gbl.diff_dim + gbl.alg_dim
+    g2r = gbl.g2r_cpu
+
+    vr_ls = zeros(Int, M)
+    vi_ls = zeros(Int, M)
+    rhs_cpu = zeros(Float64, n_red, 2 * M)
+
+    for m in 1:M
+        bus = fault_buses[m]
+        vr_g = net_ptr + 2 * (bus - 1) + 1
+        vi_g = vr_g + 1
+        vr_ls[m] = g2r[vr_g]
+        vi_ls[m] = g2r[vi_g]
+        rhs_cpu[vr_ls[m], 2*(m-1) + 1] = 1.0
+        rhs_cpu[vi_ls[m], 2*(m-1) + 2] = 1.0
+    end
+
+    rhs_gpu = CuMatrix(rhs_cpu)
+    W_gpu = CUDA.zeros(Float64, n_red, 2 * M)
+    cudss("solve", gbl.sf_P_solver, W_gpu, rhs_gpu; asynchronous=false)
+
+    W_cpu = Array(W_gpu)
+
+    H_inv_cpu = zeros(Float64, 2, 2, M)
+    for m in 1:M
+        vr_l = vr_ls[m]; vi_l = vi_ls[m]
+        c1 = 2*(m-1) + 1; c2 = c1 + 1
+        rf = rfaults[m]
+        H = [-rf + W_cpu[vr_l, c1]  W_cpu[vr_l, c2];
+              W_cpu[vi_l, c1]        -rf + W_cpu[vi_l, c2]]
+        H_inv_cpu[:, :, m] .= inv(H)
+    end
+
+    copyto!(gbl.sf_W_multi, W_gpu)
+    copyto!(gbl.sf_H_inv_multi, CuArray(H_inv_cpu))
+    copyto!(gbl.sf_fault_vr_l_gpu, CuVector(vr_ls))
+    copyto!(gbl.sf_fault_vi_l_gpu, CuVector(vi_ls))
+    copyto!(gbl.sf_fault_bus_gpu, CuVector(fault_buses))
+    copyto!(gbl.sf_fault_rfault_gpu, CuVector(rfaults))
+
+    return nothing
+end
+
+"""
+    _precompute_per_scenario_jac_diag!(gbl, fault_buses)
+
+For each scenario, find the J_nzval position of the Jacobian diagonal entries
+at the fault bus (vr,vr) and (vi,vi). Needed for `events_jac_per_scenario_ka!`.
+"""
+function _precompute_per_scenario_jac_diag!(gbl::GpuBatchedLayout, fault_buses::Vector{Int})
+    M = gbl.M
+    net_ptr = gbl.diff_dim + gbl.alg_dim
+    J_colptr_cpu = Array(gbl.J_colptr)
+    J_rowval_cpu = Array(gbl.J_rowval)
+
+    vr_pos = zeros(Int32, M)
+    vi_pos = zeros(Int32, M)
+    for m in 1:M
+        bus = fault_buses[m]
+        vr_col = net_ptr + 2*(bus-1) + 1
+        vi_col = vr_col + 1
+        for nz in J_colptr_cpu[vr_col]:(J_colptr_cpu[vr_col+1]-1)
+            if J_rowval_cpu[nz] == vr_col
+                vr_pos[m] = Int32(nz); break
+            end
+        end
+        for nz in J_colptr_cpu[vi_col]:(J_colptr_cpu[vi_col+1]-1)
+            if J_rowval_cpu[nz] == vi_col
+                vi_pos[m] = Int32(nz); break
+            end
+        end
+    end
+    return CuVector(vr_pos), CuVector(vi_pos)
+end
+
+function _newton_step_shared_multi_gpu!(
+    gbl::GpuBatchedLayout,
+    dyn::GradPower.PowerSystemDynamics,
+    L::GradPower.SimulationLayout,
+    dt::Float64,
+    fault_jac_vr_pos::CuVector{Int32},
+    fault_jac_vi_pos::CuVector{Int32};
+    itermax::Int = 30,
+    tol::Float64 = 1e-10,
+)
+    M       = gbl.M
+    sys_dim = gbl.sys_dim
+    n_red   = gbl.S_n
+    net_ptr = gbl.diff_dim + gbl.alg_dim
+    backend = CUDABackend()
+
+    f_flat = reshape(gbl.f, :)
+    tol_l2 = tol * sqrt(Float64(sys_dim * M))
+
+    for iter in 1:itermax
+        # 1. Residual + backward Euler
+        _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
+        # Apply per-scenario fault to residual
+        kernel_ev = events_fun_per_scenario_ka!(backend)
+        kernel_ev(gbl.f, gbl.z, gbl.sf_fault_bus_gpu, gbl.sf_fault_rfault_gpu,
+                  gbl.sf_fault_active_gpu, net_ptr; ndrange=M)
+        KernelAbstractions.synchronize(backend)
+
+        # 2. Convergence
+        norm_f = CUDA.CUBLAS.nrm2(f_flat)
+        norm_f < tol_l2 && return true
+
+        # 3. Jacobian + backward Euler
+        _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
+        # Apply per-scenario fault to Jacobian
+        kernel_ej = events_jac_per_scenario_ka!(backend)
+        kernel_ej(gbl.J_nzval, gbl.sf_fault_rfault_gpu, gbl.sf_fault_active_gpu,
+                  fault_jac_vr_pos, fault_jac_vi_pos; ndrange=M)
+        KernelAbstractions.synchronize(backend)
+
+        # 4. A/B/C extract + factor
+        _schur_extract_and_factor_gpu!(gbl)
+
+        # 4b. f_wk gather + A⁻¹ f_wk
+        for (g, glu) in enumerate(gbl.schur_batched_lus)
+            nc = glu.n_clusters; wk = glu.w_k
+            fwk = gbl.schur_fwk_packed[g]
+            kernel_fw = schur_gather_fwk_fused_ka!(backend)
+            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=(nc, M))
+            KernelAbstractions.synchronize(backend)
+            CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, fwk, glu.ipiv)
+        end
+
+        # 5b. Gather reduced RHS
+        kernel_rhs = schur_gather_rhs_batched_ka!(backend)
+        kernel_rhs(gbl.schur_rhs_batched, gbl.f, gbl.reduced_idx_gpu;
+                   ndrange=(n_red, M))
+        KernelAbstractions.synchronize(backend)
+
+        # 5c. Subtract C_k A⁻¹ f_wk
+        for (g, glu) in enumerate(gbl.schur_batched_lus)
+            nc = glu.n_clusters; wk = glu.w_k
+            kernel_acc = schur_accum_Ck_fwk_batched_ka!(backend)
+            kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
+                       gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
+                       wk, M; ndrange=(nc, M))
+        end
+        KernelAbstractions.synchronize(backend)
+
+        # 5d. Negate
+        CUDA.CUBLAS.scal!(n_red * M, -1.0, gbl.schur_rhs_batched)
+
+        # 5e. Multi-RHS solve with frozen P
+        copyto!(gbl.sf_P_rhs, gbl.schur_rhs_batched)
+        cudss("solve", gbl.sf_P_solver, gbl.sf_P_sol, gbl.sf_P_rhs; asynchronous=false)
+
+        # Per-scenario Woodbury correction
+        k1 = woodbury_dots_multi_ka!(backend)
+        k1(gbl.sf_woodbury_s, gbl.sf_P_sol, gbl.sf_H_inv_multi,
+           gbl.sf_fault_vr_l_gpu, gbl.sf_fault_vi_l_gpu,
+           gbl.sf_fault_active_gpu; ndrange=M)
+        KernelAbstractions.synchronize(backend)
+        k2 = woodbury_update_multi_ka!(backend)
+        k2(gbl.sf_P_sol, gbl.sf_W_multi, gbl.sf_woodbury_s, M;
+           ndrange=(n_red, M))
+        KernelAbstractions.synchronize(backend)
+
+        # 5f. Scatter dv
+        kernel_dv = schur_scatter_dv_batched_ka!(backend)
+        kernel_dv(gbl.z, gbl.sf_P_sol, gbl.reduced_idx_gpu; ndrange=(n_red, M))
+        KernelAbstractions.synchronize(backend)
+
+        # 5g. Back-sub
+        for (g, glu) in enumerate(gbl.schur_batched_lus)
+            nc = glu.n_clusters; wk = glu.w_k
+            kernel_bs = schur_backsub_batched_ka!(backend)
+            kernel_bs(gbl.z, gbl.schur_fwk_packed[g], glu.B_packed, gbl.sf_P_sol,
+                      gbl.schur_w_start_gpu[g], gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
+                      wk, M; ndrange=(nc, M))
+        end
+        KernelAbstractions.synchronize(backend)
+    end
+
+    return false
+end
+
+# -----------------------------------------------------------------------
+# integrate_gpu_shared_multi! — per-scenario faults
+# -----------------------------------------------------------------------
+
+"""
+    integrate_gpu_shared_multi!(gbl, ps, tf, fault_buses, rfaults, ton, toff; ...)
+
+GPU integration with shared-factor Schur + per-scenario Woodbury corrections.
+Each scenario gets its own fault bus and impedance, all sharing the same
+fault timing (ton/toff).
+"""
+function integrate_gpu_shared_multi!(
+    gbl::GpuBatchedLayout,
+    ps::GradPower.PowerSystem,
+    tf::Float64,
+    fault_buses::Vector{Int},
+    rfaults::Vector{Float64},
+    ton::Float64,
+    toff::Float64;
+    dt::Float64 = 1.0 / 120.0,
+    newton_tol::Float64 = 1e-10,
+)
+    dyn     = ps.dynamic::GradPower.PowerSystemDynamics
+    L       = dyn.layout::GradPower.SimulationLayout
+    M       = gbl.M
+    sys_dim = gbl.sys_dim
+    @assert length(fault_buses) == M
+    @assert length(rfaults) == M
+
+    nsteps = Int(round(tf / dt))
+    tvec   = collect(0:dt:tf)
+    step_on  = Int(round(ton / dt))
+    step_off = Int(round(toff / dt))
+
+    z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
+    backend = CUDABackend()
+    snap = snapshot_z_ka!(backend)
+    snap(z_hist, gbl.z, 1; ndrange=(sys_dim, M))
+    KernelAbstractions.synchronize(backend)
+
+    copyto!(gbl.zold, gbl.z)
+
+    # Factor P at the initial (pre-fault) state
+    _factor_shared_P_gpu!(gbl, dyn, L, dt)
+
+    # Precompute per-scenario Woodbury columns
+    _precompute_woodbury_multi_gpu!(gbl, fault_buses, rfaults)
+    fault_jac_vr_pos, fault_jac_vi_pos = _precompute_per_scenario_jac_diag!(gbl, fault_buses)
+
+    # All faults start inactive
+    fill!(gbl.sf_fault_active_gpu, false)
+
+    for k in 1:nsteps
+        copyto!(gbl.zold, gbl.z)
+
+        _newton_step_shared_multi_gpu!(gbl, dyn, L, dt,
+            fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
+
+        snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
+        KernelAbstractions.synchronize(backend)
+
+        # Event handling: all scenarios share the same ton/toff
+        if k == step_on
+            fill!(gbl.sf_fault_active_gpu, true)
+            copyto!(gbl.zold, gbl.z)
+            _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
+                fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
+        elseif k == step_off
+            fill!(gbl.sf_fault_active_gpu, false)
+            copyto!(gbl.zold, gbl.z)
+            _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
+                fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
+        end
+    end
+
+    z_hist_cpu = Array(z_hist)
+    trajs = [z_hist_cpu[:, m, :] for m in 1:M]
+
+    return tvec, trajs
 end
 
 """
