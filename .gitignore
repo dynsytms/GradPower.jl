@@ -29,3 +29,12 @@ artifacts/
 regression/
 verify/
 refs/
+
+# Docs generated outside the repo (slides, reports, kernel refs)
+docs/batched_gpu_slides.md
+docs/report.md
+docs/KERNEL_*.md
+docs/KERNEL_*.txt
+docs/README_KERNELS.md
+docs/phase14*.md
+docs/phase14*.html
