@@ -2,6 +2,8 @@
 # All GPU tests guarded by CUDA.functional() — skip gracefully on CPU-only machines.
 # If CUDA/CUDSS packages are not available, all tests are skipped.
 
+using LinearAlgebra, SparseArrays
+
 const HAS_CUDA = try
     @eval using CUDA
     @eval using CUDSS
@@ -215,6 +217,131 @@ end
 
     diff = maximum(abs, f_gpu[1, :] - f_ref)
     @test diff <= 1e-12
+end
+
+# -----------------------------------------------------------------------
+# GPU integration tests — trajectory accuracy against CPU reference
+# -----------------------------------------------------------------------
+
+@testset "integrate_gpu_cudss! accuracy" begin
+    HAS_CUDA || return
+    ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
+
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    GradPower.build_network!(ps); GradPower.runpf!(ps)
+    for d in ps.dynamic.devices
+        if d.dtype isa GradPower.ZIPLoad; d.dtype.α = 0.5; end
+    end
+    dp = GradPower.DynamicProblem(ps)
+    GradPower.initialize_dynamics!(dp, ps)
+    GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 0.02, 0.1, 0.2))
+
+    # CPU batched reference
+    bl = GradPower.BatchedLayout(dp, ps, 1)
+    tvec_cpu, trajs_cpu = GradPower.integrate_batched!(bl, ps, 1.0; dt=1.0/120.0)
+
+    for M in [1, 4]
+        gbl = ext.GpuBatchedLayout(dp, ps, M)
+        tvec_gpu, trajs_gpu = ext.integrate_gpu_cudss!(gbl, ps, 1.0; dt=1.0/120.0)
+        for m in 1:M
+            err = maximum(abs.(trajs_gpu[m] .- trajs_cpu[1]))
+            @test err < 1e-5
+        end
+    end
+end
+
+@testset "integrate_gpu_schur_cudss! accuracy" begin
+    HAS_CUDA || return
+    ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
+
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    GradPower.build_network!(ps); GradPower.runpf!(ps)
+    for d in ps.dynamic.devices
+        if d.dtype isa GradPower.ZIPLoad; d.dtype.α = 0.5; end
+    end
+    dp = GradPower.DynamicProblem(ps)
+    GradPower.initialize_dynamics!(dp, ps)
+    GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 0.02, 0.1, 0.2))
+
+    bl = GradPower.BatchedLayout(dp, ps, 1)
+    tvec_cpu, trajs_cpu = GradPower.integrate_batched!(bl, ps, 1.0; dt=1.0/120.0)
+
+    for M in [1, 4]
+        gbl = ext.GpuBatchedLayout(dp, ps, M)
+        tvec_gpu, trajs_gpu = ext.integrate_gpu_schur_cudss!(gbl, ps, 1.0; dt=1.0/120.0)
+        for m in 1:M
+            err = maximum(abs.(trajs_gpu[m] .- trajs_cpu[1]))
+            @test err < 1e-5
+        end
+    end
+end
+
+@testset "integrate_gpu_shared! accuracy" begin
+    HAS_CUDA || return
+    ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
+
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    GradPower.build_network!(ps); GradPower.runpf!(ps)
+    for d in ps.dynamic.devices
+        if d.dtype isa GradPower.ZIPLoad; d.dtype.α = 0.5; end
+    end
+    dp = GradPower.DynamicProblem(ps)
+    GradPower.initialize_dynamics!(dp, ps)
+    GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 0.02, 0.1, 0.2))
+
+    # Exact Schur GPU as reference (not CPU integrate! which uses different norm)
+    gbl_ref = ext.GpuBatchedLayout(dp, ps, 1)
+    tvec_ref, trajs_ref = ext.integrate_gpu_schur_cudss!(gbl_ref, ps, 1.0; dt=1.0/120.0)
+
+    for M in [1, 4]
+        gbl = ext.GpuBatchedLayout(dp, ps, M)
+        tvec_gpu, trajs_gpu = ext.integrate_gpu_shared!(gbl, ps, 1.0; dt=1.0/120.0)
+        for m in 1:M
+            err = maximum(abs.(trajs_gpu[m] .- trajs_ref[1]))
+            @test err < 1e-4
+        end
+    end
+end
+
+@testset "integrate_gpu_shared_multi! per-scenario faults" begin
+    HAS_CUDA || return
+    ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
+
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    GradPower.build_network!(ps); GradPower.runpf!(ps)
+    for d in ps.dynamic.devices
+        if d.dtype isa GradPower.ZIPLoad; d.dtype.α = 0.5; end
+    end
+    dp = GradPower.DynamicProblem(ps)
+    GradPower.initialize_dynamics!(dp, ps)
+
+    M = 4
+    fault_buses = [1, 2, 3, 4]
+
+    # GPU single-scenario references per fault bus
+    ref_trajs = []
+    for bus in fault_buses
+        empty!(ps.dynamic.events)
+        GradPower.add_event!(ps, GradPower.ContingencyEvent(bus, 0.02, 0.1, 0.2))
+        gbl_one = ext.GpuBatchedLayout(dp, ps, 1)
+        _, tr = ext.integrate_gpu_shared!(gbl_one, ps, 1.0; dt=1.0/120.0)
+        push!(ref_trajs, tr[1])
+    end
+
+    # GPU: all 4 faults in one batched call
+    empty!(ps.dynamic.events)
+    gbl = ext.GpuBatchedLayout(dp, ps, M)
+    tvec_gpu, trajs_gpu = ext.integrate_gpu_shared_multi!(
+        gbl, ps, 1.0, fault_buses, fill(0.02, M), 0.1, 0.2; dt=1.0/120.0)
+
+    for m in 1:M
+        err = maximum(abs.(trajs_gpu[m] .- ref_trajs[m]))
+        @test err < 1e-6
+    end
 end
 
 end # @testset "gpu_backend"
