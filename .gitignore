@@ -29,3 +29,10 @@ artifacts/
 regression/
 verify/
 refs/
+
+# Generated docs (slides, reports)
+docs/batched_gpu_slides.md
+docs/report.md
+
+# Benchmark scripts (local only)
+scripts/bench_*.jl
