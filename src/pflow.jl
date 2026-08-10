@@ -394,7 +394,7 @@ function runpf!(psys::PowerSystem; verbose=false, fdiff=false)
     # compute generation vector
     sgen = copy(psol.sinj)
     for (idx, load) in enumerate(psys.loads)
-        sgen[2*load.bus-1] -= load.pd
+        sgen[2*load.bus-1] += load.pd
         sgen[2*load.bus] -= load.qd
     end
 

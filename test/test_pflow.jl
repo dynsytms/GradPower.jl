@@ -26,3 +26,23 @@
         end
     end
 end
+
+@testset "Slack generation includes local load" begin
+    root = abspath(joinpath(@__DIR__, ".."))
+    ps = GradPower.from_psse(joinpath(root, "examples", "IEEE39.raw"),
+                             joinpath(root, "examples", "IEEE39_gov.dyr"))
+    GradPower.build_network!(ps)
+    GradPower.runpf!(ps)
+
+    slack_bus = findfirst(bus -> bus.type == 3, ps.buses)
+    slack_gen = only(filter(gen -> gen.bus == slack_bus, ps.gens))
+    volt = Float64[]
+    for bus in ps.buses
+        append!(volt, (bus.v0m, bus.v0a))
+    end
+    sinj = zeros(length(volt))
+    GradPower.compute_pinj!(sinj, volt, ps.network.ybus, length(ps.buses))
+    local_pd = sum(load.pd for load in ps.loads if load.bus == slack_bus)
+
+    @test slack_gen.psch ≈ sinj[2 * slack_bus - 1] + local_pd atol=1e-10
+end
