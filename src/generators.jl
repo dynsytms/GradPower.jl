@@ -169,6 +169,8 @@ function initial_guess!(x0::AbstractArray, pvec::AbstractArray, p::Float64, q::F
     T_q0p = pvec[10]
     T_d0dp = pvec[11]
     T_q0dp = pvec[12]
+    S1 = pvec[13]
+    S2 = pvec[14]
 
     vt  = vm * cos(va) + 1im * vm * sin(va)
     ig = (p - 1im*q) / conj(vt)
@@ -188,7 +190,13 @@ function initial_guess!(x0::AbstractArray, pvec::AbstractArray, p::Float64, q::F
     phi_1d =  e_qp - (x_dp - xl)*i_d
     phi_2q =  -e_dp - (x_qp - xl)*i_q
 
-    e_fd = e_qp + (x_d - x_dp)*i_d
+    psi_de = (x_ddp - xl)/(x_dp - xl)*e_qp +
+             (x_dp - x_ddp)/(x_dp - xl)*phi_1d
+    psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
+              (x_qp - x_ddp)/(x_qp - xl)*phi_2q
+    sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
+    Se = _genrou_sat_se(hypot(psi_de, psi_qe), sat_a, sat_b)
+    e_fd = e_qp + (x_d - x_dp)*i_d + Se*psi_de
     p_m = p
 
     x0[1] = e_qp
@@ -252,17 +260,18 @@ function initialize_dynamics!(
     psi_qe = -(x_ddp - xl) / (x_qp - xl) * e_dp +
              (x_qp - x_ddp) / (x_qp - xl) * phi_2q
 
-    # Open-circuit saturation (quadratic): adds -Se*psi_de to the e_qp eq.
+    # Open-circuit saturation acts along both rotor axes.
     sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
     psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
     Se = _genrou_sat_se(psi2, sat_a, sat_b)
+    gqd = (x_q - xl) / (x_d - xl)
 
     # Machine states
     f[1] = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp) * (-e_qp + i_d *
            (x_dp - xl) + phi_1d) / ((x_dp - xl)^2.0)) * (x_d - x_dp) - Se*psi_de) / T_d0p
     f[2] = (-e_dp + (i_q - (-x_qdp + x_qp) * 
            (e_dp + i_q * (x_qp - xl) + phi_2q) / ((x_qp - xl)^2.0)) * 
-           (x_q - x_qp)) / T_q0p
+           (x_q - x_qp) + Se*psi_qe*gqd) / T_q0p
     f[3] = (e_qp - i_d * (x_dp - xl) - phi_1d) / T_d0dp
     f[4] = (-e_dp - i_q * (x_qp - xl) - phi_2q) / T_q0dp
 
@@ -429,12 +438,13 @@ function rhs_diff!(
         sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
         psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
         Se = _genrou_sat_se(psi2, sat_a, sat_b)
+        gqd = (x_q - xl) / (x_d - xl)
 
         # equations
         f_diff[1] = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp)*(-e_qp + i_d*(x_dp - xl)
                     + phi_1d)/((x_dp - xl)^2))*(x_d - x_dp) - Se*psi_de)/T_d0p
         f_diff[2] = (-e_dp + (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl)
-                    + phi_2q)/((x_qp - xl)^2))*(x_q - x_qp))/T_q0p
+                    + phi_2q)/((x_qp - xl)^2))*(x_q - x_qp) + Se*psi_qe*gqd)/T_q0p
         f_diff[3] = ( e_qp - i_d*(x_dp - xl) - phi_1d)/T_d0dp
         f_diff[4] = (-e_dp - i_q*(x_qp - xl) - phi_2q)/T_q0dp
         f_diff[5] = (p_m - D*w - psi_de*i_q + psi_qe*i_d)/(2.0*H)
@@ -477,9 +487,9 @@ function preallocate_jacobian!(
     cols = exciter ? [e_qp, e_dp, phi_1d, phi_2q, ctrl_ptr, i_d] : [e_qp, e_dp, phi_1d, phi_2q, i_d]
     append!(coord_list[row], cols)
 
-    # Second row
+    # Second row — q-axis saturation couples both rotor-axis fluxes.
     row = dp + 1
-    cols = [e_dp, phi_2q, i_q]
+    cols = [e_qp, e_dp, phi_1d, phi_2q, i_q]
     append!(coord_list[row], cols)
 
     # Third row
