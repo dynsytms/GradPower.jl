@@ -175,6 +175,12 @@ function get_device_name(dtype::IEEEST)
     return "IEEEST"
 end
 
+get_diff_names(::IEEEST) = ["F1_x", "F1_y", "F2_x1", "F2_x2", "LL1_x", "LL2_x", "WO_x"]
+get_alg_names(::IEEEST) = ["v_s"]
+get_param_names(::IEEEST) = ["A1", "A2", "A3", "A4", "A5", "A6",
+                              "T1", "T2", "T3", "T4", "T5", "T6", "KS",
+                              "LSMAX", "LSMIN", "VCU", "VCL", "MODE", "BUSR"]
+
 function initial_guess!(
         x0::AbstractArray,
         pvec::AbstractArray,

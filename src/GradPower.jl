@@ -736,6 +736,9 @@ export add_event!, add_disconnect_event!, add_trip_event!, create_trip_line_even
 export initialize_dynamics!, integrate!
 export set_dynamics!
 export from_psse
+export get_device_name, get_diff_names, get_alg_names, get_param_names
+export DyrRecordCoverage, DyrModelCoverage, DyrCoverageReport
+export analyze_dyr_coverage, native_dyr_models, coverage_counts, coverage_by_model, native_coverage
 export SolverLog
 
 end # module GradPower

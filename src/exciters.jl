@@ -87,6 +87,12 @@ function fill_pvec!(pvec::AbstractArray, dtype::ESDC1A)
     pvec[10] = dtype.vref
 end
 
+get_device_name(::ESDC1A) = "ESDC1A"
+get_diff_names(::ESDC1A) = ["vr1", "vr2", "e_fd"]
+get_alg_names(::ESDC1A) = String[]
+get_param_names(::ESDC1A) = ["Ka", "Ta", "Kf", "Tf", "Ke", "Te", "Tr",
+                              "sat_a", "sat_b", "vref"]
+
 function init_exciter!(
         xdiff::AbstractArray,
         pvec::AbstractArray,
@@ -361,6 +367,10 @@ end
 function get_device_name(dtype::SEXS)
     return "SEXS"
 end
+
+get_diff_names(::SEXS) = ["x1", "e_fd"]
+get_alg_names(::SEXS) = String[]
+get_param_names(::SEXS) = ["TA_TB", "TB", "K", "TE", "EMIN", "EMAX", "vref"]
 
 function initialize_dynamics!(
         f::AbstractArray,

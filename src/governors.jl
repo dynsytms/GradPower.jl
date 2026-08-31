@@ -68,6 +68,11 @@ function get_device_name(dtype::IEESGO)
     return "IEESGO"
 end
 
+get_diff_names(::IEESGO) = ["PF0", "PLL", "TP1", "TP2", "TP3"]
+get_alg_names(::IEESGO) = ["p_m"]
+get_param_names(::IEESGO) = ["T1", "T2", "T3", "T4", "T5", "T6",
+                             "K1", "K2", "K3", "pmax", "pmin", "pref"]
+
 function initialize_dynamics!(
         f::AbstractArray,
         x0::AbstractArray,
@@ -201,6 +206,10 @@ end
 function get_device_name(dtype::TGOV1)
     return "TGOV1"
 end
+
+get_diff_names(::TGOV1) = ["x1", "x2"]
+get_alg_names(::TGOV1) = ["p_m"]
+get_param_names(::TGOV1) = ["R", "T1", "VMAX", "VMIN", "T2", "T3", "DT", "pref"]
 
 function initialize_dynamics!(
         f::AbstractArray,

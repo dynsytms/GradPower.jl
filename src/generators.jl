@@ -149,11 +149,11 @@ function get_param_names(dtype::Genrou)
 end
 
 function get_diff_names(dtype::Genrou)
-    return ["delta", "omega", "e_dp", "e_qp", "phi_1d", "phi_2q"]
+    return ["e_qp", "e_dp", "phi_1d", "phi_2q", "w", "delta"]
 end
 
 function get_alg_names(dtype::Genrou)
-    return ["i_d", "i_q"]
+    return ["v_q", "v_d", "i_q", "i_d"]
 end
 
 function initial_guess!(x0::AbstractArray, pvec::AbstractArray, p::Float64, q::Float64, vm::Float64, va::Float64, dtype::Genrou)
@@ -527,4 +527,3 @@ function preallocate_jacobian!(
     cols = [delta, i_q, i_d]
     append!(coord_list[row], cols)
 end
-

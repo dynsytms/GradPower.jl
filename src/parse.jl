@@ -112,6 +112,173 @@ const DEVICE_TYPE_MAP = Dict(
     # add more device types here
 )
 
+const _DYR_GOVERNOR_MODELS = Set(["GAST", "GGOV1", "HYGOV", "IEEEG1", "IEESGO", "TGOV1"])
+const _DYR_MACHINE_MODELS = Set(["GENROU", "GENSAL"])
+const _DYR_EXCITER_MODELS = Set(["ESAC1A", "ESAC6A", "ESDC1A", "ESDC2A", "ESST4B",
+                                 "EXAC1", "EXAC2", "EXPIC1", "IEEET1", "SCRX", "SEXS"])
+const _DYR_STABILIZER_MODELS = Set(["IEEEST"])
+const _DYR_LOAD_MODELS = Set(["CIM5BL"])
+
+struct DyrRecordCoverage
+    record_index::Int
+    source_model::String
+    effective_model::Union{Nothing,String}
+    bus::Int64
+    device_id::String
+    active::Union{Nothing,Bool}
+    status::Symbol
+end
+
+struct DyrModelCoverage
+    total::Int
+    active::Int
+    inactive::Int
+    native::Int
+    redirected::Int
+    unsupported::Int
+    unmatched::Int
+    duplicate::Int
+end
+
+struct DyrCoverageReport
+    raw_path::String
+    dyr_path::String
+    records::Vector{DyrRecordCoverage}
+    by_source_model::Dict{String,DyrModelCoverage}
+    active_generators_without_machine::Vector{Tuple{Int64,String}}
+end
+
+"""Return the DYR model names implemented by the current `DEVICE_TYPE_MAP`."""
+native_dyr_models() = Set(String.(keys(DEVICE_TYPE_MAP)))
+
+function _dyr_model_family(model::String)
+    model in _DYR_MACHINE_MODELS && return :machine
+    if haskey(DEVICE_TYPE_MAP, model)
+        dtype = DEVICE_TYPE_MAP[model]
+        dtype <: AbstractGeneratorType && return :machine
+        dtype <: AbstractGovernorType && return :governor
+        dtype <: AbstractExciterType && return :exciter
+        dtype <: AbstractStabilizerType && return :stabilizer
+        dtype <: AbstractLoadType && return :load
+    end
+    model in _DYR_GOVERNOR_MODELS && return :governor
+    model in _DYR_EXCITER_MODELS && return :exciter
+    model in _DYR_STABILIZER_MODELS && return :stabilizer
+    model in _DYR_LOAD_MODELS && return :load
+    return Symbol(model)
+end
+
+function _coverage_by_source_model(records::Vector{DyrRecordCoverage})
+    fields = (:total, :active, :inactive, :native, :redirected,
+              :unsupported, :unmatched, :duplicate)
+    counters = Dict{String,Dict{Symbol,Int}}()
+    for record in records
+        counts = get!(counters, record.source_model, Dict(field => 0 for field in fields))
+        counts[:total] += 1
+        record.active === true && (counts[:active] += 1)
+        record.active === false && (counts[:inactive] += 1)
+        record.status != :inactive && (counts[record.status] += 1)
+    end
+    return Dict(model => DyrModelCoverage((counts[field] for field in fields)...)
+                for (model, counts) in counters)
+end
+
+"""Return aggregate active/static-disposition and classification counts."""
+function coverage_counts(report::DyrCoverageReport)
+    statuses = (:native, :redirected, :unsupported, :unmatched, :duplicate)
+    counts = Dict(status => count(r -> r.status == status, report.records) for status in statuses)
+    counts[:active] = count(r -> r.active === true, report.records)
+    counts[:inactive] = count(r -> r.active === false, report.records)
+    return counts
+end
+
+"""Return aggregate coverage for one source model, or all-zero counts if absent."""
+function coverage_by_model(report::DyrCoverageReport, model::AbstractString)
+    return get(report.by_source_model, uppercase(String(model)), DyrModelCoverage(0, 0, 0, 0, 0, 0, 0, 0))
+end
+
+"""Fraction of active DYR records covered by native GradPower models."""
+function native_coverage(report::DyrCoverageReport)
+    counts = coverage_counts(report)
+    return counts[:active] == 0 ? 0.0 : counts[:native] / counts[:active]
+end
+
+"""
+    analyze_dyr_coverage(raw_path, dyr_path; redirects=Dict())
+
+Classify every DYR record as exactly one of `:native`, `:redirected`,
+`:unsupported`, `:unmatched`, `:inactive`, or `:duplicate`. Static equipment is
+matched using the external RAW bus number and normalized PSS/E ID. Redirects are
+opt-in and never contribute to native coverage.
+"""
+function analyze_dyr_coverage(raw_path::String, dyr_path::String;
+                              redirects::AbstractDict=Dict{String,String}())
+    raw = read_psse_raw(raw_path)
+    dyr = read_psse_dyr(dyr_path)
+    native = native_dyr_models()
+    normalized_redirects = Dict(uppercase(String(k)) => uppercase(String(v))
+                                for (k, v) in redirects)
+
+    active_generators = Set(_device_key(gen.busn, gen.name) for gen in raw.gens if gen.status == 1)
+    inactive_generators = Set(_device_key(gen.busn, gen.name) for gen in raw.gens if gen.status == 0)
+    active_loads = Set(_device_key(load.busn, load.name) for load in raw.loads if load.status == 1)
+    inactive_loads = Set(_device_key(load.busn, load.name) for load in raw.loads if load.status == 0)
+
+    seen = Set{Tuple{Symbol,Int64,String}}()
+    covered_machines = Set{Tuple{Int64,String}}()
+    records = DyrRecordCoverage[]
+    for (index, values) in enumerate(dyr)
+        length(values) >= 3 || throw(ArgumentError("Malformed DYR record $index: expected bus, model, and ID"))
+        source_model = uppercase(strip(replace(String(values[2]), "'" => "", "\"" => "")))
+        bus = try
+            parse(Int64, strip(replace(String(values[1]), "'" => "", "\"" => "")))
+        catch
+            throw(ArgumentError("Malformed DYR record $index: invalid bus $(repr(values[1]))"))
+        end
+        key = _device_key(bus, String(values[3]))
+        family = _dyr_model_family(source_model)
+        identity = (family, key...)
+
+        active_keys, inactive_keys = if family == :load
+            active_loads, inactive_loads
+        elseif family in (:machine, :governor, :exciter, :stabilizer) ||
+               source_model in native || haskey(normalized_redirects, source_model)
+            active_generators, inactive_generators
+        else
+            union(active_generators, active_loads), union(inactive_generators, inactive_loads)
+        end
+
+        effective_model = nothing
+        status = if identity in seen
+            :duplicate
+        elseif key in active_keys
+            if source_model in native
+                effective_model = source_model
+                :native
+            elseif haskey(normalized_redirects, source_model)
+                effective_model = normalized_redirects[source_model]
+                :redirected
+            else
+                :unsupported
+            end
+        elseif key in inactive_keys
+            :inactive
+        else
+            :unmatched
+        end
+        push!(seen, identity)
+        family == :machine && status in (:native, :redirected) &&
+            key in active_generators && push!(covered_machines, key)
+        disposition = key in active_keys ? true : key in inactive_keys ? false : nothing
+        push!(records, DyrRecordCoverage(index, source_model, effective_model, key[1], key[2],
+                                         disposition, status))
+    end
+
+    missing_machines = sort!(collect(setdiff(active_generators, covered_machines)))
+    return DyrCoverageReport(raw_path, dyr_path, records,
+                             _coverage_by_source_model(records), missing_machines)
+end
+
 function return_dyr_device(data, dev, ptr)
     ptr += 1
     while dev[end] != "/"
