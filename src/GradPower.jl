@@ -172,6 +172,41 @@ mutable struct DynamicProblem
     pvec::AbstractArray
 end
 
+struct FixedStateLimit
+    table_index::Int
+    state_index::Int
+    input_index::Int
+    diagonal_position::Int
+    input_position::Int
+    lower_parameter_index::Int
+    upper_parameter_index::Int
+    device_type::Symbol
+    bus::Int
+    device_id::String
+end
+
+struct LimitEvent
+    device_type::Symbol
+    bus::Int
+    device_id::String
+    state_index::Int
+    side::Symbol
+    action::Symbol
+    time::Float64
+    bound::Float64
+    state_value::Float64
+end
+
+mutable struct LimitWorkspace
+    method::Symbol
+    mu::Float64
+    tolerance::Float64
+    descriptors::Vector{FixedStateLimit}
+    online::Vector{Bool}
+    modes::Vector{UInt8} # 0=free, 1=lower, 2=upper
+    events::Vector{LimitEvent}
+end
+
 # SoA layout (per-device-type tables). Included here so the
 # `layout` field of PowerSystemDynamics below can be typed against it.
 include("layout.jl")
@@ -662,6 +697,9 @@ include("kernels/zipload.jl")
 include("kernels/ieeest.jl")
 include("kernels/static_gen.jl")
 
+# Fixed-state limit declarations and backward-Euler row transformations.
+include("limits.jl")
+
 # KernelAbstractions wrappers + injection buffer dispatch.
 include("kernels/ka_wrappers.jl")
 
@@ -734,6 +772,7 @@ export DynamicProblem, ContingencyEvent, DisconnectDeviceEvent, TripLineEvent
 export add_device!
 export add_event!, add_disconnect_event!, add_trip_event!, create_trip_line_event
 export initialize_dynamics!, integrate!
+export FixedStateLimit, LimitEvent, LimitWorkspace
 export set_dynamics!
 export from_psse
 export get_device_name, get_diff_names, get_alg_names, get_param_names

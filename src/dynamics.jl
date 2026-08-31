@@ -344,7 +344,8 @@ function beuler!(
     p::AbstractVector,
     sys::PowerSystem,
     diff_dim::Int64,
-    dt::Float64
+    dt::Float64,
+    limits::Union{Nothing,LimitWorkspace}=nothing,
 )
     rhs_fun!(f, z, u, p, sys)
     di = sys.dynamic.diff_indices
@@ -357,6 +358,7 @@ function beuler!(
             f[i] = z[i] - zold[i] - dt*f[i]
         end
     end
+    limits === nothing || apply_limit_residual!(f, z, zold, p, dt, limits)
 end
 
 # Typed variant — caller pre-extracts dyn / ybus / layout once so the
@@ -375,6 +377,7 @@ end
     diff_dim::Int64,
     dt::Float64,
     log::Union{Nothing,SolverLog}=nothing,
+    limits::Union{Nothing,LimitWorkspace}=nothing,
 )
     _rhs_fun_batched!(f, z, u, p, dyn, ybus, L, log)
     di = dyn.diff_indices
@@ -387,6 +390,7 @@ end
             f[i] = z[i] - zold[i] - dt*f[i]
         end
     end
+    limits === nothing || apply_limit_residual!(f, z, zold, p, dt, limits)
     return nothing
 end
 
@@ -398,7 +402,8 @@ function beuler_jac!(
     p::AbstractVector,
     sys::PowerSystem,
     diff_dim::Int64,
-    dt::Float64
+    dt::Float64,
+    limits::Union{Nothing,LimitWorkspace}=nothing,
 )
     # set all elements to zero
     fill!(J.nzval, 0.0)
@@ -413,6 +418,7 @@ function beuler_jac!(
     else
         _jacobian_beuler!(J, diff_dim, dt)
     end
+    limits === nothing || apply_limit_jacobian!(J, z, zold, p, dt, limits)
 end
 
 # Typed variant — same rationale as `beuler_batched!`.
@@ -426,6 +432,8 @@ end
     L::SimulationLayout,
     diff_dim::Int64,
     dt::Float64,
+    zold::Union{Nothing,AbstractVector}=nothing,
+    limits::Union{Nothing,LimitWorkspace}=nothing,
 )
     fill!(J.nzval, 0.0)
     _rhs_jac_batched!(J, z, u, p, dyn, ybus, L)
@@ -434,6 +442,10 @@ end
         _jacobian_beuler_indices!(J, isd, dt)
     else
         _jacobian_beuler!(J, diff_dim, dt)
+    end
+    if limits !== nothing
+        zold === nothing && error("limited backward-Euler Jacobian requires zold")
+        apply_limit_jacobian!(J, z, zold, p, dt, limits)
     end
     return nothing
 end
@@ -509,6 +521,10 @@ function integrate!(
     solver::Symbol=:monolithic,
     newton_tol::Float64=1e-10,
     newton_norm::Symbol=:inf,
+    limit_method::Symbol=:none,
+    limit_mu::Float64=0.0,
+    limit_tolerance::Float64=1e-10,
+    limit_events::Union{Nothing,Vector{LimitEvent}}=nothing,
 )
     # NOTE: Assumes initialize_dynamics!(dp, ps) has been called.
 
@@ -566,11 +582,17 @@ function integrate!(
     # initial condition
     zold .= dp.zvec
     traj[:,1] .= dp.zvec
+    limit_method !== :none && solver !== :monolithic &&
+        throw(ArgumentError("dynamic limits currently support solver=:monolithic only"))
 
     # initialize residual and Jacobian
     f0 = zeros(Float64, system_size)
     J0 = preallocate_jacobian(ps)
-    beuler_jac!(J0, zold, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
+    limit_workspace = build_limit_workspace(ps, J0, zold, dp.pvec;
+        method=limit_method, mu=limit_mu, tolerance=limit_tolerance,
+        events=limit_events === nothing ? LimitEvent[] : limit_events)
+    beuler_jac!(J0, zold, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt,
+                limit_workspace)
 
     # pre-factorization
     fact = klu(J0)
@@ -594,8 +616,12 @@ function integrate!(
         elseif use_schur_gmres
             newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
         else
-            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm)
+            success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace)
+            limit_method === :none || success ||
+                error("limited Newton solve failed at t=$(tvec[k+1]) with method=$limit_method")
         end
+        record_limit_events!(limit_workspace, zold, @view(traj[:, k]), dp.pvec,
+                             dt, tvec[k+1])
         traj[:,k+1] .= zold
 
         # process all events scheduled at this step
@@ -640,7 +666,9 @@ function integrate!(
             elseif use_schur_gmres
                 newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
             else
-                newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm)
+                success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace)
+                limit_method === :none || success ||
+                    error("limited dt=0 event solve failed at t=$(tvec[k+1]) with method=$limit_method")
             end
         end
 

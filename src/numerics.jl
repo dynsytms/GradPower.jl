@@ -70,6 +70,7 @@ function newton_step!(
     zwork::Union{Nothing,AbstractVector}=nothing,
     log::Union{Nothing,SolverLog}=nothing,
     newton_norm::Symbol=:inf,
+    limits::Union{Nothing,LimitWorkspace}=nothing,
 )
 
     # Initialize
@@ -91,11 +92,11 @@ function newton_step!(
         # Evaluate the right-hand side
         if log !== nothing
             _t0 = time_ns()
-            beuler_batched!(f0, z_buf, zold, u, p, dyn, net.ybus_real, L, diff_dim, dt, log)
+            beuler_batched!(f0, z_buf, zold, u, p, dyn, net.ybus_real, L, diff_dim, dt, log, limits)
             log.residual_ns += time_ns() - _t0
             log.residual_count += 1
         else
-            beuler_batched!(f0, z_buf, zold, u, p, dyn, net.ybus_real, L, diff_dim, dt)
+            beuler_batched!(f0, z_buf, zold, u, p, dyn, net.ybus_real, L, diff_dim, dt, nothing, limits)
         end
         if newton_norm === :l2
             norm_f = norm(f0, 2)
@@ -113,11 +114,11 @@ function newton_step!(
         # Evaluate the Jacobian
         if log !== nothing
             _t0 = time_ns()
-            beuler_jac_batched!(J0, z_buf, u, p, dyn, net.ybus_real, L, diff_dim, dt)
+            beuler_jac_batched!(J0, z_buf, u, p, dyn, net.ybus_real, L, diff_dim, dt, zold, limits)
             log.jacobian_ns += time_ns() - _t0
             log.jacobian_count += 1
         else
-            beuler_jac_batched!(J0, z_buf, u, p, dyn, net.ybus_real, L, diff_dim, dt)
+            beuler_jac_batched!(J0, z_buf, u, p, dyn, net.ybus_real, L, diff_dim, dt, zold, limits)
         end
 
         # verify jacobian
@@ -126,7 +127,7 @@ function newton_step!(
             @warn "Jacobian verification"
             function ff(zz)
                 ftmp = zeros(length(zz))
-                beuler!(ftmp, zz, zold, u, p, sys, diff_dim, dt)
+                beuler!(ftmp, zz, zold, u, p, sys, diff_dim, dt, limits)
                 return ftmp
             end
             Jfd = FiniteDiff.finite_difference_jacobian(ff, z_buf)

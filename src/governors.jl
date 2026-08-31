@@ -179,6 +179,11 @@ function from_data_fields(::Type{TGOV1}, fields::Vector{SubString{String}})
     T2 = parse(Float64, fields[8])
     T3 = parse(Float64, fields[9])
     DT = parse(Float64, fields[10])
+    isfinite(R) && R != 0.0 || throw(ArgumentError("TGOV1 R must be finite and non-zero"))
+    isfinite(T1) && T1 != 0.0 || throw(ArgumentError("TGOV1 T1 must be finite and non-zero"))
+    isfinite(T3) && T3 != 0.0 || throw(ArgumentError("TGOV1 T3 must be finite and non-zero"))
+    isfinite(VMIN) && isfinite(VMAX) && VMIN < VMAX ||
+        throw(ArgumentError("TGOV1 VMIN must be finite and less than VMAX"))
     TGOV1(bus, id, R, T1, VMAX, VMIN, T2, T3, DT)
 end
 
