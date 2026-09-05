@@ -20,11 +20,18 @@ dt         = 0.008333333333333333   # 1/120 s integrator step
 buses     = "all"
 r_fault   = [0.01, 0.05, 0.2]   # fault shunt resistance (pu); smaller = harder
 t_on      = 0.2                 # fault application time (s)
-durations = [0.05, 0.1, 0.15]   # clearing time = t_off - t_on (s)
+# Must reach across the stability boundary or the dataset has one class only:
+# on IEEE39, [0.05, 0.1, 0.15] is 100% stable and critical clearing times sit
+# at 0.16-0.34 s depending on fault location.
+durations = [0.10, 0.20, 0.25, 0.30, 0.35]
 
 [label]
 angle_sep_threshold_deg = 180.0
-settle_ratio            = 0.5
+# Fraction of the window at the end used as the "has it settled" tail, and the
+# fraction of the global peak the tail must fall below. See stability_metrics
+# in scripts/dynstab_io.jl for why this replaced the old settle_ratio.
+tail_fraction           = 0.2
+decay_ratio             = 0.5
 
 # One table per case. raw/dyr paths are resolved relative to the repo root unless absolute.
 [[cases]]

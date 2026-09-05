@@ -52,7 +52,14 @@ function main()
     check_stability = Bool(get(sim, "check_self_stability", true))
     lbl = get(cfg, "label", Dict())
     angle_thr = deg2rad(Float64(get(lbl, "angle_sep_threshold_deg", 180.0)))
-    settle_ratio = Float64(get(lbl, "settle_ratio", 0.5))
+    haskey(lbl, "settle_ratio") && error("""
+        [label] settle_ratio was removed in schema v3. It selected a
+        first-half-vs-second-half damping test that mislabelled 90% of
+        ACTIVSg2000's unstable samples; see stability_metrics in
+        scripts/dynstab_io.jl. Replace it with tail_fraction (default 0.2)
+        and decay_ratio (default 0.5).""")
+    tail_fraction = Float64(get(lbl, "tail_fraction", 0.2))
+    decay_ratio   = Float64(get(lbl, "decay_ratio", 0.5))
 
     rank == 0 && @info "Building $(length(cfg["cases"])) case system(s)..."
     built   = [build_system(case) for case in cfg["cases"]]
@@ -160,7 +167,8 @@ function main()
 
                 ch = dynamics_channels(sys, traj; downsample=downsample)
                 metrics = stability_metrics(sys, traj;
-                    angle_sep_threshold=angle_thr, settle_ratio=settle_ratio)
+                    angle_sep_threshold=angle_thr, tail_fraction=tail_fraction,
+                    decay_ratio=decay_ratio)
                 write_sample!(fid, k, sc, ch, metrics)
                 nwritten += 1
             end

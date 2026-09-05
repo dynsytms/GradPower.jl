@@ -76,8 +76,14 @@ case = Dict(
 zip_alpha = 0.5
 
 # Integration. dt = 1/120 s with backward Euler is the repo default.
+#
+# t_final must be long enough for the first swing to RESOLVE, not just to
+# start. On IEEE9 a couple of seconds is plenty; on ACTIVSg2000 the first swing
+# peaks at 1.5-5 s and a 2 s window mislabels most samples (see the note at the
+# bottom of this file). When in doubt, run one fault at 10 s and look at where
+# the peak actually falls before you pick a horizon for thousands of runs.
 dt      = 1 / 120
-t_final = 3.0
+t_final = 3.0        # IEEE9; use 10.0 for ACTIVSg2000
 
 # ---------------------------------------------------------------------------
 # 1. Build the system once.
@@ -105,6 +111,11 @@ sys, base = build_system(case)
 
 # (1) LOADING: sample lambda ~ Uniform(low, high). The base case is the mean
 #     when low + high == 2. Seed it so the dataset is reproducible.
+#
+#     Check the range is FEASIBLE before trusting it: past some loading the
+#     dynamic initialization stops converging (ACTIVSg2000 fails above ~1.08).
+#     initialized_problem throws rather than returning a bad operating point,
+#     so an infeasible draw is loud, not silent.
 rng        = MersenneTwister(20240917)
 n_lambda   = 3
 lambda_lo, lambda_hi = 0.90, 1.10
@@ -118,7 +129,11 @@ fault_buses_ext = [5, 7]
 #     warning above before choosing a range.
 r_faults = [0.01, 0.1]
 
-t_on, duration = 0.2, 0.1     # fault applied at 0.2 s, cleared 0.1 s later
+# Fault applied at 0.2 s and cleared `duration` later. Pick clearing times that
+# straddle the critical clearing time, or every sample lands in one class and
+# the dataset teaches nothing: on IEEE39, 0.05-0.15 s is 100% stable while the
+# CCT sits at 0.16-0.34 s depending on where the fault is.
+t_on, duration = 0.2, 0.25
 
 @printf("\nSweep: %d lambda x %d bus x %d r_fault = %d scenarios\n",
         n_lambda, length(fault_buses_ext), length(r_faults),
@@ -169,7 +184,8 @@ for (li, lambda) in enumerate(lambdas)
         # per-machine rotor angle / speed deviation.
         ch = dynamics_channels(sys, traj; downsample=1)
         m  = stability_metrics(sys, traj;
-                               angle_sep_threshold=deg2rad(180.0), settle_ratio=0.5)
+                               angle_sep_threshold=deg2rad(180.0),
+                               tail_fraction=0.2, decay_ratio=0.5)
 
         push!(results, (lambda=lambda, bus=bus_ext, r_fault=r_fault,
                         sep=m["max_angle_sep_deg"], fdev=m["max_freq_dev"],

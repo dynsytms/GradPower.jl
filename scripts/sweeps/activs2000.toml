@@ -33,7 +33,13 @@
 output_root = "./dynstab_out"
 
 [sim]
-t_final    = 2.0
+# 10 s, not 2 s. ACTIVSg2000's first swing routinely peaks at 1.5-5 s, so a
+# short window ends mid-swing and the settling test reads a healthy trajectory
+# as diverging: at 2.5 s it mislabelled 90% of the unstable samples, and reruns
+# at 10 s gave identical separations with the label flipped. Costs ~5x per
+# sample; there is no cheaper fix, because no criterion can judge a swing that
+# has not happened yet.
+t_final    = 10.0
 dt         = 0.008333333333333333   # 1/120 s
 downsample = 2                      # store every 2nd step
 residual_tol = 1e-6
@@ -46,24 +52,47 @@ check_self_stability = true
 # lambda ~ Uniform(low, high), one draw shared by the fault cross product
 # beneath it. Base case is the mean when low + high == 2.
 distribution = "uniform"
-low       = 0.95
-high      = 1.05
+# Verified feasible range is ~0.70 .. 1.08; above 1.08 the dynamic
+# initialization fails (lambda = 1.10 is reachable only by continuation in
+# small steps, and is marginal when it is).
+#
+# Be aware that loading is a WEAK input on this case: lambda = 0.95 and 1.05
+# gave the same 79.2% stable fraction, and 0.90 vs 1.00 produced the same
+# unstable buses. Clearing time and fault location carry this dataset. The
+# range is widened to add operating-point diversity, not because it is
+# expected to move the labels much.
+low       = 0.85
+high      = 1.08
 n_samples = 10
 seed      = 20240917
 
 [fault]
-# "all" faults every bus (2000 of them). Start with a list while you calibrate.
+# "all" faults every bus (2000 of them). Start with a list while you calibrate,
+# then widen: fault location is the STRONGEST of the three inputs on this case
+# (loading is the weakest -- see the note under [load]).
+#
+# These six are a calibrated starter mix, measured at t_final = 10 s, lambda
+# ~1.03, r = 0.01: 3105 and 4045 go unstable even at 0.10 s clearing (peak
+# separation ~45000-57000 deg), while 1001/1002/1003/2056 stay stable past
+# 0.30 s (peak 2.6-36.7 deg). So both classes are represented before you scale
+# up.
 buses     = [1001, 1002, 1003, 2056, 3105, 4045]
 # Severity is NOT monotonic in r_fault: the fault is purely resistive, so the
 # power it absorbs is V^2/r and peaks where r matches the local Thevenin
 # impedance. Sweep on a log grid and check where severity actually peaks.
 r_fault   = [0.01, 0.05, 0.2]
 t_on      = 0.2
-durations = [0.05, 0.1, 0.15]
+# Reaches across the boundary. Buses 3105 and 4045 already go unstable at
+# 0.10 s while 1002/2056 stay stable past 0.30 s, so this spans both classes.
+durations = [0.05, 0.10, 0.15, 0.20, 0.30]
 
 [label]
 angle_sep_threshold_deg = 180.0
-settle_ratio            = 0.5
+# Fraction of the window at the end used as the "has it settled" tail, and the
+# fraction of the global peak the tail must fall below. See stability_metrics
+# in scripts/dynstab_io.jl for why this replaced the old settle_ratio.
+tail_fraction           = 0.2
+decay_ratio             = 0.5
 
 [[cases]]
 name = "activs2000"

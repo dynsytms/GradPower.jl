@@ -9,7 +9,7 @@ const REPO_ROOT = normpath(joinpath(@__DIR__, ".."))
 resolve_path(p) = isabspath(p) ? p : joinpath(REPO_ROOT, p)
 
 # Bump when the on-disk HDF5 layout changes in a way consumers must notice.
-const EXPORT_SCHEMA_VERSION = 2
+const EXPORT_SCHEMA_VERSION = 3
 
 function get_rank_size()
     for (rk, sk) in (("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
@@ -411,7 +411,7 @@ function dynamics_graph(sys)
 end
 
 """
-    stability_metrics(sys, traj; angle_sep_threshold, settle_ratio) -> Dict
+    stability_metrics(sys, traj; angle_sep_threshold, tail_fraction, decay_ratio) -> Dict
 
 Screening labels for one trajectory.
 
@@ -433,27 +433,73 @@ is even applied. `initial_sep_deg` reports that standing spread for reference.
     apart relative to where they started. This is a first-swing separation
     screen; it is NOT center-of-inertia referenced.
   * `max_freq_dev` -- peak `|omega|` over all machines and time (pu).
-  * `damped` -- the peak spread in the final `settle_ratio` fraction of the
-    horizon is no larger than the peak over the EARLIER part, i.e. the swing
-    is decaying rather than still growing when the window ends. Comparing the
-    tail against the overall peak would be vacuous, since the tail is a subset
-    of the whole window and can never exceed it.
-  * `stable` -- `max_angle_sep_deg < threshold` AND `damped` AND not diverged.
+  * `tail_peak_ratio` -- peak of `spread(t)` over the final `tail_fraction` of
+    the window, divided by the global peak. 0 means the swing is fully gone by
+    the end; 1 means it is as large at the end as it ever was.
+  * `settled` -- `tail_peak_ratio <= decay_ratio`, i.e. the swing has decayed
+    to at most `decay_ratio` of its peak by the end of the window.
+  * `stable` -- `max_angle_sep_deg < threshold` AND `settled` AND not diverged.
 
-`stable` is a coarse screen, not a certificate: it says nothing about horizons
+## Why `settled` is defined this way
+
+The previous version compared the peak over the final half of the window
+against the peak over the first half, and called the trajectory damped when the
+tail was no larger. That is wrong for a large system, and measurably so. On a
+2000-bus case the FIRST swing routinely peaks after the midpoint of a short
+window, so a perfectly healthy trajectory whose swing simply has not finished
+yet reads as "growing". At `t_final = 2.5` s on ACTIVSg2000 that mislabelled
+90% of the unstable samples: reruns at `t_final = 10` s returned identical
+separations (bus 5229: 22.50 deg either way) and flipped the label to stable.
+IEEE39, whose swings settle in ~1 s, showed 0% of this error -- which is why
+the bug survived until the big case was measured.
+
+Comparing two LATE windows instead does not fix it either; it fails in the
+opposite direction. Once a machine goes over the top, `spread(t)` keeps rising
+to tens of thousands of degrees and can then flatten or dip, so a
+late-window-vs-earlier-late-window test calls a 55,000 deg runaway "damped".
+Measured on ACTIVSg2000: such a rule labelled all 24 traces stable, including
+eight genuine runaways.
+
+Both failure modes are avoided by comparing the tail against the GLOBAL peak,
+which is what `tail_peak_ratio` does. Note this is only non-vacuous because the
+comparison is against a fraction of the peak: `tail_peak <= peak` is trivially
+true, since the tail is a subset of the window.
+
+The `decay_ratio = 0.5` default sits in the middle of a wide measured gap
+(ACTIVSg2000, 24 traces, `t_final = 10` s):
+
+    bounded trajectories   peak    1.2 ..    45.5 deg    tail/peak  0.03 .. 0.32
+    runaway trajectories   peak  38920 .. 55479   deg    tail/peak  0.72 .. 1.00
+
+Both the separation threshold and the decay ratio separate these two
+populations on their own, with orders of magnitude of margin; requiring both is
+belt and braces against a bounded-but-still-growing swing that the threshold
+alone would miss.
+
+## Limits
+
+`stable` is a coarse screen, not a certificate. It says nothing about horizons
 longer than the simulated window, and near the stability boundary it is
-dt-sensitive because unstable trajectories are chaotic.
+dt-sensitive because unstable trajectories are chaotic. `t_final` must be long
+enough for the first swing to resolve -- 10 s for ACTIVSg2000; 2 s is not
+enough and will corrupt the labels no matter how the criterion is written.
+
+`tail_peak_ratio` is stored on every sample so labels can be recomputed offline
+under a different rule without re-simulating.
 """
 function stability_metrics(sys, traj::AbstractMatrix;
                            angle_sep_threshold::Float64=deg2rad(180.0),
-                           settle_ratio::Float64=0.5)
+                           tail_fraction::Float64=0.2,
+                           decay_ratio::Float64=0.5)
+    0.0 < tail_fraction < 1.0 || error("tail_fraction must be in (0, 1)")
+    0.0 < decay_ratio  <= 1.0 || error("decay_ratio must be in (0, 1]")
     gptr, _ = generator_pointers(sys)
     nT = size(traj, 2)
     if isempty(gptr)
-        return Dict("stable" => true, "damped" => true,
+        return Dict("stable" => true, "settled" => true,
                     "max_angle_sep_deg" => 0.0, "max_freq_dev" => 0.0,
                     "final_angle_sep_deg" => 0.0, "initial_sep_deg" => 0.0,
-                    "diverged" => false)
+                    "tail_peak_ratio" => 0.0, "diverged" => false)
     end
 
     d0 = [traj[p + 5, 1] for p in gptr]
@@ -473,20 +519,21 @@ function stability_metrics(sys, traj::AbstractMatrix;
 
     diverged = !all(isfinite, spread) || !isfinite(maxw)
     peak = diverged ? Inf : maximum(spread)
-    tail_start = max(2, Int(floor(nT * (1 - settle_ratio))) + 1)
-    tail_peak = maximum(view(spread, tail_start:nT))
-    # Compare the tail against the earlier window, not against the overall
-    # peak (which contains the tail and would make this always true).
-    early_peak = maximum(view(spread, 1:(tail_start - 1)))
-    damped = diverged ? false : tail_peak <= early_peak
+
+    tail_start = max(1, nT - max(2, Int(floor(nT * tail_fraction))) + 1)
+    tail_peak = diverged ? Inf : maximum(view(spread, tail_start:nT))
+    # A trajectory that never moved is settled by definition; guard the divide.
+    ratio = (diverged || peak <= 0.0) ? (diverged ? Inf : 0.0) : tail_peak / peak
+    settled = !diverged && ratio <= decay_ratio
 
     return Dict(
-        "stable"              => (peak < angle_sep_threshold) && damped && !diverged,
-        "damped"              => damped,
+        "stable"              => (peak < angle_sep_threshold) && settled && !diverged,
+        "settled"             => settled,
         "diverged"            => diverged,
         "max_angle_sep_deg"   => rad2deg(peak),
         "final_angle_sep_deg" => rad2deg(spread[end]),
         "initial_sep_deg"     => rad2deg(initial_sep),
+        "tail_peak_ratio"     => ratio,
         "max_freq_dev"        => maxw,
     )
 end

@@ -84,6 +84,31 @@ runs `check_self_stability`: a 1e-6 speed kick with no fault must not grow. A
 case that fails is one where labels would reflect an unstable mode rather than
 the fault. Disable it only deliberately.
 
+## Labels: read this before training on them
+
+`stable = (peak separation < 180 deg) AND (the swing decayed to <= 0.5 of its
+peak by the end of the window)`. Both conditions separate the two populations
+with orders of magnitude of margin on measured data; requiring both guards
+against a bounded-but-still-growing swing.
+
+**`t_final` must be long enough for the first swing to resolve.** This is the
+easiest way to silently corrupt the dataset. ACTIVSg2000's first swing peaks at
+1.5-5 s; at `t_final = 2.5` s the settling test mislabelled 90% of the
+"unstable" samples, and reruns at 10 s returned *identical* separations with
+the label flipped. IEEE39 settles in ~1 s and showed none of this, which is why
+it is not obvious from small cases. Use 10 s for ACTIVSg2000.
+
+**Clearing times must straddle the critical clearing time** or every sample
+lands in one class. On IEEE39, `[0.05, 0.1, 0.15]` is 100% stable while the CCT
+is 0.16-0.34 s depending on fault location.
+
+**`max_angle_sep_deg` is bimodal** — roughly 2-45 deg for stable and
+39000-57000 deg for runaways, because nothing trips a machine that goes over
+the top. Fine as a classification label, poor as a regression target.
+
+`tail_peak_ratio` is stored on every sample, so labels can be recomputed
+offline under a different rule without re-simulating.
+
 ## ACTIVSg2000
 
 **Ready to use, provided the power flow enforces generator reactive limits** —
@@ -103,3 +128,10 @@ the whole trajectory.
 
 Keep `check_self_stability = true` — it is the guard that caught this. Full
 analysis in `docs/activsg2000-diagnosis.md`.
+
+**Input strength, measured.** Fault location is the strongest of the three
+inputs, clearing time next, loading the weakest — λ=0.95 and λ=1.05 gave the
+same 79.2% stable fraction and the same unstable buses. The feasible λ range is
+~0.70–1.08; above 1.08 the dynamic initialization fails. The sweep uses
+0.85–1.08 for operating-point diversity, not because it is expected to move the
+labels much.
