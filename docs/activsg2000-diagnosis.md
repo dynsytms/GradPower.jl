@@ -1,105 +1,100 @@
-# ACTIVSg2000: why it does not produce usable transient-stability data
+# ACTIVSg2000: the case is fine; our power flow was wrong
 
-Status: **not usable as shipped** for a fault-response study. The instability is
-in the case, not in GradPower. ANDES cannot run the case at all.
+**Root cause: `runpf!` does not enforce generator reactive-power limits.**
+ACTIVSg2000 is a usable case. Every "the case is unstable" claim in the
+earlier revision of this document was wrong and is corrected below.
 
-## Summary
+## The one-line result
 
-| question | answer |
-|---|---|
-| Does GradPower run it? | Yes. PF solves, init residual 1.3e-09, no-fault drift 1.8e-10. |
-| Is the equilibrium stable? | No. A 1e-8 speed kick with no fault grows to ~140° in 5 s. |
-| Is that a GradPower bug? | No. uqgrid reproduces it on the same 334-machine set, to ~1%. |
-| Is it missing limiters? | No. uqgrid with limits on vs off: 347.898° vs 346.983°. |
-| Does ANDES corroborate? | It cannot run the case. No verdict either way. |
+uqgrid, ACTIVSg2000, negligible fault (r=1000), tend 2 s, ZIP alpha 0.5:
 
-## Evidence that the case is unstable
-
-GradPower and uqgrid, same active machine set, bus 1001, ton 0.2, toff 0.3,
-tend 2, ZIP alpha 0.5:
-
-| r_fault | GradPower | uqgrid |
+| `enforce_q_limits` | max angle separation | max \|omega\| |
 |---|---|---|
-| 0.02 | sep 343.6° / \|w\| 5.105e-2 | sep 347.0° / \|w\| 5.100e-2 |
-| 1000 | sep 196.8° / \|w\| 5.125e-2 | sep 210.0° / \|w\| 5.121e-2 |
+| `False` | 209.981 deg | 5.1207e-2 |
+| `True`  | **0.001 deg** | **3.6724e-7** |
 
-Agreement is ~1% on separation and ~0.1% on frequency. Both run away, and a
-fault five orders of magnitude weaker gives the same peak |w| — the mode is
-fault-independent, which is exactly why labels from this case carry no
-information about the fault.
+Same case, same models, same fault. Enforcing PF Q limits is the difference
+between a runaway and a flat, stable trajectory.
 
-The growth rate is λ ≈ 3/s. That independently explains the "flat" no-fault
-run: round-off at 1e-16 grows to ~3e-10 in 5 s, and the measured drift is
-1.8e-10.
+## Causal chain, each step measured
 
-The runaway is a property of the equations, not the integrator: refining dt
-16× (1/120 → 1/1920) moves the result from 140.33° to 139.32°. Response to
-perturbation size is non-monotonic (1e-10 → 346°, 1e-8 → 134°), i.e. chaotic.
+1. **No Q-limit enforcement in the power flow.** GradPower's `runpf!` has no
+   PV→PQ switching. `plan_enhance.md` already lists this as missing
+   ("Static generator: PF Q-limit behavior — GradPower: no PF Q limits";
+   Phase 6, "Power-flow reactive limits"). uqgrid defaults to
+   `enforce_q_limits=False`, so both codes had the same gap.
 
-## What was ruled out
+2. **200 of 432 generators end up outside their limits.** Worst cases:
 
-None of these change the outcome (all stay in 139–147°):
+   | bus | Q solved (MVAr) | QT | QB |
+   |---|---|---|---|
+   | 3048 | +878.76 | 51.33 | -34.70 |
+   | 7406 | +763.67 | 32.12 | -7.00 |
+   | 8155 | -639.95 | 81.36 | -21.30 |
+   | 1079 | -398.00 | 48.61 | -10.60 |
+   | 7400 | -278.81 | 36.65 | -7.99 |
 
-- controllers — surrogates on/off, no PSS, no exciters, GENROU only
-- inertia — flooring H at 1.0 or 3.0 (30 machines have H < 1; min H = 0.0258)
-- damping — sweeping GENROU D from 0 to 20
-- load model — ZIP alpha 0.0 / 0.5 / 1.0
-- limiters — tested in uqgrid, which implements them
-- generator MBASE defect — see below
+   Bus 7400 absorbs 279 MVAr against an 8 MVAr floor.
 
-GradPower's own initialization is physically sane: e_qp has median 0.96 and
-max 4.53 across 334 machines.
+3. **Machines absorbing that much Q are driven past pull-out.** The internal
+   angle `delta - V_angle` exceeds 90 deg on 20 machines, worst 164 deg. The
+   offenders are exactly the buses above (7400 at 163, 1079 at 164, 8155 at 162).
 
-## Genuine data defect found: generators dispatched above MBASE
+4. **Past 90 deg, dP/ddelta is negative** — negative synchronizing torque, so
+   the equilibrium is unstable by construction. GradPower's reduced-system
+   spectrum: **18 eigenvalues with Re > 0, max Re = +10.06, all at f = 0 Hz**
+   (non-oscillatory, as pull-out implies). Controls IEEE39_gov and ACTIVSg200:
+   **0 unstable eigenvalues**.
+
+5. **The link is monotonic.** Capping q-axis reactance moves machines back
+   inside 90 deg and removes unstable modes almost one-for-one:
+
+   | xq cap | machines >90 deg | Re>0 | max Re | 5 s self-kick |
+   |---|---|---|---|---|
+   | as-is | 20 | 18 | 10.06 | 140.3 deg |
+   | 2.0 | 16 | 15 | 8.61 | 123.7 deg |
+   | 1.0 | 15 | 13 | 5.12 | 93.9 deg |
+   | 0.5 | 7 | 7 | 1.69 | 0.003 deg (stable) |
+
+## Why every earlier hypothesis failed
+
+All of these leave the self-kick at 139-147 deg, because none of them touch the
+operating point: controllers (surrogates on/off, no PSS, no exciters, GENROU
+only), inertia (H floored at 1.0/3.0), damping (D swept 0-20), load model (ZIP
+alpha 0/0.5/1.0), dynamic limiters (tested in uqgrid), StaticGenerator stubs
+(ACTIVSg200 given 21 stubs stays stable at 0.0015 deg), and the MBASE defect
+below. De-loading made it *worse* (74 unstable modes at lambda=0.1), which is
+the tell: re-solving an unlimited power flow at light load pushes even more
+machines into absorbing reactive power.
+
+## Secondary finding: generators dispatched above MBASE
 
 16 in-service generators in `ACTIVSg2000.raw` have `PG > MBASE`, most at
-~2.47–2.50×. Straight from the raw:
+~2.47-2.50x (bus 6266 and 6268: 4.5 MW on a 1.8 MVA base; bus 3105: 44.5 MW on
+18.0 MVA). They carry 3.4% of dispatch. Worth reporting upstream, and it is why
+ANDES reports field voltages up to 52 pu — but it is **not** the instability:
+rebuilding the raw with `MBASE = PG/0.85` leaves the self-kick at 140.2 vs
+140.3 deg.
 
-| bus | PG (MW) | MBASE (MVA) | PG/MBASE |
-|---|---|---|---|
-| 6266 | 4.500 | 1.800 | 2.500 |
-| 6268 | 4.500 | 1.800 | 2.500 |
-| 3105 | 44.500 | 18.000 | 2.472 |
+## ANDES
 
-They carry 2356 MW of 68728 MW dispatched (3.4%). This is a real inconsistency
-worth reporting upstream, and it is the direct cause of the extreme field
-voltages ANDES reports. **It is not the cause of the instability**: rebuilding
-the raw with `MBASE = PG/0.85` for all 16 leaves the self-kick at 140.2° versus
-140.3°.
+ANDES 1.10.0 cannot run this case: `TDS.run()` terminates at t = -0.033 s, four
+EXAC2 devices fail iterative initialization with internals at 1e26, and
+`TDS.initialized` returns `True` while ANDES prints "Initialization failed" —
+do not trust that flag. This is consistent with the Q-limit story (machines at
+extreme angles demand impossible excitation), but since ANDES never reaches a
+converged equilibrium it cannot serve as independent evidence. An eigenvalue
+result quoted earlier (293 modes, Re > 0) was withdrawn: computed at that
+broken point, and disabling 38 EXAC2 devices left it bit-identical, so the
+experiment was not controlled.
 
-## Why ANDES cannot be used here
+## What to do
 
-ANDES 1.10.0 implements every model natively (278 ESST4B, 43 IEEEG1, 25 HYGOV,
-38 EXAC2, …), so it should be the ideal third opinion. It is not:
+**To use ACTIVSg2000, the power flow must enforce generator Q limits.**
+GradPower needs PV→PQ switching in `runpf!` (plan_enhance.md Phase 6). Until
+that lands, GradPower's ACTIVSg2000 operating point is not physical and any
+dataset generated from it describes a pull-out artifact rather than the fault.
 
-1. Initialization never converges. It prints `Initialization failed` while
-   `TDS.initialized` still returns `True` — do not trust that flag.
-2. Four EXAC2 devices (45, 66, 67, 75) fail iterative initialization, reaching
-   `IN = -3.1e+26` and `VHA = -1.3e+17`.
-3. Upstream of that, 14 GENROU are reported needing vf of 5.7–52 pu against a
-   typical limit of 5 — the exciters cannot deliver it, so they diverge.
-4. `TDS.run()` terminates at **t = -0.033 s**: the simulation never starts.
-5. Disabling the 4 bad EXAC2 gets it to t = 1.28 s, then it blows up with
-   |w-1| = 7052. Disabling all EXAC2 and all ESST4B still fails at t = 1.20 s.
-
-Because initialization never converged, ANDES starts off-equilibrium, so its
-divergence cannot be used as evidence of instability — the argument would be
-circular. An earlier eigenvalue result (293 modes with Re > 0) was withdrawn:
-it was computed at that broken point, and disabling 38 EXAC2 devices left the
-spectrum bit-identical, so the experiment was not controlled.
-
-Getting a verdict from ANDES means repairing the case data first — the exciter
-limits, or the operating point that demands vf = 52.
-
-Reproduce: `/tmp` scripts are transient; the checks above are
-`check_self_stability` in `scripts/dynstab_io.jl`, plus uqgrid via
-`uqgrid.IntegrationConfig(..., enforce_dynamic_limits=True/False)`.
-
-## If you need this case to yield usable labels
-
-The instability survives every controller and parameter intervention tried, so
-the remaining candidates are the operating point itself (`ACTIVSg2000.raw`) and
-the machine data, not the controller coverage. Implementing ESST4B natively
-(plan_enhance.md Task 4, 278 records) is worth doing on its own merits but,
-given that removing exciters entirely changes nothing, should not be expected
-to fix this.
+Implementing ESST4B natively does not help here, and neither do limiters:
+removing exciters entirely changes nothing, because the defect is in the
+operating point, not the dynamics.
