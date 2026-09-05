@@ -86,14 +86,13 @@ the fault. Disable it only deliberately.
 
 ## ACTIVSg2000
 
-Runs, and matches uqgrid to ~1% — but is **dynamically unstable**, so its
-labels carry almost no information about the fault. GradPower and uqgrid run
-the same 334-machine active set, agree to ~1%, and both run away — with
-uqgrid's dynamic limits on or off, so limiters are not the missing piece.
-(ANDES cannot initialize this case at all, so it yields no usable third
-opinion.)
+**Not ready for data generation**, but the case is fine — GradPower's power
+flow is the problem. `runpf!` does not enforce generator reactive limits
+(PV→PQ switching, `plan_enhance.md` Phase 6). Without it, 200 of 432
+generators solve outside their Q limits, 20 machines end up past their
+pull-out angle, and the equilibrium has 18 unstable eigenvalues. uqgrid with
+`enforce_q_limits=True` gives 0.001° separation on the same case; with it off,
+209.981°.
 
-It also needs `surrogates = true`, which comes in two tiers: 440 records copy
-uqgrid's own redirects (comparable), 418 are GradPower-local stand-ins with no
-oracle (not valid for validation). Read the header of
-`scripts/sweeps/activs2000.toml` before generating from it.
+Use ACTIVSg200 or IEEE39 until PF Q limits land — both have zero unstable
+eigenvalues. Full analysis in `docs/activsg2000-diagnosis.md`.

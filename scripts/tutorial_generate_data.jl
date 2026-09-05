@@ -207,43 +207,29 @@ and on Polaris:
 Always run --dry-run first: it prints the scenario count and the sampled
 lambda range without simulating anything.
 
-CAVEAT on ACTIVSg2000 -- verified against uqgrid, read before using it:
+CAVEAT on ACTIVSg2000 -- do not generate data from it yet:
 
-1. MODEL COVERAGE. The .dyr contains 858 records whose model types have no
-   native kernel here: GGOV1 367, ESST4B 278, EXPIC1 61, IEEEG1 43, EXAC2 38,
-   HYGOV 25, IEEET1 23, ESAC6A 7, EXAC1 6, SCRX 5, ESAC1A 4, ESDC2A 1.
-   Without surrogates => true they are SILENTLY SKIPPED, leaving 334 machines
-   with no governors and only 10 exciters. With surrogates => true they are
-   mapped onto TGOV1/SEXS -- stand-ins, NOT implementations of the source
-   equations. Never report them as native model coverage.
+1. THE CASE IS FINE. GRADPOWER'S POWER FLOW IS NOT (yet). runpf! does not
+   enforce generator reactive-power limits, so 200 of 432 generators solve
+   outside their Q limits -- bus 7400 absorbs 279 MVAr against an 8 MVAr
+   floor. That drags 20 machines past their pull-out angle (internal angle
+   > 90 deg, worst 164 deg), where synchronizing torque is negative, giving
+   18 unstable eigenvalues (max Re +10.06). The trajectory then runs away
+   regardless of the fault, so labels carry no information.
 
-2. THE CASE IS DYNAMICALLY UNSTABLE, and that is not a GradPower bug. uqgrid,
-   running its own native ESST4B/IEEEG1/HYGOV/EXAC models, shows the same
-   runaway. Same scenario (bus 1001, ton 0.2, toff 0.3, tend 2, alpha 0.5):
+   uqgrid on the same case, same models, same fault:
+       enforce_q_limits = False  ->  209.981 deg,  |w| 5.12e-2
+       enforce_q_limits = True   ->    0.001 deg,  |w| 3.67e-7
 
-        r_fault      GradPower                  uqgrid
-        0.02      sep 343.6 / |w| 5.105e-2    sep 347.0 / |w| 5.100e-2
-        1000      sep 196.8 / |w| 5.125e-2    sep 210.0 / |w| 5.121e-2
+   The fix is PV->PQ switching in the power flow (plan_enhance.md Phase 6).
+   Use ACTIVSg200 or IEEE39 meanwhile: both have zero unstable eigenvalues.
 
-   The codes agree to ~1% on separation and ~0.1% on frequency deviation --
-   good news for GradPower, bad news for the dataset: r_fault changes by five
-   orders of magnitude and peak |omega| moves under 0.5%. A 1e-8 speed kick
-   with NO fault grows to ~140 deg in 5 s.
+2. MODEL COVERAGE. Separately, 858 .dyr records have no native kernel and are
+   silently skipped unless you pass surrogates => true, which maps them onto
+   TGOV1/SEXS in two tiers (440 mirrored from uqgrid, 418 GradPower-local with
+   no oracle). Surrogates are stand-ins, never native coverage. Note this is
+   NOT what causes the instability -- removing exciters entirely changes
+   nothing.
 
-   Enforcing dynamic LIMITS in uqgrid changes nothing (347.898 vs 346.983
-   deg, |w| 5.1000e-2 vs 5.1002e-2), so missing limiters are not the
-   explanation either.
-
-   ANDES was tried as a third opinion and does NOT provide one: it cannot
-   initialize this case (EXAC2 internal variables reach 1e26), and disabling
-   those devices leaves its eigenvalues bit-identical, so the experiment is
-   not controllable. No conclusion is drawn from it. The evidence here is
-   GradPower vs uqgrid on the same 334-machine active set.
-
-   So labels from ACTIVSg2000 describe that unstable mode, not the fault:
-   everything comes out "unstable" and your three inputs barely matter. This
-   is why the driver has a check_self_stability preflight, and why the
-   ACTIVSg2000 sweep config must explicitly disable it. If you generate from
-   this case anyway, say plainly in any writeup that the operating point is
-   unstable in both simulators.
+   Full analysis: docs/activsg2000-diagnosis.md
 """)
