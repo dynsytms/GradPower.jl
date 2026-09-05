@@ -179,6 +179,23 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         end
         sg.p0 = psum
         sg.q0 = qsum
+        # Re-read the regulated setpoints from the power-flow solution rather
+        # than trusting the values captured at parse time. Without Q-limit
+        # enforcement these are identical -- a PV bus's magnitude is not a
+        # power-flow variable, so `v0m` never leaves `vs`. With enforcement, a
+        # bus that was converted to PQ has a solved voltage that differs from
+        # its original setpoint, and a stub still holding the old `vset` makes
+        # `vr^2 + vi^2 = vset^2` inconsistent with the operating point (0.08 pu
+        # of initialization residual on ACTIVSg2000).
+        sg.vset = ps.buses[map.bus[i]].v0m
+        sg.aset = ps.buses[map.bus[i]].v0a
+        # A PV stub whose bus the power flow converted to PQ is at a reactive
+        # bound and can no longer hold its voltage. Its alg state stays (the
+        # layout was fixed before the power flow ran) but switches from the
+        # voltage-regulation residual to `q = q0`. Without this the stub keeps
+        # regulating with unlimited Q through the transient, which is exactly
+        # the behaviour Q-limit enforcement was meant to remove.
+        sg.regulating = sg.bus_type != 2 || ps.buses[map.bus[i]].type == 2
         # Write alg states using absolute z-index (diff_dim + alg_ptr).
         alg_global = diff_dim + device.alg_ptr
         if sg.bus_type == 2          # PV: alg state is q
@@ -187,9 +204,12 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
             z[alg_global]     = psum
             z[alg_global + 1] = qsum
         end
-        # mirror p0, q0 into pvec so the kernel reads correct values
+        # mirror p0, q0, vset, aset into pvec so the kernel reads correct
+        # values. pvec was filled above, before these were refreshed.
         p[device.par_ptr]     = psum
         p[device.par_ptr + 1] = qsum
+        p[device.par_ptr + 2] = sg.vset
+        p[device.par_ptr + 3] = sg.aset
     end
 
     # Pre-controller hook: stash each Genrou's post-PF e_fd0 onto any

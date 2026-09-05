@@ -40,12 +40,12 @@ end
 end
 
 @kernel function static_gen_residual_ka!(f, z, p, inj, online,
-        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr,
         @Const(inj_offset))
     k = @index(Global)
     if @inbounds online[k]
         _static_gen_residual_one!(f, z, p,
-            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
+            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr,
             k, inj, inj_offset + k)
     end
 end
@@ -181,11 +181,11 @@ end
 end
 
 @kernel function static_gen_jacobian_ka!(nz, z, p, online,
-        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos)
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr, jac_pos)
     k = @index(Global)
     if @inbounds online[k]
         _static_gen_jacobian_one!(nz, z, p,
-            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos, k)
+            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr, jac_pos, k)
     end
 end
 
@@ -336,7 +336,7 @@ function _rhs_fun_ka_cpu!(f::AbstractArray, z::AbstractArray, u::AbstractArray,
     if st.n > 0
         kernel = static_gen_residual_ka!(backend)
         kernel(f, z, p, inj, st.online,
-               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type,
+               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.regulating,
                inj_meta.n_genrou + inj_meta.n_zipload; ndrange=st.n)
     end
 

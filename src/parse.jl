@@ -461,7 +461,8 @@ function mat_to_grad(mpc)
         bus = busmap[gen["bus"]]
         status_val = gen["status"]
         @assert status_val == 0.0 || status_val == 1.0 "Gen status must be 0 or 1, got $status_val"
-        push!(gens, Gen(bus, " ", gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"], Bool(status_val)))
+        push!(gens, Gen(bus, " ", gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"], Bool(status_val),
+                        get(gen, "Qmax", Inf)/baseMVA, get(gen, "Qmin", -Inf)/baseMVA))
     end
     for branch in mpc["branch"]
         fr = busmap[branch["fbus"]]
@@ -626,7 +627,8 @@ function raw_to_grad(raw::PsystemRaw)
     for gen in raw.gens
         gen.status == 1 || continue
         bus = busmap[gen.busn]
-        push!(gens, Gen(bus, gen.name, gen.pg/baseMVA, gen.qg/baseMVA, gen.mbase, gen.status))
+        push!(gens, Gen(bus, gen.name, gen.pg/baseMVA, gen.qg/baseMVA, gen.mbase, gen.status,
+                        gen.qt/baseMVA, gen.qb/baseMVA))
         # PV/SLACK buses: voltage setpoint comes from the generator's vs field,
         # not the bus's flat-start magnitude.
         bt = buses[bus].type

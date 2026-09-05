@@ -35,7 +35,15 @@ mutable struct Gen
     qsch::Float64
     mbase::Float64
     status::Bool
+    # Reactive limits, pu on the SYSTEM base (not mbase). Used only by the
+    # power flow's PV->PQ switching; +/-Inf means "unlimited".
+    qmax::Float64
+    qmin::Float64
 end
+
+# Backward-compatible constructor: no reactive limits.
+Gen(bus, id, psch, qsch, mbase, status) =
+    Gen(bus, id, psch, qsch, mbase, status, Inf, -Inf)
 
 mutable struct Load
     bus::Int64

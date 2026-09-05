@@ -36,6 +36,11 @@ function static_gen_preallocate!(coord_list::Vector{Vector{Int}},
             # voltage-regulation row: vr^2 + vi^2 - vset^2
             push!(coord_list[ap], vr)
             push!(coord_list[ap], vi)
+            # ... or, once the power flow de-regulates this stub, q - q0.
+            # The pattern must cover both: it is fixed here at layout time,
+            # and whether the stub regulates is only decided later, after the
+            # power flow's Q-limit loop has run.
+            push!(coord_list[ap], ap)
             # power-injection columns: q enters vr/vi rows via the alg state
             push!(coord_list[vr], ap)
             push!(coord_list[vi], ap)
@@ -77,6 +82,7 @@ function static_gen_jac_positions!(table::StaticGenTable, J::SparseMatrixCSC)
             table.jac_pos[k, J_SG_VI_AP] = _find_pos(J, rows, vi, ap)
             table.jac_pos[k, J_SG_AP_VR] = _find_pos(J, rows, ap, vr)
             table.jac_pos[k, J_SG_AP_VI] = _find_pos(J, rows, ap, vi)
+            table.jac_pos[k, J_SG_AP_AP] = _find_pos(J, rows, ap, ap)
         elseif bt == SG_SLACK
             table.jac_pos[k, J_SG_VR_AP]  = _find_pos(J, rows, vr, ap)
             table.jac_pos[k, J_SG_VI_AP]  = _find_pos(J, rows, vi, ap)
@@ -105,7 +111,7 @@ end
 end
 
 @inline function _static_gen_residual_one!(f, z, p,
-        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr,
         k::Int, inj=nothing, inj_slot::Int=0)
     @inbounds begin
     vr_idx = Int(vr_idx_arr[k])
@@ -135,8 +141,15 @@ end
 
     # Alg-row residuals.
     if bt == SG_PV
-        vset = p[pp + 2]
-        f[ap] = vr*vr + vi*vi - vset*vset
+        if regulating_arr[k]
+            vset = p[pp + 2]
+            f[ap] = vr*vr + vi*vi - vset*vset
+        else
+            # De-regulated: the aggregated machines are at a reactive bound,
+            # so q is pinned at its power-flow value instead of floating to
+            # hold the voltage.
+            f[ap] = z[ap] - p[pp + 1]
+        end
     elseif bt == SG_SLACK
         vset = p[pp + 2]
         aset = p[pp + 3]
@@ -156,7 +169,7 @@ end
         table.online[k] || continue
         _static_gen_residual_one!(f, z, p,
             table.vr_idx, table.alg_ptr, table.par_ptr, table.bus_type,
-            k)
+            table.regulating, k)
     end
     return nothing
 end
@@ -166,7 +179,7 @@ end
 # --------------------------------------------------------------------
 
 @inline function _static_gen_jacobian_one!(nz, z, p,
-        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos,
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr, jac_pos,
         k::Int)
     @inbounds begin
     vr_idx = Int(vr_idx_arr[k])
@@ -203,8 +216,17 @@ end
     nz[jac_pos[k, J_SG_VI_VI]] += dii_dvi
 
     if bt == SG_PV
-        nz[jac_pos[k, J_SG_AP_VR]] = 2.0*vr
-        nz[jac_pos[k, J_SG_AP_VI]] = 2.0*vi
+        # These three slots are assigned (not accumulated), so the branch not
+        # taken must be zeroed explicitly rather than left from a prior call.
+        if regulating_arr[k]
+            nz[jac_pos[k, J_SG_AP_VR]] = 2.0*vr
+            nz[jac_pos[k, J_SG_AP_VI]] = 2.0*vi
+            nz[jac_pos[k, J_SG_AP_AP]] = 0.0
+        else
+            nz[jac_pos[k, J_SG_AP_VR]] = 0.0
+            nz[jac_pos[k, J_SG_AP_VI]] = 0.0
+            nz[jac_pos[k, J_SG_AP_AP]] = 1.0
+        end
         nz[jac_pos[k, J_SG_VR_AP]] += vi / vm2
         nz[jac_pos[k, J_SG_VI_AP]] += -vr / vm2
     elseif bt == SG_SLACK
@@ -229,8 +251,8 @@ end
     @inbounds for k in 1:n
         table.online[k] || continue
         _static_gen_jacobian_one!(nz, z, p,
-            table.vr_idx, table.alg_ptr, table.par_ptr, table.bus_type, table.jac_pos,
-            k)
+            table.vr_idx, table.alg_ptr, table.par_ptr, table.bus_type,
+            table.regulating, table.jac_pos, k)
     end
     return nothing
 end
