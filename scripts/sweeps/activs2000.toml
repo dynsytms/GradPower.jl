@@ -20,18 +20,22 @@
 # The two codes agree to ~1% on separation and ~0.1% on frequency deviation,
 # and both run away.
 #
-# Three independent codes agree that ACTIVSg2000 is dynamically unstable:
+# Two independent codes agree that ACTIVSg2000 is dynamically unstable:
 #
 #   GradPower  1e-8 speed kick, no fault -> ~140 deg in 5 s
 #   uqgrid     same runaway, with its own NATIVE ESST4B/IEEEG1/HYGOV/EXAC
 #              models, and with dynamic limits ON or OFF (no difference:
 #              347.898 vs 346.983 deg, |w| 5.1000e-2 vs 5.1002e-2)
-#   ANDES      eigenvalue analysis: 293 eigenvalues with Re > 0, max Re = +5.94,
-#              including an oscillatory unstable mode at 1.46 Hz
-#              (ANDES init still reports out-of-limit variables, so treat the
-#               count as corroboration, not a precise figure)
+#   ANDES      CANNOT be used as evidence here: it fails to initialize this
+#              case (persistent "Initialization failed", with EXAC2 internal
+#              variables reaching 1e26). Its eigenvalue output is therefore
+#              computed at a broken point, and disabling the EXAC2 devices
+#              changes it by exactly zero -- the experiment is not
+#              controllable, so no conclusion is drawn from it.
 #
-# So limiters are NOT the missing piece, and this is not a GradPower bug.
+# So limiters are NOT the missing piece, and this is not a GradPower bug. The
+# evidence rests on GradPower vs uqgrid, which run the SAME 334-machine active
+# set and agree to ~1%.
 #
 # Consequence: labels generated from this case describe that unstable mode,
 # NOT the fault. Every sample comes out "unstable" and the three input

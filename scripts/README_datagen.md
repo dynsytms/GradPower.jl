@@ -87,10 +87,11 @@ the fault. Disable it only deliberately.
 ## ACTIVSg2000
 
 Runs, and matches uqgrid to ~1% — but is **dynamically unstable**, so its
-labels carry almost no information about the fault. Three codes agree:
-GradPower and uqgrid both run away (identically, with limits on or off), and
-ANDES eigenvalue analysis finds 293 modes with `Re > 0`, max `Re = +5.94`.
-Limiters are not the missing piece.
+labels carry almost no information about the fault. GradPower and uqgrid run
+the same 334-machine active set, agree to ~1%, and both run away — with
+uqgrid's dynamic limits on or off, so limiters are not the missing piece.
+(ANDES cannot initialize this case at all, so it yields no usable third
+opinion.)
 
 It also needs `surrogates = true`, which comes in two tiers: 440 records copy
 uqgrid's own redirects (comparable), 418 are GradPower-local stand-ins with no

@@ -230,11 +230,15 @@ CAVEAT on ACTIVSg2000 -- verified against uqgrid, read before using it:
    orders of magnitude and peak |omega| moves under 0.5%. A 1e-8 speed kick
    with NO fault grows to ~140 deg in 5 s.
 
-   A third code agrees. ANDES, with its own native ESST4B/IEEEG1/HYGOV/EXAC
-   models, finds 293 eigenvalues with Re > 0 (max Re = +5.94, including an
-   unstable 1.46 Hz oscillatory mode). And enforcing dynamic LIMITS in uqgrid
-   changes nothing (347.898 vs 346.983 deg), so missing limiters are not the
+   Enforcing dynamic LIMITS in uqgrid changes nothing (347.898 vs 346.983
+   deg, |w| 5.1000e-2 vs 5.1002e-2), so missing limiters are not the
    explanation either.
+
+   ANDES was tried as a third opinion and does NOT provide one: it cannot
+   initialize this case (EXAC2 internal variables reach 1e26), and disabling
+   those devices leaves its eigenvalues bit-identical, so the experiment is
+   not controllable. No conclusion is drawn from it. The evidence here is
+   GradPower vs uqgrid on the same 334-machine active set.
 
    So labels from ACTIVSg2000 describe that unstable mode, not the fault:
    everything comes out "unstable" and your three inputs barely matter. This
