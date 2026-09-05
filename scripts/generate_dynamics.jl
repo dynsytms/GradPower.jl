@@ -55,8 +55,9 @@ function main()
     settle_ratio = Float64(get(lbl, "settle_ratio", 0.5))
 
     rank == 0 && @info "Building $(length(cfg["cases"])) case system(s)..."
-    systems = [build_system(case) for case in cfg["cases"]]
-    bases   = [capture_base(sys) for sys in systems]
+    built   = [build_system(case) for case in cfg["cases"]]
+    systems = first.(built)
+    bases   = last.(built)
     scenarios = enumerate_scenarios(cfg, systems)
 
     # round-robin shard index is scenarios[rank+1 : world : end]
@@ -127,7 +128,8 @@ function main()
                     # New operating point: rescale, re-solve the power flow, and
                     # re-initialize. initialized_problem asserts the equilibrium
                     # residual, so a stale operating point fails loudly here.
-                    apply_load_scale!(sys, base, sc.load_scale; zip_alpha=zip_alpha)
+                    apply_load_scale!(sys, base, sc.load_scale; zip_alpha=zip_alpha,
+                                      enforce_q_limits=q_limits_enabled(case))
                     empty!(sys.dynamic.events)
                     dprob, res = initialized_problem(sys; residual_tol=residual_tol)
                     z0 = copy(dprob.zvec)

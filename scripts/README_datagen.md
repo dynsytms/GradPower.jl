@@ -86,13 +86,20 @@ the fault. Disable it only deliberately.
 
 ## ACTIVSg2000
 
-**Not ready for data generation**, but the case is fine — GradPower's power
-flow is the problem. `runpf!` does not enforce generator reactive limits
-(PV→PQ switching, `plan_enhance.md` Phase 6). Without it, 200 of 432
-generators solve outside their Q limits, 20 machines end up past their
-pull-out angle, and the equilibrium has 18 unstable eigenvalues. uqgrid with
-`enforce_q_limits=True` gives 0.001° separation on the same case; with it off,
-209.981°.
+**Ready to use, provided the power flow enforces generator reactive limits** —
+which it does by default (`enforce_q_limits` in the case table).
 
-Use ACTIVSg200 or IEEE39 until PF Q limits land — both have zero unstable
-eigenvalues. Full analysis in `docs/activsg2000-diagnosis.md`.
+The case itself was never the problem; GradPower's power flow was. Without Q
+limits, 200 of 432 generators solve outside their nameplate QT/QB, 20 machines
+end up past their pull-out angle, and a 1e-6 speed kick with no fault grows to
+147.7° in 5 s — every label would describe that runaway rather than the fault.
+With limits, 199 buses switch PV→PQ, no generator is outside its limits, and
+the same kick decays to 0.0018°.
+
+Validated against uqgrid on the same case, models and fault: identical PV→PQ
+active set (199 buses, all 2000 bus types agree), bus voltages to 6.7e-15,
+reactive dispatch to 2.3e-13, and machine speeds to 1.2e-14 elementwise over
+the whole trajectory.
+
+Keep `check_self_stability = true` — it is the guard that caught this. Full
+analysis in `docs/activsg2000-diagnosis.md`.

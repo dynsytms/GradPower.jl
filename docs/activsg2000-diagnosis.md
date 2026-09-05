@@ -1,8 +1,12 @@
 # ACTIVSg2000: the case is fine; our power flow was wrong
 
-**Root cause: `runpf!` does not enforce generator reactive-power limits.**
-ACTIVSg2000 is a usable case. Every "the case is unstable" claim in the
-earlier revision of this document was wrong and is corrected below.
+**Root cause: `runpf!` did not enforce generator reactive-power limits.**
+ACTIVSg2000 is a usable case. Every "the case is unstable" claim in the first
+revision of this document was wrong and is corrected below.
+
+**Status: fixed.** `runpf!` now takes `enforce_q_limits`, and the data-generation
+pipeline turns it on by default. See "The fix" at the end for what landed and
+how it was validated.
 
 ## The one-line result
 
@@ -44,7 +48,11 @@ between a runaway and a flat, stable trajectory.
    the equilibrium is unstable by construction. GradPower's reduced-system
    spectrum: **18 eigenvalues with Re > 0, max Re = +10.06, all at f = 0 Hz**
    (non-oscillatory, as pull-out implies). Controls IEEE39_gov and ACTIVSg200:
-   **0 unstable eigenvalues**.
+   **0 unstable eigenvalues**. (These came from a dedicated reduction; a
+   quick dense Schur written later produced nonsense on all three cases,
+   including the stable controls, so treat any eigenvalue figure as valid only
+   with its own reduction shown. The self-kick test below needs no reduction
+   and says the same thing.)
 
 5. **The link is monotonic.** Capping q-axis reactance moves machines back
    inside 90 deg and removes unstable modes almost one-for-one:
@@ -88,13 +96,74 @@ result quoted earlier (293 modes, Re > 0) was withdrawn: computed at that
 broken point, and disabling 38 EXAC2 devices left it bit-identical, so the
 experiment was not controlled.
 
-## What to do
+## The fix
 
-**To use ACTIVSg2000, the power flow must enforce generator Q limits.**
-GradPower needs PV→PQ switching in `runpf!` (plan_enhance.md Phase 6). Until
-that lands, GradPower's ACTIVSg2000 operating point is not physical and any
-dataset generated from it describes a pull-out artifact rather than the fault.
+`runpf!(psys; enforce_q_limits=true)` runs the standard outer loop: solve,
+convert any PV bus past its aggregate limit to PQ with its generators pinned at
+their own bounds, repeat until nothing switches. Conversion is one-way, as in
+MATPOWER's default `enforce_q_lims = 1`; allowing pinned buses back to PV cycles
+on this case and exits on the iteration cap with buses still violating.
+
+Two things had to change alongside it, both found by validation rather than by
+reading the code:
+
+* **Reactive dispatch across co-located generators.** The even split is wrong
+  at the machine level: bus 7422 has one 3.5 MVAr unit beside four 57 MVAr
+  units, and an even split hands the small one 0.41 pu against a 0.035 pu
+  ceiling — while the bus total sits comfortably inside its aggregate limits.
+  The dispatch is now the projection of the even split onto the box, which is
+  what uqgrid does and which reduces to the old even split exactly when no
+  limit binds.
+
+* **`StaticGenerator` stubs on converted buses.** 67 of the 199 converted buses
+  carry a stub, and it kept holding `vr^2 + vi^2 = vset^2` with unlimited
+  reactive power through the transient — reintroducing the very behaviour the
+  limits remove. Stubs on a converted bus now switch to `q = q0`. Their
+  `vset`/`aset` are also re-read from the solved voltage instead of the
+  parse-time setpoint (a no-op without enforcement, since a PV bus's magnitude
+  is not a power-flow variable; 0.08 pu of initialization residual with it).
+
+### Effect on ACTIVSg2000
+
+| | no Q limits | Q limits |
+|---|---|---|
+| generators outside QT/QB | 200 / 432 | **0 / 432** |
+| buses switched PV→PQ | 0 | 199 |
+| machines past 90 deg pull-out | 20 (worst 164 deg) | **0** (worst 66.6 deg) |
+| 5 s self-kick (1e-6, no fault) | 147.72 deg | **0.0018 deg** |
+| initialization residual | 1.3e-9 | 1.7e-11 |
+
+Other cases: IEEE9 has no binding limits and is bit-unchanged; IEEE39 pins 3
+buses; ACTIVSg200 pins 4; ACTIVSg70k pins 4063 of 8107 generators' buses with 0
+residual violations. All were stable before and after — ACTIVSg2000 is the case
+where the operating point was actually load-bearing.
+
+### Validation against uqgrid
+
+Same case, same `.dyr`, same fault (bus 1001, r=0.01, 0.2-0.3 s), ZIP alpha 0.5,
+both codes with `enforce_q_limits` on:
+
+| quantity | agreement |
+|---|---|
+| PV→PQ active set | identical — 199 buses, all 2000 bus types match |
+| bus voltage magnitude / angle | 6.7e-15 / 1.4e-14 |
+| generator reactive dispatch | 2.3e-13 |
+| machine speeds, 314 machines x 241 steps | **1.2e-14** elementwise |
+
+The two implementations were written independently from the same standard
+algorithm; the trajectory agreement is to round-off.
+
+Note this is agreement between two codes, not against measured behaviour or a
+commercial tool. ANDES could not run the case (below), so it is not a third
+opinion.
+
+### Caveat that remains
+
+A de-regulated `StaticGenerator` stub holds its reactive output fixed for the
+whole transient. A real machine at a limit would re-enter regulation if the
+voltage recovered. Modelling that needs the dynamic Q-limit logic that
+`plan_enhance.md` tracks separately; it is not part of this change.
 
 Implementing ESST4B natively does not help here, and neither do limiters:
-removing exciters entirely changes nothing, because the defect is in the
+removing exciters entirely changes nothing, because the defect was in the
 operating point, not the dynamics.

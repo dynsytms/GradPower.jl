@@ -84,17 +84,20 @@ t_final = 3.0
 # ---------------------------------------------------------------------------
 # from_psse parses the .raw (network + power flow data) and the .dyr (dynamic
 # device models), build_network! forms Ybus, runpf! solves the base power flow.
-# `build_system` does all three.
+# `build_system` does all three, and hands back the untouched lambda = 1
+# operating point alongside the system -- every lambda is applied to THAT
+# snapshot, so repeated scaling never compounds.
+#
+# The power flow holds generators to their reactive limits (QT/QB from the
+# .raw), converting a PV bus to PQ when its machines run out of reactive
+# capability. Set `enforce_q_limits = false` in the case table to switch that
+# off, but read the note at the bottom of this file before you do.
 
 @info "Building case..."
-sys = build_system(case)
+sys, base = build_system(case)
 @printf("  %d buses, %d branches, %d dynamic devices (diff=%d, alg=%d)\n",
         length(sys.buses), length(sys.branches), sys.dynamic.num_devices,
         sys.dynamic.diff_dim, sys.dynamic.alg_dim)
-
-# Snapshot the lambda = 1 operating point. Every lambda is applied to THIS,
-# so repeated scaling never compounds.
-base = capture_base(sys)
 
 # ---------------------------------------------------------------------------
 # 2. Define the three input dimensions.
@@ -207,29 +210,32 @@ and on Polaris:
 Always run --dry-run first: it prints the scenario count and the sampled
 lambda range without simulating anything.
 
-CAVEAT on ACTIVSg2000 -- do not generate data from it yet:
+NOTES on ACTIVSg2000:
 
-1. THE CASE IS FINE. GRADPOWER'S POWER FLOW IS NOT (yet). runpf! does not
-   enforce generator reactive-power limits, so 200 of 432 generators solve
-   outside their Q limits -- bus 7400 absorbs 279 MVAr against an 8 MVAr
-   floor. That drags 20 machines past their pull-out angle (internal angle
-   > 90 deg, worst 164 deg), where synchronizing torque is negative, giving
-   18 unstable eigenvalues (max Re +10.06). The trajectory then runs away
-   regardless of the fault, so labels carry no information.
+1. IT NEEDS POWER-FLOW Q LIMITS, WHICH ARE ON BY DEFAULT. Without them 200 of
+   432 generators solve outside their nameplate QT/QB -- bus 7400 absorbs
+   279 MVAr against an 8 MVAr floor. That drags 20 machines past their
+   pull-out angle (internal angle > 90 deg, worst 164 deg), where the
+   synchronizing torque is negative, and the system then runs away on its own:
+   a 1e-6 speed kick with no fault at all grows to 147.7 deg in 5 s, so every
+   label would describe that mode rather than the fault.
 
-   uqgrid on the same case, same models, same fault:
-       enforce_q_limits = False  ->  209.981 deg,  |w| 5.12e-2
-       enforce_q_limits = True   ->    0.001 deg,  |w| 3.67e-7
+   With limits enforced, 199 buses switch PV -> PQ, no generator ends up
+   outside its limits, no machine is past pull-out, and the same kick decays
+   to 0.0018 deg. Validated against uqgrid on the same case, models and fault:
+   identical PV->PQ active set and machine speeds agreeing to 1.2e-14 over the
+   whole trajectory.
 
-   The fix is PV->PQ switching in the power flow (plan_enhance.md Phase 6).
-   Use ACTIVSg200 or IEEE39 meanwhile: both have zero unstable eigenvalues.
+   Leave `enforce_q_limits` alone unless you are deliberately reproducing a
+   pre-fix dataset. `check_self_stability` in the sweep config is the guard
+   that catches this class of problem; keep it on.
 
 2. MODEL COVERAGE. Separately, 858 .dyr records have no native kernel and are
    silently skipped unless you pass surrogates => true, which maps them onto
    TGOV1/SEXS in two tiers (440 mirrored from uqgrid, 418 GradPower-local with
-   no oracle). Surrogates are stand-ins, never native coverage. Note this is
-   NOT what causes the instability -- removing exciters entirely changes
-   nothing.
+   no oracle). Surrogates are stand-ins, never native coverage. Note this was
+   NOT the cause of the instability above -- removing exciters entirely
+   changed nothing, because the defect was in the operating point.
 
    Full analysis: docs/activsg2000-diagnosis.md
 """)

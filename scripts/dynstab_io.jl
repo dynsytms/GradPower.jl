@@ -45,10 +45,21 @@ end
 
 # The base (lambda = 1) operating point, captured once per case so that every
 # lambda is applied to the ORIGINAL values rather than compounding.
+#
+# It must be captured BEFORE the first power flow, not after. Under Q-limit
+# enforcement the power flow mutates `bus.type` (PV -> PQ) and `gen.qsch`
+# (pinned at a bound), and those are exactly the fields each new lambda has to
+# start clean from. Snapshotting them after a solve would make every subsequent
+# lambda inherit the lambda = 1 active set instead of finding its own. That is
+# why `build_system` returns the BasePoint itself -- there is no way to call it
+# at the wrong moment.
 struct BasePoint
     pd::Vector{Float64}        # per ps.loads
     qd::Vector{Float64}
     psch::Vector{Float64}      # per ps.gens
+    qsch::Vector{Float64}
+    bus_type::Vector{Int64}    # pre-Q-limit types; the loop converts PV->PQ
+    vset::Vector{Float64}      # PV setpoints, released along with the type
     is_slack_gen::Vector{Bool}
     zip_pinj::Vector{Float64}  # per ZIPLoad device, in device order
     zip_qinj::Vector{Float64}
@@ -64,7 +75,9 @@ function capture_base(sys)
         end
     end
     return BasePoint([l.pd for l in sys.loads], [l.qd for l in sys.loads],
-                     [g.psch for g in sys.gens], [g.bus in slack for g in sys.gens],
+                     [g.psch for g in sys.gens], [g.qsch for g in sys.gens],
+                     [b.type for b in sys.buses], [b.v0m for b in sys.buses],
+                     [g.bus in slack for g in sys.gens],
                      zp, zq, zi)
 end
 
@@ -74,7 +87,10 @@ end
 Set the operating point to `lambda` x base loading and re-solve the power flow.
 
 Scales every load (P and Q) and every non-slack generator's scheduled P, then
-re-runs the power flow so the slack picks up the mismatch. The ZIPLoad devices
+re-runs the power flow so the slack picks up the mismatch. `enforce_q_limits`
+must match the flag used for the base solve -- a different active set at a
+different lambda is fine and expected, but silently dropping the limits at some
+lambdas would make the sampled operating points incomparable. The ZIPLoad devices
 that the dynamics actually integrate are re-synced afterwards:
 
   * `pinj`/`qinj` from the scaled static loads, and
@@ -85,7 +101,20 @@ model, captured from the .raw file before the power flow ever ran. If it is
 left stale, the load consumes something other than `pinj` at the new operating
 voltage and the dynamics no longer start at an equilibrium.
 """
-function apply_load_scale!(sys, base::BasePoint, lambda::Float64; zip_alpha::Float64=1.0)
+function apply_load_scale!(sys, base::BasePoint, lambda::Float64;
+                           zip_alpha::Float64=1.0, enforce_q_limits::Bool=true)
+    # Undo the previous lambda's Q-limit active set before re-solving. The
+    # limit loop converts PV buses to PQ and pins their generators; leaving
+    # that in place would make each lambda inherit the last one's active set
+    # instead of finding its own.
+    for (i, bus) in enumerate(sys.buses)
+        bus.type = base.bus_type[i]
+        base.bus_type[i] == 2 && (bus.v0m = base.vset[i])
+    end
+    for (g, gen) in enumerate(sys.gens)
+        gen.qsch = base.qsch[g]
+    end
+
     for (k, load) in enumerate(sys.loads)
         load.pd = base.pd[k] * lambda
         load.qd = base.qd[k] * lambda
@@ -94,7 +123,7 @@ function apply_load_scale!(sys, base::BasePoint, lambda::Float64; zip_alpha::Flo
         base.is_slack_gen[g] || (gen.psch = base.psch[g] * lambda)
     end
 
-    GradPower.runpf!(sys; verbose=false)
+    GradPower.runpf!(sys; verbose=false, enforce_q_limits=enforce_q_limits)
 
     for (j, i) in enumerate(base.zip_dev_idx)
         zl = sys.dynamic.devices[i].dtype
@@ -160,6 +189,24 @@ function check_self_stability(sys, dprob, z0::Vector{Float64};
 end
 
 
+# Whether this case's power flow should hold generators to their reactive
+# limits. Defaults ON: a solution that leaves machines outside their nameplate
+# QT/QB is not a physical operating point, and on a case the size of
+# ACTIVSg2000 it is not a small error either -- 200 of 432 generators solve
+# outside their limits without it, which drags 20 machines past their pull-out
+# angle and makes every trajectory from that point diverge regardless of the
+# fault. Set `enforce_q_limits = false` in a case table only to reproduce a
+# legacy dataset.
+q_limits_enabled(case) = Bool(get(case, "enforce_q_limits", true))
+
+"""
+    build_system(case) -> (sys, base)
+
+Parse a case, form Ybus, snapshot the untouched operating point, and solve the
+base power flow. Returns both the system and its `BasePoint`; see the comment
+on `BasePoint` for why the snapshot has to be taken here rather than by the
+caller afterwards.
+"""
 function build_system(case)
     raw = resolve_path(case["raw"])
     dyr = resolve_path(case["dyr"])
@@ -167,8 +214,9 @@ function build_system(case)
                               add_static_gen_stubs=Bool(get(case, "add_static_gen_stubs", true)),
                               surrogates=Bool(get(case, "surrogates", false)))
     GradPower.build_network!(sys)
-    GradPower.runpf!(sys; verbose=false)
-    return sys
+    base = capture_base(sys)
+    GradPower.runpf!(sys; verbose=false, enforce_q_limits=q_limits_enabled(case))
+    return sys, base
 end
 
 

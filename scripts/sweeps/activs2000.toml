@@ -4,27 +4,28 @@
 #   julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/activs2000.toml
 #
 # ###########################################################################
-# DO NOT GENERATE A DATASET FROM THIS CONFIG YET.
+# ACTIVSg2000 requires generator reactive limits in the power flow. That is on
+# by default now (`enforce_q_limits` in the case table below); do not turn it
+# off for this case.
 #
-# ACTIVSg2000 is a perfectly good case. GradPower's power flow is not yet
-# adequate for it: runpf! does not enforce generator reactive-power limits
-# (PV->PQ switching), which plan_enhance.md Phase 6 lists as missing.
+# Why it matters here, measured:
+#   without Q limits  200 of 432 generators solve outside their nameplate
+#                     QT/QB -- bus 7400 absorbs 279 MVAr against an 8 MVAr
+#                     floor -- which drags 20 machines past their pull-out
+#                     angle (internal angle > 90 deg, worst 164 deg). Past
+#                     90 deg the synchronizing torque is negative, so the
+#                     system runs away on its own: a 1e-6 speed kick with no
+#                     fault at all grows to 147.7 deg in 5 s. Every sample
+#                     would be labelled unstable by a mode that has nothing to
+#                     do with the fault.
+#   with Q limits     199 buses switch PV -> PQ, 0 generators end up outside
+#                     their limits, 0 machines past pull-out (worst 66.6 deg),
+#                     and the same 1e-6 kick decays to 0.0018 deg.
 #
-# Without that, 200 of 432 generators solve outside their Q limits -- bus 7400
-# absorbs 279 MVAr against an 8 MVAr floor -- which drives 20 machines past
-# their pull-out angle (internal angle > 90 deg, worst 164 deg). Past 90 deg
-# the synchronizing torque is negative, giving 18 unstable eigenvalues
-# (max Re +10.06, non-oscillatory). The result is a runaway that has nothing
-# to do with the fault, so every sample is labelled unstable and the three
-# input dimensions barely move the outcome.
-#
-# Proof that the case itself is fine -- uqgrid, same models, same fault:
-#     enforce_q_limits = False  ->  209.981 deg separation, |w| 5.12e-2
-#     enforce_q_limits = True   ->    0.001 deg separation, |w| 3.67e-7
-#
-# So: implement PF Q limits, then this config becomes usable and
-# check_self_stability below should be turned back ON. Until then, use
-# ACTIVSg200 or IEEE39 (both have zero unstable eigenvalues).
+# Validated against uqgrid on the same case, models and fault: identical
+# PV->PQ active set (199 buses, all 2000 bus types agree), bus voltages to
+# 6.7e-15, generator reactive dispatch to 2.3e-13, and machine speeds over the
+# whole fault trajectory to 1.2e-14.
 #
 # Full analysis: docs/activsg2000-diagnosis.md
 # ###########################################################################
@@ -37,10 +38,9 @@ dt         = 0.008333333333333333   # 1/120 s
 downsample = 2                      # store every 2nd step
 residual_tol = 1e-6
 
-# Disabled ONLY because the operating point is currently unphysical (no PF Q
-# limits). Turn this back on as soon as PV->PQ switching lands -- it is the
-# guard that catches exactly this class of problem.
-check_self_stability = false
+# The guard that catches an operating point which is not actually a stable
+# equilibrium. It is what caught the missing Q limits; keep it on.
+check_self_stability = true
 
 [load]
 # lambda ~ Uniform(low, high), one draw shared by the fault cross product
@@ -84,3 +84,8 @@ zip_alpha = 0.5
 #                 validation or published results.
 # Without this flag all 858 records are silently skipped.
 surrogates = true
+
+# Hold generators to their .raw QT/QB limits in the power flow (PV->PQ
+# switching). This is the default; it is spelled out here because this case
+# is unusable without it -- see the header.
+enforce_q_limits = true
