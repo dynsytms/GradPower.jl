@@ -48,12 +48,15 @@ function main()
     dt = Float64(sim["dt"])
     t_final = Float64(sim["t_final"])
     downsample = Int(get(sim, "downsample", 1))
+    residual_tol = Float64(get(sim, "residual_tol", 1e-6))
+    check_stability = Bool(get(sim, "check_self_stability", true))
     lbl = get(cfg, "label", Dict())
     angle_thr = deg2rad(Float64(get(lbl, "angle_sep_threshold_deg", 180.0)))
     settle_ratio = Float64(get(lbl, "settle_ratio", 0.5))
 
     rank == 0 && @info "Building $(length(cfg["cases"])) case system(s)..."
     systems = [build_system(case) for case in cfg["cases"]]
+    bases   = [capture_base(sys) for sys in systems]
     scenarios = enumerate_scenarios(cfg, systems)
 
     # round-robin shard index is scenarios[rank+1 : world : end]
@@ -67,7 +70,10 @@ function main()
         if rank == 0
             for (ci, case) in enumerate(cfg["cases"])
                 n = count(s -> s.case_idx == ci, scenarios)
-                println("  $(case["name"]): $n scenarios")
+                lams = sort(unique(s.load_scale for s in scenarios if s.case_idx == ci))
+                @printf("  %s: %d scenarios, %d load draw(s) in [%.4f, %.4f]\n",
+                        case["name"], n, length(lams),
+                        isempty(lams) ? NaN : minimum(lams), isempty(lams) ? NaN : maximum(lams))
             end
         end
         return
@@ -83,6 +89,12 @@ function main()
         case = cfg["cases"][ci]
         name = case["name"]
         sys = systems[ci]
+        base = bases[ci]
+        zip_alpha = Float64(get(case, "zip_alpha", 1.0))
+        # Group this rank's work by operating point so the power flow and the
+        # dynamics initialization are paid once per lambda, not once per fault.
+        sort!(scs, by = s -> (s.load_draw, s.fault_bus_internal, s.r_fault, s.t_off))
+
         case_dir = joinpath(out_root, name)
         mkpath(case_dir)
         out_file = joinpath(case_dir, @sprintf("%s_rank%04d.h5", name, rank))
@@ -100,16 +112,46 @@ function main()
             ra["n_bus"]          = length(sys.buses)
             ra["diff_dim"]       = sys.dynamic.diff_dim
             ra["alg_dim"]        = sys.dynamic.alg_dim
+            ra["zip_alpha"]      = zip_alpha
             ra["rank"]           = rank
             ra["world_size"]     = world
 
             write_grid!(fid, sys)
 
             nwritten = 0
+            current_draw = -1
+            dprob = nothing
+            z0 = Float64[]
             for (k, sc) in enumerate(scs)
+                if sc.load_draw != current_draw
+                    # New operating point: rescale, re-solve the power flow, and
+                    # re-initialize. initialized_problem asserts the equilibrium
+                    # residual, so a stale operating point fails loudly here.
+                    apply_load_scale!(sys, base, sc.load_scale; zip_alpha=zip_alpha)
+                    empty!(sys.dynamic.events)
+                    dprob, res = initialized_problem(sys; residual_tol=residual_tol)
+                    z0 = copy(dprob.zvec)
+                    current_draw = sc.load_draw
+                    @info "[rank $rank] $name: load_draw=$(sc.load_draw) lambda=$(round(sc.load_scale, digits=5)) residual=$(res)"
+
+                    # Preflight: confirm the equilibrium is actually stable, so
+                    # we don't generate thousands of samples whose labels are
+                    # set by a fault-independent unstable mode. See
+                    # check_self_stability for why this is not hypothetical.
+                    if check_stability
+                        chk = check_self_stability(sys, dprob, z0; t_final=t_final, dt=dt)
+                        chk.ok || error("""
+                            $name at lambda=$(sc.load_scale) is NOT a stable equilibrium: a 1e-6 speed
+                            kick with no fault grows to $(round(chk.sep_deg, digits=2)) deg. Labels from this case would
+                            reflect that unstable mode, not the fault. Check that the .dyr's governor
+                            and exciter models are actually supported by the parser (unsupported rows
+                            are skipped with a warning at parse time). Set
+                            [sim] check_self_stability = false to override.""")
+                    end
+                end
+
                 empty!(sys.dynamic.events)
-                dprob = GradPower.DynamicProblem(sys)
-                GradPower.initialize_dynamics!(dprob, sys)
+                dprob.zvec .= z0            # every fault starts from this operating point
                 GradPower.add_event!(sys,
                     GradPower.ContingencyEvent(sc.fault_bus_internal, sc.r_fault, sc.t_on, sc.t_off))
                 tvec, traj = GradPower.integrate!(dprob, sys, t_final; dt=dt)

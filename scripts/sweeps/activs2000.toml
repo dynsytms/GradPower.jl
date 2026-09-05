@@ -1,0 +1,99 @@
+# ACTIVSg2000 dynamic-stability sweep.
+#
+#   julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/activs2000.toml --dry-run
+#   julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/activs2000.toml
+#
+# ###########################################################################
+# READ THIS BEFORE GENERATING A DATASET FROM THIS CONFIG
+#
+# ACTIVSg2000 is DYNAMICALLY UNSTABLE as shipped, and this is confirmed
+# against uqgrid, not a GradPower artifact. Both simulators show a
+# fault-independent runaway: changing the fault admittance by 5 orders of
+# magnitude (r = 0.02 -> 1000, i.e. y = 50 -> 0.001) moves peak |omega| by
+# under 0.5%.
+#
+#   scenario (bus 1001, ton=0.2, toff=0.3, tend=2, alpha=0.5)
+#                        GradPower            uqgrid (native models)
+#     r = 0.02      sep 343.6 / |w| 5.105e-2   sep 347.0 / |w| 5.100e-2
+#     r = 1000      sep 196.8 / |w| 5.125e-2   sep 210.0 / |w| 5.121e-2
+#
+# The two codes agree to ~1% on separation and ~0.1% on frequency deviation,
+# and both run away.
+#
+# Three independent codes agree that ACTIVSg2000 is dynamically unstable:
+#
+#   GradPower  1e-8 speed kick, no fault -> ~140 deg in 5 s
+#   uqgrid     same runaway, with its own NATIVE ESST4B/IEEEG1/HYGOV/EXAC
+#              models, and with dynamic limits ON or OFF (no difference:
+#              347.898 vs 346.983 deg, |w| 5.1000e-2 vs 5.1002e-2)
+#   ANDES      eigenvalue analysis: 293 eigenvalues with Re > 0, max Re = +5.94,
+#              including an oscillatory unstable mode at 1.46 Hz
+#              (ANDES init still reports out-of-limit variables, so treat the
+#               count as corroboration, not a precise figure)
+#
+# So limiters are NOT the missing piece, and this is not a GradPower bug.
+#
+# Consequence: labels generated from this case describe that unstable mode,
+# NOT the fault. Every sample comes out "unstable" and the three input
+# dimensions barely move the outcome. The dataset would be large, clean, and
+# uninformative.
+#
+# That is why check_self_stability is disabled below -- the preflight guard
+# would (correctly) refuse to run. Leaving it false is a deliberate override,
+# not a default. Do not remove this comment when you copy the file.
+# ###########################################################################
+
+output_root = "./dynstab_out"
+
+[sim]
+t_final    = 2.0
+dt         = 0.008333333333333333   # 1/120 s
+downsample = 2                      # store every 2nd step
+residual_tol = 1e-6
+
+# Deliberate override: see the header. Set true for any case you expect to be
+# stable -- it is the guard that catches a silently useless dataset.
+check_self_stability = false
+
+[load]
+# lambda ~ Uniform(low, high), one draw shared by the fault cross product
+# beneath it. Base case is the mean when low + high == 2.
+distribution = "uniform"
+low       = 0.95
+high      = 1.05
+n_samples = 10
+seed      = 20240917
+
+[fault]
+# "all" faults every bus (2000 of them). Start with a list while you calibrate.
+buses     = [1001, 1002, 1003, 2056, 3105, 4045]
+# Severity is NOT monotonic in r_fault: the fault is purely resistive, so the
+# power it absorbs is V^2/r and peaks where r matches the local Thevenin
+# impedance. Sweep on a log grid and check where severity actually peaks.
+r_fault   = [0.01, 0.05, 0.2]
+t_on      = 0.2
+durations = [0.05, 0.1, 0.15]
+
+[label]
+angle_sep_threshold_deg = 180.0
+settle_ratio            = 0.5
+
+[[cases]]
+name = "activs2000"
+raw  = "examples/ACTIVSg2000.raw"
+dyr  = "examples/ACTIVSg2000.dyr"
+add_static_gen_stubs = true
+zip_alpha = 0.5
+# Required for full DYR coverage: 858 records (GGOV1 367, ESST4B 278, EXPIC1
+# 61, IEEEG1 43, EXAC2 38, HYGOV 25, IEEET1 23, ESAC6A 7, EXAC1 6, SCRX 5,
+# ESAC1A 4, ESDC2A 1) have no native kernel and are mapped onto TGOV1/SEXS.
+# Surrogates come in two tiers and are reported separately at parse time:
+#   440 MIRRORED  (GGOV1, EXPIC1, SCRX, ESAC6A) copy uqgrid's own redirects
+#                 verbatim, so GradPower-vs-uqgrid stays comparable.
+#   418 LOCAL     (ESST4B, IEEEG1, HYGOV, EXAC1/2, ESAC1A, IEEET1, ESDC2A)
+#                 have NO upstream oracle -- uqgrid implements them natively.
+#                 These reproduce TGOV1/SEXS dynamics, not the source
+#                 equations. Fine for getting the case to run; NOT valid for
+#                 validation or published results.
+# Without this flag all 858 records are silently skipped.
+surrogates = true

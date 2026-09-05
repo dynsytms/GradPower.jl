@@ -3,9 +3,13 @@
 using GradPower
 using HDF5
 using Printf
+using Random
 
 const REPO_ROOT = normpath(joinpath(@__DIR__, ".."))
 resolve_path(p) = isabspath(p) ? p : joinpath(REPO_ROOT, p)
+
+# Bump when the on-disk HDF5 layout changes in a way consumers must notice.
+const EXPORT_SCHEMA_VERSION = 2
 
 function get_rank_size()
     for (rk, sk) in (("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
@@ -22,8 +26,11 @@ function get_rank_size()
 end
 
 
+# A scenario is one simulation: an operating point (load_scale) plus a fault.
 struct Scenario
     case_idx::Int
+    load_scale::Float64      # lambda, sampled from the [load] distribution
+    load_draw::Int           # which lambda draw this is (0-based), for grouping
     fault_bus_internal::Int
     fault_bus_ext::Int
     r_fault::Float64
@@ -31,13 +38,172 @@ struct Scenario
     t_off::Float64
 end
 
+
+# ---------------------------------------------------------------------------
+# Operating point
+# ---------------------------------------------------------------------------
+
+# The base (lambda = 1) operating point, captured once per case so that every
+# lambda is applied to the ORIGINAL values rather than compounding.
+struct BasePoint
+    pd::Vector{Float64}        # per ps.loads
+    qd::Vector{Float64}
+    psch::Vector{Float64}      # per ps.gens
+    is_slack_gen::Vector{Bool}
+    zip_pinj::Vector{Float64}  # per ZIPLoad device, in device order
+    zip_qinj::Vector{Float64}
+    zip_dev_idx::Vector{Int}
+end
+
+function capture_base(sys)
+    slack = Set(i for (i, b) in enumerate(sys.buses) if b.type == 3)
+    zi = Int[]; zp = Float64[]; zq = Float64[]
+    for (i, dev) in enumerate(sys.dynamic.devices)
+        if dev.dtype isa GradPower.ZIPLoad
+            push!(zi, i); push!(zp, dev.dtype.pinj); push!(zq, dev.dtype.qinj)
+        end
+    end
+    return BasePoint([l.pd for l in sys.loads], [l.qd for l in sys.loads],
+                     [g.psch for g in sys.gens], [g.bus in slack for g in sys.gens],
+                     zp, zq, zi)
+end
+
+"""
+    apply_load_scale!(sys, base, lambda; zip_alpha)
+
+Set the operating point to `lambda` x base loading and re-solve the power flow.
+
+Scales every load (P and Q) and every non-slack generator's scheduled P, then
+re-runs the power flow so the slack picks up the mismatch. The ZIPLoad devices
+that the dynamics actually integrate are re-synced afterwards:
+
+  * `pinj`/`qinj` from the scaled static loads, and
+  * `v0mag` from the NEW power-flow voltage.
+
+Refreshing `v0mag` is not optional. It is the reference voltage of the ZIP
+model, captured from the .raw file before the power flow ever ran. If it is
+left stale, the load consumes something other than `pinj` at the new operating
+voltage and the dynamics no longer start at an equilibrium.
+"""
+function apply_load_scale!(sys, base::BasePoint, lambda::Float64; zip_alpha::Float64=1.0)
+    for (k, load) in enumerate(sys.loads)
+        load.pd = base.pd[k] * lambda
+        load.qd = base.qd[k] * lambda
+    end
+    for (g, gen) in enumerate(sys.gens)
+        base.is_slack_gen[g] || (gen.psch = base.psch[g] * lambda)
+    end
+
+    GradPower.runpf!(sys; verbose=false)
+
+    for (j, i) in enumerate(base.zip_dev_idx)
+        zl = sys.dynamic.devices[i].dtype
+        zl.pinj  = base.zip_pinj[j] * lambda
+        zl.qinj  = base.zip_qinj[j] * lambda
+        zl.v0mag = sys.buses[zl.bus].v0m
+        zl.α     = zip_alpha
+    end
+    return sys
+end
+
+"""
+    initialized_problem(sys; residual_tol)
+
+Build and initialize a DynamicProblem, verifying it really is at equilibrium.
+Returns `(dprob, residual)`. Throws if the residual exceeds `residual_tol`,
+which is the guard against a silently stale operating point.
+"""
+function initialized_problem(sys; residual_tol::Float64=1e-6)
+    dprob = GradPower.DynamicProblem(sys)
+    GradPower.initialize_dynamics!(dprob, sys)
+    f = zeros(length(dprob.zvec))
+    GradPower.rhs_fun!(f, dprob.zvec, dprob.uvec, dprob.pvec, sys)
+    res = maximum(abs, f)
+    res <= residual_tol ||
+        error("equilibrium residual $res exceeds tol $residual_tol; operating point is not consistent")
+    return dprob, res
+end
+
+
+"""
+    check_self_stability(sys, dprob, z0; t_final, dt, eps, tol_deg)
+
+Preflight: is this operating point actually a STABLE equilibrium?
+
+Applies an infinitesimal speed kick to one machine, runs with NO fault, and
+measures the resulting angle separation. A usable case returns ~0 degrees.
+
+This is not paranoia. ACTIVSg2000 passes every other check -- the power flow
+solves, the initialization residual is ~1e-9, and a no-fault run is flat to
+1e-10 -- yet a 1e-8 speed perturbation grows to 140 degrees in 5 s, because all
+334 machines have D = 0 and the .dyr's governors (GGOV1, IEEEG1, HYGOV) and
+most of its exciters are model types this parser does not implement, so they
+are silently skipped. The trajectory is then dominated by a fault-independent
+unstable mode: the fault admittance can change by 5 orders of magnitude and
+move the label by under 1%. Without this check you get a large, clean-looking,
+completely uninformative dataset.
+
+Returns `(ok, sep_deg)` and leaves `dprob.zvec` restored to `z0`.
+"""
+function check_self_stability(sys, dprob, z0::Vector{Float64};
+                              t_final::Float64=5.0, dt::Float64=1/120,
+                              eps::Float64=1e-6, tol_deg::Float64=1.0)
+    gptr, _ = generator_pointers(sys)
+    isempty(gptr) && return (ok=true, sep_deg=0.0)
+    empty!(sys.dynamic.events)
+    dprob.zvec .= z0
+    dprob.zvec[gptr[1] + 4] += eps          # nudge one machine's speed
+    _, traj = GradPower.integrate!(dprob, sys, t_final; dt=dt)
+    sep = stability_metrics(sys, traj)["max_angle_sep_deg"]
+    dprob.zvec .= z0
+    return (ok = isfinite(sep) && sep <= tol_deg, sep_deg = sep)
+end
+
+
 function build_system(case)
     raw = resolve_path(case["raw"])
     dyr = resolve_path(case["dyr"])
-    sys = GradPower.from_psse(raw, dyr)
+    sys = GradPower.from_psse(raw, dyr;
+                              add_static_gen_stubs=Bool(get(case, "add_static_gen_stubs", true)),
+                              surrogates=Bool(get(case, "surrogates", false)))
     GradPower.build_network!(sys)
     GradPower.runpf!(sys; verbose=false)
     return sys
+end
+
+
+# ---------------------------------------------------------------------------
+# Scenario enumeration
+# ---------------------------------------------------------------------------
+
+"""
+    sample_load_scales(cfg, case_idx) -> Vector{Float64}
+
+Draw the operating-point multipliers for one case.
+
+`lambda` is sampled from the distribution in `[load]` -- currently Uniform(low,
+high). The base case is the mean when `low + high == 2`. One draw is shared by
+the whole fault cross product beneath it, so the power flow is re-solved
+`n_samples` times per case rather than once per simulation.
+
+The seed is mixed with `case_idx` so different cases get different draws while
+the whole sweep stays reproducible from the config alone.
+"""
+function sample_load_scales(cfg, case_idx::Int)
+    haskey(cfg, "load") || return [1.0]
+    ld = cfg["load"]
+    n = Int(get(ld, "n_samples", 1))
+    n >= 1 || error("[load] n_samples must be >= 1")
+    dist = lowercase(String(get(ld, "distribution", "uniform")))
+    seed = UInt64(get(ld, "seed", 20240917)) + UInt64(1009 * case_idx)
+    rng = MersenneTwister(seed)
+    if dist == "uniform"
+        lo = Float64(get(ld, "low", 1.0)); hi = Float64(get(ld, "high", 1.0))
+        lo <= hi || error("[load] low must be <= high")
+        return [lo + (hi - lo) * rand(rng) for _ in 1:n]
+    else
+        error("[load] unsupported distribution \"$dist\" (only \"uniform\" so far)")
+    end
 end
 
 
@@ -68,15 +234,219 @@ function enumerate_scenarios(cfg, systems)
     t_on = Float64(fault["t_on"])
     scenarios = Scenario[]
     for (ci, case) in enumerate(cfg["cases"])
-        for (internal, ext) in fault_bus_pairs(systems[ci], fault["buses"])
-            for rf in r_faults, dur in durations
-                push!(scenarios, Scenario(ci, internal, ext, rf, t_on, t_on + dur))
+        lambdas = sample_load_scales(cfg, ci)
+        pairs = fault_bus_pairs(systems[ci], fault["buses"])
+        for (li, lam) in enumerate(lambdas)
+            for (internal, ext) in pairs
+                for rf in r_faults, dur in durations
+                    push!(scenarios,
+                          Scenario(ci, lam, li - 1, internal, ext, rf, t_on, t_on + dur))
+                end
             end
         end
     end
     return scenarios
 end
 
+
+# ---------------------------------------------------------------------------
+# Channel extraction
+# ---------------------------------------------------------------------------
+
+"""
+    generator_pointers(sys) -> (diff_ptr, bus_internal)
+
+z-vector offsets of each dynamic machine's differential block, in device order.
+
+GENROU differential layout is `[e_qp, e_dp, phi_1d, phi_2q, w, delta]`, so
+`omega = z[diff_ptr + 4]` and `delta = z[diff_ptr + 5]` (see
+`src/generators.jl:194-199` and `:457-462`).
+
+We index by that offset deliberately and do NOT use `get_diff_names`:
+`get_diff_names(::Genrou)` returns a differently-ordered list than the kernel
+actually uses (`src/generators.jl:151`), a known discrepancy also recorded in
+`study/stability_geometry/AUDIT.md`. `device.diff_ptr` is the post-cluster
+reordering position, so it stays correct after `set_dynamics!`.
+"""
+function generator_pointers(sys)
+    ptr = Int[]; bus = Int[]
+    for dev in sys.dynamic.devices
+        dev.dtype isa GradPower.AbstractGeneratorType || continue
+        dev.dtype isa GradPower.StaticGenerator && continue   # no differential states
+        push!(ptr, dev.diff_ptr)
+        push!(bus, dev.dtype.bus)
+    end
+    return ptr, bus
+end
+
+"""
+    dynamics_channels(sys, traj; downsample=1) -> Dict
+
+Per-sample time series, all `Float32` and shaped `[n, T]`.
+
+  * `bus_vm`, `bus_va`  -- magnitude (pu) and angle (rad) at every bus
+  * `gen_delta`         -- rotor angle (rad), one row per dynamic machine
+  * `gen_omega`         -- speed deviation (pu), same row order
+
+Bus voltages live at the tail of `z` as interleaved `(vr, vi)` pairs, after the
+differential and algebraic blocks.
+"""
+function dynamics_channels(sys, traj::AbstractMatrix; downsample::Int=1)
+    downsample >= 1 || error("downsample must be >= 1")
+    cols = 1:downsample:size(traj, 2)
+    T = length(cols)
+    nbus = length(sys.buses)
+    net = sys.dynamic.diff_dim + sys.dynamic.alg_dim
+
+    vm = Array{Float32}(undef, nbus, T)
+    va = Array{Float32}(undef, nbus, T)
+    @inbounds for (tj, c) in enumerate(cols), b in 1:nbus
+        vr = traj[net + 2 * (b - 1) + 1, c]
+        vi = traj[net + 2 * (b - 1) + 2, c]
+        vm[b, tj] = hypot(vr, vi)
+        va[b, tj] = atan(vi, vr)
+    end
+
+    gptr, _ = generator_pointers(sys)
+    ng = length(gptr)
+    delta = Array{Float32}(undef, ng, T)
+    omega = Array{Float32}(undef, ng, T)
+    @inbounds for (tj, c) in enumerate(cols), g in 1:ng
+        omega[g, tj] = traj[gptr[g] + 4, c]
+        delta[g, tj] = traj[gptr[g] + 5, c]
+    end
+
+    return Dict("bus_vm" => vm, "bus_va" => va,
+                "gen_delta" => delta, "gen_omega" => omega, "T" => T)
+end
+
+"""
+    dynamics_graph(sys) -> Dict
+
+Static topology, written once per output file. Arrays become datasets and
+scalars become attributes under `/grid`.
+
+`branch_index` is 1-based `[2, n_branch]` internal bus indices (row 1 = from,
+row 2 = to); `gen_bus` is the internal bus of each dynamic machine, in the same
+row order as the `gen_*` channels.
+"""
+function dynamics_graph(sys)
+    nb = length(sys.buses)
+    bidx = Array{Int32}(undef, 2, length(sys.branches))
+    br = Array{Float32}(undef, 4, length(sys.branches))   # r, x, sh, tap
+    for (k, b) in enumerate(sys.branches)
+        bidx[1, k] = b.fr; bidx[2, k] = b.to
+        br[1, k] = b.r; br[2, k] = b.x; br[3, k] = b.sh; br[4, k] = b.tap
+    end
+    _, gbus = generator_pointers(sys)
+
+    pd = zeros(Float32, nb); qd = zeros(Float32, nb)
+    for l in sys.loads
+        pd[l.bus] += l.pd; qd[l.bus] += l.qd
+    end
+
+    return Dict(
+        "bus_id"       => Int32[b.i for b in sys.buses],       # external PSS/E number
+        "bus_type"     => Int32[b.type for b in sys.buses],
+        "bus_basekv"   => Float32[b.baseKV for b in sys.buses],
+        "bus_vm0"      => Float32[b.v0m for b in sys.buses],   # base-case power flow
+        "bus_va0"      => Float32[b.v0a for b in sys.buses],
+        "bus_pd0"      => pd,
+        "bus_qd0"      => qd,
+        "branch_index" => bidx,
+        "branch_param" => br,
+        "gen_bus"      => Int32.(gbus),
+        "n_bus"        => nb,
+        "n_branch"     => length(sys.branches),
+        "n_gen"        => length(gbus),
+    )
+end
+
+"""
+    stability_metrics(sys, traj; angle_sep_threshold, settle_ratio) -> Dict
+
+Screening labels for one trajectory.
+
+Separation is measured RELATIVE TO THE PRE-FAULT STATE. Define the deviation
+of each machine from where it started,
+
+    dev_i(t) = delta_i(t) - delta_i(0),
+
+and take `spread(t) = max_i dev_i(t) - min_i dev_i(t)`, which is 0 at t = 0 by
+construction.
+
+Using the ABSOLUTE spread `max_i delta_i - min_i delta_i` would be wrong for
+anything larger than a toy case: a geographically large system has a large
+steady-state angle spread at rest (ACTIVSg2000 sits at ~197 deg with no fault
+at all), so an absolute threshold labels every sample unstable before the fault
+is even applied. `initial_sep_deg` reports that standing spread for reference.
+
+  * `max_angle_sep_deg` -- peak of `spread(t)`, i.e. how far the machines pull
+    apart relative to where they started. This is a first-swing separation
+    screen; it is NOT center-of-inertia referenced.
+  * `max_freq_dev` -- peak `|omega|` over all machines and time (pu).
+  * `damped` -- the peak spread in the final `settle_ratio` fraction of the
+    horizon is no larger than the peak over the EARLIER part, i.e. the swing
+    is decaying rather than still growing when the window ends. Comparing the
+    tail against the overall peak would be vacuous, since the tail is a subset
+    of the whole window and can never exceed it.
+  * `stable` -- `max_angle_sep_deg < threshold` AND `damped` AND not diverged.
+
+`stable` is a coarse screen, not a certificate: it says nothing about horizons
+longer than the simulated window, and near the stability boundary it is
+dt-sensitive because unstable trajectories are chaotic.
+"""
+function stability_metrics(sys, traj::AbstractMatrix;
+                           angle_sep_threshold::Float64=deg2rad(180.0),
+                           settle_ratio::Float64=0.5)
+    gptr, _ = generator_pointers(sys)
+    nT = size(traj, 2)
+    if isempty(gptr)
+        return Dict("stable" => true, "damped" => true,
+                    "max_angle_sep_deg" => 0.0, "max_freq_dev" => 0.0,
+                    "final_angle_sep_deg" => 0.0, "initial_sep_deg" => 0.0,
+                    "diverged" => false)
+    end
+
+    d0 = [traj[p + 5, 1] for p in gptr]
+    initial_sep = maximum(d0) - minimum(d0)
+
+    spread = Vector{Float64}(undef, nT)
+    maxw = 0.0
+    @inbounds for c in 1:nT
+        lo = Inf; hi = -Inf
+        for (i, p) in enumerate(gptr)
+            dv = traj[p + 5, c] - d0[i]          # deviation from pre-fault
+            dv < lo && (lo = dv); dv > hi && (hi = dv)
+            w = abs(traj[p + 4, c]); w > maxw && (maxw = w)
+        end
+        spread[c] = hi - lo
+    end
+
+    diverged = !all(isfinite, spread) || !isfinite(maxw)
+    peak = diverged ? Inf : maximum(spread)
+    tail_start = max(2, Int(floor(nT * (1 - settle_ratio))) + 1)
+    tail_peak = maximum(view(spread, tail_start:nT))
+    # Compare the tail against the earlier window, not against the overall
+    # peak (which contains the tail and would make this always true).
+    early_peak = maximum(view(spread, 1:(tail_start - 1)))
+    damped = diverged ? false : tail_peak <= early_peak
+
+    return Dict(
+        "stable"              => (peak < angle_sep_threshold) && damped && !diverged,
+        "damped"              => damped,
+        "diverged"            => diverged,
+        "max_angle_sep_deg"   => rad2deg(peak),
+        "final_angle_sep_deg" => rad2deg(spread[end]),
+        "initial_sep_deg"     => rad2deg(initial_sep),
+        "max_freq_dev"        => maxw,
+    )
+end
+
+
+# ---------------------------------------------------------------------------
+# HDF5 writing
+# ---------------------------------------------------------------------------
 
 function write_grid!(fid, sys)
     g = dynamics_graph(sys)
@@ -103,7 +473,6 @@ function write_series!(parent, name, mat::AbstractMatrix{Float32})
     write(d, mat)
 end
 
-# Note: If the Lumina ingestion schema changes, this also needs to be updated.
 function write_sample!(fid, idx::Int, sc::Scenario, ch, metrics)
     grp = create_group(fid, @sprintf("samples/%06d", idx))
     write_series!(grp, "bus_vm",    ch["bus_vm"])
@@ -112,6 +481,8 @@ function write_sample!(fid, idx::Int, sc::Scenario, ch, metrics)
     write_series!(grp, "gen_omega", ch["gen_omega"])
 
     a = attributes(grp)
+    a["load_scale"]         = sc.load_scale
+    a["load_draw"]          = sc.load_draw
     a["fault_bus_internal"] = sc.fault_bus_internal
     a["fault_bus_ext"]      = sc.fault_bus_ext
     a["r_fault"]            = sc.r_fault

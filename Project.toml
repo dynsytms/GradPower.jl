@@ -29,6 +29,7 @@ GradPowerCUDAExt = ["CUDA", "CUDSS"]
 
 [compat]
 CUDA = "6"
+NLsolve = "4.5"
 CUDSS = "0.8"
 KernelAbstractions = "0.9.41"
 Krylov = "0.10.6"

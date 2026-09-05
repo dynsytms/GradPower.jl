@@ -79,7 +79,8 @@ Reads a PSSE raw file and a PSSE dyr file and constructs a PowerSystem
 
 """
 function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
-                    add_static_gen_stubs::Bool=true)
+                    add_static_gen_stubs::Bool=true,
+                    surrogates::Bool=false)
     raw = read_psse_raw(raw_file)
     sys = raw_to_grad(raw)
     if dyr_file !== nothing
@@ -91,7 +92,7 @@ function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
         for gen in sys.gens
             push!(active, (sys.buses[gen.bus].i, _normalize_id(gen.id)))
         end
-        psd = PowerSystemDynamics(dyr_file; active_gen_keys=active)
+        psd = PowerSystemDynamics(dyr_file; active_gen_keys=active, surrogates=surrogates)
         set_dynamics!(sys, psd; add_static_gen_stubs=add_static_gen_stubs)
     end
     return sys
@@ -111,6 +112,103 @@ const DEVICE_TYPE_MAP = Dict(
     "IEEEST" => IEEEST,
     # add more device types here
 )
+
+# ---------------------------------------------------------------------------
+# Compatibility surrogates
+# ---------------------------------------------------------------------------
+#
+# A surrogate maps a DYR model GradPower has no native kernel for onto a model
+# it does implement. This is what lets a case like ACTIVSg2000 run end to end
+# without first implementing a dozen controller models -- but a surrogate is a
+# STAND-IN, not an implementation: it does not reproduce the source model's
+# equations, and it must never be counted as native coverage or used for
+# scientific validation (plan_enhance.md sections 2.2 and 7.1).
+#
+# Surrogates are OPT-IN. `from_psse(...; surrogates=true)` enables them, and
+# every redirected record is reported distinctly from native ones.
+#
+# Constants for GGOV1, EXPIC1, SCRX and ESAC6A are taken from uqgrid's own
+# compatibility redirects (uqgrid/uqgrid/io/parse.py) so the two simulators
+# agree. `R` is passed on machine base; `set_ratio!` converts it to system
+# base, matching uqgrid's `R * basemva / mbase`.
+#
+# The remaining entries are GradPower-local: uqgrid implements those natively,
+# so there is no upstream mapping to copy. They reuse the same surrogate shape.
+
+_f(fields, i) = parse(Float64, fields[i])
+
+# uqgrid's SEXS surrogate: a plain fast AVR with effectively no output limit.
+_sexs_surrogate(bus, id) = SEXS(bus, id, 0.4, 5.0, 20.0, 1.0, -99.0, 99.0)
+
+# uqgrid's TGOV1 surrogate shape; only the droop R comes from the record.
+_tgov1_surrogate(bus, id, R) = TGOV1(bus, id, R, 0.1, 1.2, 0.0, 0.2, 10.0, 0.0)
+
+_surrogate_bus_id(fields) = (parse(Int64, fields[1]), String(fields[3]))
+
+function _ggov1_as_tgov1(fields)
+    bus, id = _surrogate_bus_id(fields)
+    # uqgrid requires Rselect = Fswitch = 1 for the redirect to be meaningful.
+    rselect, fswitch = Int(_f(fields, 4)), Int(_f(fields, 5))
+    (rselect, fswitch) == (1, 1) ||
+        @warn "GGOV1 surrogate at bus $bus id $id has Rselect=$rselect Fswitch=$fswitch (expected 1,1); droop may not be comparable."
+    _tgov1_surrogate(bus, id, _f(fields, 6))          # field 6 = R
+end
+
+function _hygov_as_tgov1(fields)
+    bus, id = _surrogate_bus_id(fields)
+    _tgov1_surrogate(bus, id, _f(fields, 4))          # field 4 = permanent droop R
+end
+
+function _ieeeg1_as_tgov1(fields)
+    bus, id = _surrogate_bus_id(fields)
+    K = _f(fields, 6)                                  # field 6 = K = 1/R
+    _tgov1_surrogate(bus, id, K > 0 ? 1.0 / K : 0.05)
+end
+
+_exciter_as_sexs(fields) = _sexs_surrogate(_surrogate_bus_id(fields)...)
+
+# Tier 1 -- MIRRORED REDIRECTS. uqgrid itself redirects these four models onto
+# TGOV1/SEXS rather than implementing them, and we copy its mapping and its
+# constants verbatim (uqgrid/uqgrid/io/parse.py). Using them keeps GradPower
+# and the reference simulator on the same footing, so a GradPower-vs-uqgrid
+# comparison on a case containing them remains meaningful.
+const DYR_REDIRECT_MAP = Dict{String,Function}(
+    "GGOV1"  => _ggov1_as_tgov1,
+    "EXPIC1" => _exciter_as_sexs,
+    "SCRX"   => _exciter_as_sexs,
+    "ESAC6A" => _exciter_as_sexs,
+)
+
+# Tier 2 -- LOCAL SURROGATES. uqgrid implements every one of these NATIVELY, so
+# there is no upstream mapping to copy and no oracle behind the substitution.
+# They exist only so a case containing them can be run end to end at all; the
+# dynamics they produce are NOT the source model's dynamics, and a
+# GradPower-vs-uqgrid comparison over them compares different equations.
+#
+# Do not use Tier 2 for validation, parameter studies, or published results.
+# The honest fix is to implement the models (plan_enhance.md phases 2-5);
+# ESST4B is the highest-value one at 278 ACTIVSg2000 records.
+const DYR_LOCAL_SURROGATE_MAP = Dict{String,Function}(
+    "HYGOV"  => _hygov_as_tgov1,
+    "IEEEG1" => _ieeeg1_as_tgov1,
+    "ESST4B" => _exciter_as_sexs,
+    "EXAC1"  => _exciter_as_sexs,
+    "EXAC2"  => _exciter_as_sexs,
+    "ESAC1A" => _exciter_as_sexs,
+    "IEEET1" => _exciter_as_sexs,
+    "ESDC2A" => _exciter_as_sexs,
+)
+
+const DYR_SURROGATE_MAP = merge(DYR_REDIRECT_MAP, DYR_LOCAL_SURROGATE_MAP)
+
+"""DYR models redirected exactly as uqgrid redirects them."""
+redirect_dyr_models() = Set(String.(keys(DYR_REDIRECT_MAP)))
+
+"""DYR models stood in for with no upstream oracle. Not valid for validation."""
+local_surrogate_dyr_models() = Set(String.(keys(DYR_LOCAL_SURROGATE_MAP)))
+
+"""Every source DYR model GradPower can stand in for but does not implement."""
+surrogate_dyr_models() = Set(String.(keys(DYR_SURROGATE_MAP)))
 
 const _DYR_GOVERNOR_MODELS = Set(["GAST", "GGOV1", "HYGOV", "IEEEG1", "IEESGO", "TGOV1"])
 const _DYR_MACHINE_MODELS = Set(["GENROU", "GENSAL"])
@@ -575,11 +673,13 @@ end
 Converts a vector of PSSE dyr devices to a vector of AbstractDeviceType structs.
 """
 function create_device_vector(devices;
-                               active_gen_keys::Union{Nothing,Set{Tuple{Int64,String}}}=nothing)
+                               active_gen_keys::Union{Nothing,Set{Tuple{Int64,String}}}=nothing,
+                               surrogates::Bool=false)
     psse_devices = Vector{GradPower.AbstractDeviceType}()
     skipped_inactive_gen = 0
     skipped_orphan_ctrl = 0
     unknown_types = String[]
+    redirected_types = String[]
     kept_gen_keys = Set{Tuple{Int64,String}}()
 
     parsed = Tuple{GradPower.AbstractDeviceType,String}[]
@@ -588,6 +688,11 @@ function create_device_vector(devices;
         if haskey(DEVICE_TYPE_MAP, device_type_name)
             device_type = DEVICE_TYPE_MAP[device_type_name]
             dev = from_data_fields(device_type, device)
+            push!(parsed, (dev, String(device_type_name)))
+        elseif surrogates && haskey(DYR_SURROGATE_MAP, device_type_name)
+            # Stand-in, not an implementation -- tracked separately from native.
+            dev = DYR_SURROGATE_MAP[device_type_name](device)
+            push!(redirected_types, String(device_type_name))
             push!(parsed, (dev, String(device_type_name)))
         else
             push!(unknown_types, String(device_type_name))
@@ -645,6 +750,25 @@ function create_device_vector(devices;
     end
     if skipped_orphan_ctrl > 0
         @info "Skipped $skipped_orphan_ctrl controller row(s) whose target generator was filtered."
+    end
+    if !isempty(redirected_types)
+        mirrored = Dict{String,Int}()
+        local_sub = Dict{String,Int}()
+        for t in redirected_types
+            d = haskey(DYR_REDIRECT_MAP, t) ? mirrored : local_sub
+            d[t] = get(d, t, 0) + 1
+        end
+        if !isempty(mirrored)
+            @info "Applied uqgrid-mirrored DYR redirects to $(sum(values(mirrored))) record(s): $mirrored"
+        end
+        if !isempty(local_sub)
+            @warn """LOCAL SURROGATES applied to $(sum(values(local_sub))) .dyr record(s): $local_sub
+                     uqgrid implements each of these natively; GradPower does not, and these
+                     stand-ins reproduce TGOV1/SEXS dynamics, NOT the source equations. A
+                     GradPower-vs-uqgrid comparison over these records compares DIFFERENT MODELS.
+                     Valid only to get a case running end to end -- never for validation,
+                     parameter studies, or published results. See DYR_LOCAL_SURROGATE_MAP."""
+        end
     end
     if !isempty(unknown_types)
         counts = Dict{String,Int}()
