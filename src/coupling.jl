@@ -81,6 +81,39 @@ consumes_signals(::Type{TGOV1}) = (
     (ctrl_offset = 0, state_kind = :w),
 )
 
+# IEEEG1 has the same attachment shape as TGOV1/IEESGO: a governor whose
+# algebraic output is p_m and which reads the generator's w.
+attaches_to(::Type{IEEEG1}) = Genrou
+produces_signals(::Type{IEEEG1}) = (
+    (target_ctrl_offset = 1, source_kind = :alg_first),
+)
+consumes_signals(::Type{IEEEG1}) = (
+    (ctrl_offset = 0, state_kind = :w),
+)
+
+# GGOV1 has the same attachment shape as TGOV1/IEEEG1: a governor whose
+# algebraic output is p_m and which reads the generator's w. Note GGOV1's
+# droop feedback (Rselect = 1 in real data → measured *electrical* power)
+# is taken off its own p_m instead, because Genrou's Pe is not a state
+# this coupling layer can route; see the scope note in src/governors.jl.
+attaches_to(::Type{GGOV1}) = Genrou
+produces_signals(::Type{GGOV1}) = (
+    (target_ctrl_offset = 1, source_kind = :alg_first),
+)
+consumes_signals(::Type{GGOV1}) = (
+    (ctrl_offset = 0, state_kind = :w),
+)
+
+# HYGOV (hydro governor): same attachment shape as TGOV1/IEEEG1/GGOV1 —
+# algebraic output p_m, reads the generator's w.
+attaches_to(::Type{HYGOV}) = Genrou
+produces_signals(::Type{HYGOV}) = (
+    (target_ctrl_offset = 1, source_kind = :alg_first),
+)
+consumes_signals(::Type{HYGOV}) = (
+    (ctrl_offset = 0, state_kind = :w),
+)
+
 # SEXS exciter: attaches to Genrou, produces e_fd at its 2nd diff state
 # (offset 1 within diff block), reads target's vm (bus voltage magnitude)
 # but vm reading is hard-wired in the kernel via the bus index — no
@@ -103,6 +136,17 @@ produces_signals(::Type{ESDC1A}) = (
      source_offset      = 2),               # ESDC1A diff[2] = e_fd
 )
 consumes_signals(::Type{ESDC1A}) = ()
+
+# ESST4B exciter: attaches to Genrou, produces e_fd at its 4th diff state
+# (zero-based offset 3), reads vt via the bus index baked into the SoA
+# table — no consumes_signals entry needed.
+attaches_to(::Type{ESST4B}) = Genrou
+produces_signals(::Type{ESST4B}) = (
+    (target_ctrl_offset = 0,                # Genrou ctrl[0] = e_fd
+     source_kind        = :diff_at,
+     source_offset      = 3),               # ESST4B diff[3] = e_fd
+)
+consumes_signals(::Type{ESST4B}) = ()
 
 # IEEEST PSS: attaches to the exciter sharing its (bus, id), but
 # ultimately needs omega from the generator. The two-hop lookup is

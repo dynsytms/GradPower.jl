@@ -115,6 +115,22 @@ function fix_ieeest_wiring!(psd, ps)
             end
         end
 
+        # Find matching ESST4B exciter. Gated on ESST4B_WIRE_PSS (default
+        # true since the IEEEST output limit is enforced) — see the
+        # ESST4B_WIRE_PSS note in src/exciters.jl.
+        if ESST4B_WIRE_PSS[]
+            esst4b_k = 0
+            for (j, d) in enumerate(psd.devices)
+                if d.dtype isa ESST4B
+                    esst4b_k += 1
+                    if d.dtype.bus == pss_bus && _normalize_id(d.dtype.id) == pss_id
+                        L.esst4b.vs_idx[esst4b_k] = Int32(vs_z)
+                        break
+                    end
+                end
+            end
+        end
+
         # Find matching ESDC1A exciter
         esdc1a_k = 0
         for (j, d) in enumerate(psd.devices)

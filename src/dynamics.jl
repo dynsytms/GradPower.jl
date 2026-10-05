@@ -2,6 +2,7 @@ include("generators.jl")
 include("loads.jl")
 include("governors.jl")
 include("exciters.jl")
+include("exciters_psse.jl")   # IEEET1, ... (AbstractStdExciter models)
 include("stabilizers.jl")
 include("static_gen.jl")
 
@@ -143,6 +144,14 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
     # Initialize ZIPLoad devices with power-flow voltage magnitudes.
     for (i, device) in enumerate(ps.dynamic.devices)
         if device.dtype isa ZIPLoad
+            # A netted generator (static_gen_mode = :load) carries its
+            # power-flow output, which is only known after runpf!: a load
+            # consuming -P, with the q sign convention of Load.qd (= -Q).
+            g = ps.dynamic.map.gen[i]
+            if g > 0
+                device.dtype.pinj = -ps.gens[g].psch
+                device.dtype.qinj = ps.gens[g].qsch
+            end
             device.dtype.v0mag = ps.buses[ps.dynamic.map.bus[i]].v0m
             yload = (device.dtype.pinj + 1im*device.dtype.qinj)/(device.dtype.v0mag^2.0)
             device.dtype.yreal = real(yload)
@@ -190,6 +199,16 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         # mirror p0, q0 into pvec so the kernel reads correct values
         p[device.par_ptr]     = psum
         p[device.par_ptr + 1] = qsum
+        # PV stubs regulate to the SOLVED voltage, not the .raw setpoint they
+        # were built with (set_dynamics! runs before the power flow). The two
+        # differ exactly where runpf! hit a reactive limit and let the bus
+        # float; regulating to the old setpoint made z0 a non-equilibrium
+        # (ACTIVSg2000: ||f(z0)|| 0.095 on 58 stub rows). This mirrors how
+        # exciters take vref from the solved terminal voltage at init.
+        if sg.bus_type == 2
+            sg.vset = ps.buses[ps.busmap[sg.bus]].v0m
+            p[device.par_ptr + 2] = sg.vset
+        end
     end
 
     # Pre-controller hook: stash each Genrou's post-PF e_fd0 onto any
@@ -210,16 +229,31 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         end
     end
 
-    # Same hook for ESDC1A — its `initial_guess!` reads e_fd0 from
+    # Same hook for ESDC1A/ESST4B — their `initial_guess!` reads e_fd0 from
     # `dtype.vref` as scratch and overwrites it with the computed vref.
     for (i, device) in enumerate(ps.dynamic.devices)
-        device.dtype isa ESDC1A || continue
+        device.dtype isa Union{ESDC1A, ESST4B} || continue
         gen_id = _normalize_id(device.dtype.id)
         for cand in ps.dynamic.devices
             if cand.dtype isa Genrou &&
                cand.dtype.bus == device.dtype.bus &&
                _normalize_id(cand.dtype.id) == gen_id
                 device.dtype.vref = cand.dtype.e_fd0
+                break
+            end
+        end
+    end
+
+    # Same hook for every AbstractStdExciter (IEEET1, ...; src/exciters_psse.jl),
+    # which carry a dedicated `efd0` scratch field instead of reusing vref.
+    for (i, device) in enumerate(ps.dynamic.devices)
+        device.dtype isa AbstractStdExciter || continue
+        gen_id = _normalize_id(device.dtype.id)
+        for cand in ps.dynamic.devices
+            if cand.dtype isa Genrou &&
+               cand.dtype.bus == device.dtype.bus &&
+               _normalize_id(cand.dtype.id) == gen_id
+                _set_efd0!(device.dtype, cand.dtype.e_fd0)
                 break
             end
         end
@@ -242,8 +276,12 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         refresh_zipload_table!(ps.dynamic)
         refresh_ieesgo_table!(ps.dynamic)
         refresh_tgov1_table!(ps.dynamic)
+        refresh_ieeeg1_table!(ps.dynamic)
+        refresh_ggov1_table!(ps.dynamic)
+        refresh_hygov_table!(ps.dynamic)
         refresh_sexs_table!(ps.dynamic)
         refresh_esdc1a_table!(ps.dynamic)
+        refresh_esst4b_table!(ps.dynamic)
         refresh_ieeest_table!(ps.dynamic)
         refresh_static_gen_table!(ps.dynamic)
     end
@@ -290,9 +328,14 @@ end
     genrou_residual_batch!(f, z, u, p, L.genrou, diff_dim, net_ptr)
     ieesgo_residual_batch!(f, z, p, L.ieesgo, diff_dim)
     tgov1_residual_batch!(f, z, p, L.tgov1, diff_dim)
+    ieeeg1_residual_batch!(f, z, p, L.ieeeg1, diff_dim)
+    ggov1_residual_batch!(f, z, p, L.ggov1, diff_dim)
+    hygov_residual_batch!(f, z, p, L.hygov, diff_dim)
     ieeest_residual_batch!(f, z, p, L.ieeest, diff_dim)
     sexs_residual_batch!(f, z, p, L.sexs)
     esdc1a_residual_batch!(f, z, p, L.esdc1a)
+    esst4b_residual_batch!(f, z, p, L.esst4b)
+    std_exc_residual_batch!(f, z, p, L)   # IEEET1, ... (src/kernels/std_exciters.jl)
     zipload_residual_batch!(f, z, p, L.zipload, net_ptr)
     static_gen_residual_batch!(f, z, p, L.static_gen)
 
@@ -735,9 +778,14 @@ function preallocate_jacobian(ps::PowerSystem)
     for (i, device) in enumerate(ps.dynamic.devices)
         device.dtype isa IEESGO         && continue  # IEESGO sparsity comes from the batched preallocator below
         device.dtype isa TGOV1          && continue  # TGOV1 too
+        device.dtype isa IEEEG1         && continue  # IEEEG1 too
+        device.dtype isa GGOV1          && continue  # GGOV1 too
+        device.dtype isa HYGOV          && continue  # HYGOV too
         device.dtype isa IEEEST         && continue  # IEEEST too
         device.dtype isa SEXS           && continue  # SEXS too
         device.dtype isa ESDC1A         && continue  # ESDC1A too
+        device.dtype isa ESST4B         && continue  # ESST4B too
+        device.dtype isa AbstractStdExciter && continue  # IEEET1, ... too
         device.dtype isa StaticGenerator && continue # StaticGenerator too
         bus = map.bus[i]
         diff_ptr = device.diff_ptr
@@ -753,9 +801,14 @@ function preallocate_jacobian(ps::PowerSystem)
     L = ps.dynamic.layout::SimulationLayout
     ieesgo_preallocate!(coord_list, L.ieesgo, diff_dim)
     tgov1_preallocate!(coord_list, L.tgov1, diff_dim)
+    ieeeg1_preallocate!(coord_list, L.ieeeg1, diff_dim)
+    ggov1_preallocate!(coord_list, L.ggov1, diff_dim)
+    hygov_preallocate!(coord_list, L.hygov, diff_dim)
     ieeest_preallocate!(coord_list, L.ieeest, diff_dim)
     sexs_preallocate!(coord_list, L.sexs)
     esdc1a_preallocate!(coord_list, L.esdc1a)
+    esst4b_preallocate!(coord_list, L.esst4b)
+    std_exc_preallocate!(coord_list, L)
     static_gen_preallocate!(coord_list, L.static_gen)
 
     # Cross-device coupling sparsity: GENROU's swing eq reads governor p_m.
@@ -784,9 +837,14 @@ function preallocate_jacobian(ps::PowerSystem)
     genrou_jac_positions!(L.genrou, Jsp, diff_dim, net_ptr)
     ieesgo_jac_positions!(L.ieesgo, Jsp, diff_dim)
     tgov1_jac_positions!(L.tgov1, Jsp, diff_dim)
+    ieeeg1_jac_positions!(L.ieeeg1, Jsp, diff_dim)
+    ggov1_jac_positions!(L.ggov1, Jsp, diff_dim)
+    hygov_jac_positions!(L.hygov, Jsp, diff_dim)
     ieeest_jac_positions!(L.ieeest, Jsp, diff_dim)
     sexs_jac_positions!(L.sexs, Jsp)
     esdc1a_jac_positions!(L.esdc1a, Jsp)
+    esst4b_jac_positions!(L.esst4b, Jsp)
+    std_exc_jac_positions!(L, Jsp)
     zipload_jac_positions!(L.zipload, Jsp, net_ptr)
     static_gen_jac_positions!(L.static_gen, Jsp)
 
@@ -831,9 +889,14 @@ end
     genrou_jacobian_batch!(jac, z, u, p, L.genrou, diff_dim, net_ptr)
     ieesgo_jacobian_batch!(jac, p, L.ieesgo, diff_dim)
     tgov1_jacobian_batch!(jac, p, L.tgov1, diff_dim)
+    ieeeg1_jacobian_batch!(jac, p, L.ieeeg1, diff_dim)
+    ggov1_jacobian_batch!(jac, p, L.ggov1, diff_dim)
+    hygov_jacobian_batch!(jac, z, p, L.hygov, diff_dim)
     ieeest_jacobian_batch!(jac, z, p, L.ieeest, diff_dim)
     sexs_jacobian_batch!(jac, z, p, L.sexs)
     esdc1a_jacobian_batch!(jac, z, p, L.esdc1a)
+    esst4b_jacobian_batch!(jac, z, p, L.esst4b)
+    std_exc_jacobian_batch!(jac, z, p, L)
     zipload_jacobian_batch!(jac, z, p, L.zipload, net_ptr)
     static_gen_jacobian_batch!(jac, z, p, L.static_gen)
 

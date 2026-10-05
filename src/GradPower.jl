@@ -35,7 +35,11 @@ mutable struct Gen
     qsch::Float64
     mbase::Float64
     status::Bool
+    qmax::Float64
+    qmin::Float64
 end
+
+Gen(bus, id, psch, qsch, mbase, status) = Gen(bus, id, psch, qsch, mbase, status, Inf, -Inf)
 
 mutable struct Load
     bus::Int64
@@ -215,6 +219,7 @@ end
 struct PowerFlowSolution
     volt::AbstractArray
     sinj::AbstractArray
+    converged::Bool
 end
 
 """
@@ -296,7 +301,10 @@ end
 
 function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics;
                         add_loads::Bool=true,
-                        add_static_gen_stubs::Bool=true)
+                        add_static_gen_stubs::Bool=true,
+                        static_gen_mode::Symbol=:pv)
+    static_gen_mode in (:pv, :pq, :load) ||
+        error("static_gen_mode must be :pv, :pq or :load, got :$static_gen_mode")
 
     # number of dynamic devices of generator type.
     num_gen_devices = 0
@@ -344,17 +352,34 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics;
     # For every active static gen not covered by a dynamic machine model,
     # inject a StaticGenerator (constant pinj + PV/SLACK voltage regulation).
     # Aggregate one StaticGenerator per bus across all unmatched gens on that bus.
+    # Units without a dynamic model, by `static_gen_mode`:
+    #   :pv   StaticGenerator stubs; on PV buses they regulate |V| with
+    #         unlimited Q (an ideal voltage source through a fault).
+    #   :pq   stubs hold their power-flow P and Q (constant power).
+    #   :load each unit is netted as a NEGATIVE constant-admittance ZIPLoad
+    #         carrying its power-flow P and Q (set in initialize_dynamics!).
+    # On ACTIVSg2000 :pv makes close-in faults unsolvable (singular Jacobian)
+    # and :pq leaves the published operating point small-signal unstable;
+    # :load is the benign netting convention. Slack buses always keep a
+    # StaticGenerator, which provides the angle reference.
+    netted = Int64[]
     if add_static_gen_stubs && length(matched_gens) != length(ps.gens)
         matched_set = Set(matched_gens)
         by_bus = Dict{Int64,Vector{Int64}}()
         for (i, gen) in enumerate(ps.gens)
             i in matched_set && continue
+            if static_gen_mode === :load && ps.buses[gen.bus].type != 3
+                push!(netted, Int64(i))
+                continue
+            end
             push!(get!(by_bus, gen.bus, Int64[]), Int64(i))
         end
         n_aggregated = sum(length, values(by_bus); init=0)
         @info "Adding $(length(by_bus)) StaticGenerator(s) aggregating $(n_aggregated) static gen(s) without a dynamic machine model."
         for (bus_internal, gen_idxs) in by_bus
             bt = Int64(ps.buses[bus_internal].type)
+            # :pq: PV stubs become constant-P/Q (bus type 1); slack stays slack.
+            static_gen_mode === :pq && bt == 2 && (bt = 1)
             # vset: take from any of the aggregated gens' static voltage setpoint
             # (already stored on ps.buses[bus].v0m by raw_to_grad's PV/SLACK
             # write-back). All gens on a bus share that bus's setpoint.
@@ -372,6 +397,17 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics;
             dmap.gen[slot] = gen_idxs[1]
             add_device!(psd, sg)
         end
+        for gi in netted
+            gen = ps.gens[gi]
+            slot = psd.num_devices + 1
+            dmap.bus[slot] = gen.bus
+            dmap.gen[slot] = gi      # marks a netted generator (pinj/qinj refreshed at init)
+            # alpha = 1: pure constant admittance
+            add_device!(psd, ZIPLoad(gen.bus, "gen:" * gen.id, -gen.psch, gen.qsch,
+                                     1.0, 0.0, 0.0, 1.0, ps.buses[gen.bus].v0m, 0.0, 0.0))
+        end
+        isempty(netted) ||
+            @info "Netted $(length(netted)) generator(s) without a dynamic model as negative constant-admittance loads."
     end
 
     # by default, add static loads to the dynamic system as ZIP loads.
@@ -427,7 +463,10 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics;
     fix_genrou_bus_idx!(psd, ps)
     fix_sexs_vr_idx!(psd, ps)
     fix_esdc1a_vr_idx!(psd, ps)
+    fix_esst4b_vr_idx!(psd, ps)
+    fix_std_exc_vr_idx!(psd, ps)        # IEEET1, ... (src/tables/std_exciters.jl)
     fix_ieeest_wiring!(psd, ps)
+    fix_std_exc_pss_wiring!(psd, ps)    # IEEEST v_s -> IEEET1, ... (always on)
     fix_static_gen_bus_idx!(psd, ps)
 
     # Build device clusters and reorder state vector to cluster-contiguous
@@ -631,8 +670,13 @@ include("dynamics.jl")
 include("tables/genrou.jl")
 include("tables/ieesgo.jl")
 include("tables/tgov1.jl")
+include("tables/ieeeg1.jl")
+include("tables/ggov1.jl")
+include("tables/hygov.jl")
 include("tables/sexs.jl")
 include("tables/esdc1a.jl")
+include("tables/esst4b.jl")
+include("tables/std_exciters.jl")   # IEEET1, ... (StdExcTable{M})
 include("tables/zipload.jl")
 include("tables/ieeest.jl")
 include("tables/static_gen.jl")
@@ -656,14 +700,25 @@ include("clusters.jl")
 include("kernels/genrou.jl")
 include("kernels/ieesgo.jl")
 include("kernels/tgov1.jl")
+include("kernels/ieeeg1.jl")
+include("kernels/ggov1.jl")
+include("kernels/hygov.jl")
 include("kernels/sexs.jl")
 include("kernels/esdc1a.jl")
+include("kernels/esst4b.jl")
+include("kernels/ieeet1.jl")
+include("kernels/expic1.jl")
+include("kernels/exac2.jl")         # + EXAC1, ESAC1A (same leaves)
+include("kernels/scrx.jl")
+include("kernels/esac6a.jl")
+include("kernels/std_exciters.jl")  # generic drivers + umbrella calls for the above
 include("kernels/zipload.jl")
 include("kernels/ieeest.jl")
 include("kernels/static_gen.jl")
 
 # KernelAbstractions wrappers + injection buffer dispatch.
 include("kernels/ka_wrappers.jl")
+include("kernels/std_exciters_ka.jl")   # KA kernels for IEEET1, ...
 
 # Schur complement reduction. Must be AFTER clusters.jl (cluster types)
 # and kernels/*.jl (preallocate_jacobian references kernel preallocators).
@@ -701,8 +756,12 @@ end
 _set_table_online!(L::SimulationLayout, ::Genrou,           k::Int, v::Bool) = (L.genrou.online[k] = v; nothing)
 _set_table_online!(L::SimulationLayout, ::IEESGO,           k::Int, v::Bool) = (L.ieesgo.online[k] = v; nothing)
 _set_table_online!(L::SimulationLayout, ::TGOV1,            k::Int, v::Bool) = (L.tgov1.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::IEEEG1,           k::Int, v::Bool) = (L.ieeeg1.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::GGOV1,            k::Int, v::Bool) = (L.ggov1.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::HYGOV,            k::Int, v::Bool) = (L.hygov.online[k] = v; nothing)
 _set_table_online!(L::SimulationLayout, ::SEXS,             k::Int, v::Bool) = (L.sexs.online[k] = v; nothing)
 _set_table_online!(L::SimulationLayout, ::ESDC1A,           k::Int, v::Bool) = (L.esdc1a.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::ESST4B,           k::Int, v::Bool) = (L.esst4b.online[k] = v; nothing)
 _set_table_online!(L::SimulationLayout, ::IEEEST,           k::Int, v::Bool) = (L.ieeest.online[k] = v; nothing)
 _set_table_online!(L::SimulationLayout, ::ZIPLoad,          k::Int, v::Bool) = (L.zipload.online[k] = v; nothing)
 _set_table_online!(L::SimulationLayout, ::StaticGenerator,  k::Int, v::Bool) = (L.static_gen.online[k] = v; nothing)
@@ -725,6 +784,9 @@ include("parse.jl")
 # Display functions.
 include("display.jl")
 
+# Dynamic-stability data export (graph/channels/labels).
+include("export.jl")
+
 # Exports
 export Bus, Gen, Load, Branch, Shunt, PowerSystem
 export build_network!
@@ -737,5 +799,6 @@ export initialize_dynamics!, integrate!
 export set_dynamics!
 export from_psse
 export SolverLog
+export EXPORT_SCHEMA_VERSION, dynamics_graph, dynamics_channels, stability_metrics
 
 end # module GradPower

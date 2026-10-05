@@ -116,6 +116,69 @@ struct TGOV1Table
     online::Vector{Bool}
 end
 
+struct IEEEG1Table
+    n::Int
+    bus::Vector{Int32}
+    diff_ptr::Vector{Int32}
+    alg_ptr::Vector{Int32}
+    ctrl_ptr::Vector{Int32}
+    par_ptr::Vector{Int32}
+    K::Vector{Float64}
+    T1::Vector{Float64};  T2::Vector{Float64};  T3::Vector{Float64}
+    T4::Vector{Float64};  T5::Vector{Float64};  T6::Vector{Float64}
+    T7::Vector{Float64}
+    K1::Vector{Float64};  K3::Vector{Float64}
+    K5::Vector{Float64};  K7::Vector{Float64}
+    pref::Vector{Float64}
+    w_idx::Vector{Int32}
+    jac_pos::Matrix{Int32}
+    online::Vector{Bool}
+end
+
+# GGOV1 — governor (PID) path only; the load limiter, the acceleration
+# limiter and the low-value select are NOT modelled (see src/governors.jl).
+# The kernel reads its parameters from pvec; only these columns are
+# materialised in the table.
+struct GGOV1Table
+    n::Int
+    bus::Vector{Int32}
+    diff_ptr::Vector{Int32}
+    alg_ptr::Vector{Int32}
+    ctrl_ptr::Vector{Int32}
+    par_ptr::Vector{Int32}
+    R::Vector{Float64};      Tpelec::Vector{Float64}
+    Kpgov::Vector{Float64};  Kigov::Vector{Float64}
+    Kdgov::Vector{Float64};  Tdgov::Vector{Float64}
+    Tact::Vector{Float64};   Kturb::Vector{Float64}
+    Wfnl::Vector{Float64};   Tb::Vector{Float64}
+    Tc::Vector{Float64};     Dm::Vector{Float64}
+    pref::Vector{Float64}
+    w_idx::Vector{Int32}
+    jac_pos::Matrix{Int32}
+    online::Vector{Bool}
+end
+
+# HYGOV — PSS/E hydro governor (nonlinear penstock/turbine; limits not
+# applied, see src/governors.jl). The kernels read parameters from pvec;
+# these columns mirror them (divisors ALREADY FLOORED at HYGOV_TMIN).
+struct HYGOVTable
+    n::Int
+    bus::Vector{Int32}
+    diff_ptr::Vector{Int32}
+    alg_ptr::Vector{Int32}
+    ctrl_ptr::Vector{Int32}
+    par_ptr::Vector{Int32}
+    R::Vector{Float64};   r::Vector{Float64}
+    Tr::Vector{Float64};  Tf::Vector{Float64}
+    Tg::Vector{Float64};  Tw::Vector{Float64}
+    At::Vector{Float64};  Dturb::Vector{Float64}
+    qNL::Vector{Float64}
+    pref::Vector{Float64}
+    w_idx::Vector{Int32}
+    jac_pos::Matrix{Int32}
+    online::Vector{Bool}
+end
+
 struct SEXSTable
     n::Int
     bus::Vector{Int32}
@@ -141,6 +204,31 @@ struct ESDC1ATable
     Tf::Vector{Float64}; Ke::Vector{Float64}; Te::Vector{Float64}
     Tr::Vector{Float64}; Ae::Vector{Float64}; Be::Vector{Float64}
     vref::Vector{Float64}
+    vr_idx::Vector{Int32}
+    vs_idx::Vector{Int32}    # PSS v_s z-index; 0 = no PSS attached
+    jac_pos::Matrix{Int32}
+    online::Vector{Bool}
+end
+
+struct ESST4BTable
+    n::Int
+    bus::Vector{Int32}
+    diff_ptr::Vector{Int32}
+    par_ptr::Vector{Int32}
+    # TR/TA are stored ALREADY FLOORED at ESST4B_TMIN and KP already guarded
+    # by `_esst4b_kp_eff`, so the residual/Jacobian kernels stay branch-free
+    # (see the model header in src/exciters.jl).
+    TR::Vector{Float64};  KPR::Vector{Float64};   KIR::Vector{Float64}
+    TA::Vector{Float64};  KPM::Vector{Float64};   KIM::Vector{Float64}
+    KG::Vector{Float64};  KP::Vector{Float64}
+    # Parsed but NOT applied (limiters + dropped potential-source terms).
+    # Carried so exporters / diagnostics can see the raw record.
+    VRMAX::Vector{Float64}; VRMIN::Vector{Float64}
+    VMMAX::Vector{Float64}; VMMIN::Vector{Float64}
+    KI::Vector{Float64};    VBMAX::Vector{Float64}
+    KC::Vector{Float64};    XL::Vector{Float64};   THETAP::Vector{Float64}
+    vref::Vector{Float64}
+    vb0::Vector{Float64}     # frozen bridge voltage KP·|Vt(0)| (init-derived)
     vr_idx::Vector{Int32}
     vs_idx::Vector{Int32}    # PSS v_s z-index; 0 = no PSS attached
     jac_pos::Matrix{Int32}

@@ -1,76 +1,91 @@
 # IEEEST batched residual & Jacobian.
 #
-# States: 7 diff (s0..s6) + 1 alg (v_s). Reads omega from z[w_idx].
+# States: 7 diff (s0..s6) + 1 alg (v_s). Reads the speed deviation w from
+# z[w_idx]. See src/stabilizers.jl for the realization and the OUTPUT LIMIT
+# note (the smooth LSMAX/LSMIN saturation is applied here).
 #
-# State names:
-#   s0 = F1_x   (Lag2ndOrd internal)
-#   s1 = F1_y   (Lag2ndOrd output)
-#   s2 = F2_x1  (LeadLag2ndOrd state 1)
-#   s3 = F2_x2  (LeadLag2ndOrd state 2)
-#   s4 = LL1_x  (LeadLag 1 state)
-#   s5 = LL2_x  (LeadLag 2 state)
-#   s6 = WO_x   (Washout state)
-#   vs = v_s    (alg: PSS output, at diff_dim + alg_ptr)
+#   s0, s1 : F1 = N/D1 = (1 + A5 s + A6 s^2)/(1 + A1 s + A2 s^2)
+#   s2, s3 : F2 = 1/D2 = 1/(1 + A3 s + A4 s^2)
+#   s4     : LL1 (T1/T2),   s5 : LL2 (T3/T4),   s6 : washout (T5/T6, KS)
+#   vs     : v_s (alg, at diff_dim + alg_ptr)
 #
-# Inline algebraic intermediates (not z-vector states):
-#   y2 = s3 + A5*s2 + (A6/A4)*(s1 - s3 - A3*s2)
+# Inline intermediates (not z-vector states):
+#   q1 = sig - s1 - A1*s0
+#   y1 = s1 + A5*s0 + (A6/A2)*q1
+#   y2 = s3
 #   y3 = s4 + (T1/T2)*(y2 - s4)
 #   y4 = s5 + (T3/T4)*(y3 - s5)
+#   x  = (T5/T6)*(KS*y4 - s6)
 #
-# Residual equations (sig = omega - 1):
-#   f[dp+0] = (sig - s1 - A1*s0) / A2
+# Residual equations (sig = w):
+#   f[dp+0] = q1 / A2
 #   f[dp+1] = s0
-#   f[dp+2] = (s1 - s3 - A3*s2) / A4
+#   f[dp+2] = (y1 - s3 - A3*s2) / A4
 #   f[dp+3] = s2
 #   f[dp+4] = (y2 - s4) / T2
 #   f[dp+5] = (y3 - s5) / T4
 #   f[dp+6] = (KS*y4 - s6) / T6
-#   f[ap]   = vs - (T5/T6)*(KS*y4 - s6)
+#   f[ap]   = vs - sat(x)
 #
-# Jacobian entries per device (30 total):
-#   f0: ∂/∂{s0, s1, omega}                            3
-#   f1: ∂/∂{s0}                                       1
-#   f2: ∂/∂{s1, s2, s3}                               3
-#   f3: ∂/∂{s2}                                       1
-#   f4: ∂/∂{s1, s2, s3, s4}                           4
-#   f5: ∂/∂{s1, s2, s3, s4, s5}                       5
-#   f6: ∂/∂{s1, s2, s3, s4, s5, s6}                   6
-#   f_vs: ∂/∂{s1, s2, s3, s4, s5, s6, vs}             7
-#                                              Total: 30
+# sat(x) = c + h*tanh(x/h - atanh(c/h)), c/h from LSMAX/LSMIN (p[pp+13],
+# p[pp+14]; degenerate limits already replaced by +/-1e3 in fill_pvec!).
+#
+# Jacobian entries per device (24 total):
+#   f0:   ∂/∂{s0, s1, w}                     3
+#   f1:   ∂/∂{s0}                            1
+#   f2:   ∂/∂{s0, s1, s2, s3, w}             5
+#   f3:   ∂/∂{s2}                            1
+#   f4:   ∂/∂{s3, s4}                        2
+#   f5:   ∂/∂{s3, s4, s5}                    3
+#   f6:   ∂/∂{s3, s4, s5, s6}                4
+#   f_vs: ∂/∂{s3, s4, s5, s6, vs}            5   (scaled by sat'(x))
+#                                     Total: 24
 
-const IEEEST_JAC_NENTRIES = 30
+const IEEEST_JAC_NENTRIES = 24
 
 # Slot indices into jac_pos (1-based).
 const J_PSS_R0_s0    = 1
 const J_PSS_R0_s1    = 2
-const J_PSS_R0_omega = 3
+const J_PSS_R0_w     = 3
 const J_PSS_R1_s0    = 4
-const J_PSS_R2_s1    = 5
-const J_PSS_R2_s2    = 6
-const J_PSS_R2_s3    = 7
-const J_PSS_R3_s2    = 8
-const J_PSS_R4_s1    = 9
-const J_PSS_R4_s2    = 10
+const J_PSS_R2_s0    = 5
+const J_PSS_R2_s1    = 6
+const J_PSS_R2_s2    = 7
+const J_PSS_R2_s3    = 8
+const J_PSS_R2_w     = 9
+const J_PSS_R3_s2    = 10
 const J_PSS_R4_s3    = 11
 const J_PSS_R4_s4    = 12
-const J_PSS_R5_s1    = 13
-const J_PSS_R5_s2    = 14
-const J_PSS_R5_s3    = 15
-const J_PSS_R5_s4    = 16
-const J_PSS_R5_s5    = 17
-const J_PSS_R6_s1    = 18
-const J_PSS_R6_s2    = 19
-const J_PSS_R6_s3    = 20
-const J_PSS_R6_s4    = 21
-const J_PSS_R6_s5    = 22
-const J_PSS_R6_s6    = 23
-const J_PSS_VA_s1    = 24
-const J_PSS_VA_s2    = 25
-const J_PSS_VA_s3    = 26
-const J_PSS_VA_s4    = 27
-const J_PSS_VA_s5    = 28
-const J_PSS_VA_s6    = 29
-const J_PSS_VA_vs    = 30
+const J_PSS_R5_s3    = 13
+const J_PSS_R5_s4    = 14
+const J_PSS_R5_s5    = 15
+const J_PSS_R6_s3    = 16
+const J_PSS_R6_s4    = 17
+const J_PSS_R6_s5    = 18
+const J_PSS_R6_s6    = 19
+const J_PSS_VA_s3    = 20
+const J_PSS_VA_s4    = 21
+const J_PSS_VA_s5    = 22
+const J_PSS_VA_s6    = 23
+const J_PSS_VA_vs    = 24
+
+# (row offset, col) pattern shared by preallocate and position cache.
+# Row offsets 0..6 are diff rows dp+r; row offset -1 denotes the alg row.
+# Column codes 0..6 are s0..s6, -1 = w (omega), -2 = vs.
+const _IEEEST_PATTERN = (
+    (0, 0), (0, 1), (0, -1),
+    (1, 0),
+    (2, 0), (2, 1), (2, 2), (2, 3), (2, -1),
+    (3, 2),
+    (4, 3), (4, 4),
+    (5, 3), (5, 4), (5, 5),
+    (6, 3), (6, 4), (6, 5), (6, 6),
+    (-1, 3), (-1, 4), (-1, 5), (-1, 6), (-1, -2),
+)
+@assert length(_IEEEST_PATTERN) == IEEEST_JAC_NENTRIES
+
+@inline _ieeest_row(r, dp, ap) = r < 0 ? ap : dp + r
+@inline _ieeest_col(c, dp, ap, wi) = c == -1 ? wi : (c == -2 ? ap : dp + c)
 
 # --------------------------------------------------------------------
 # Sparsity contribution
@@ -82,52 +97,11 @@ function ieeest_preallocate!(coord_list::Vector{Vector{Int}},
         dp = Int(table.diff_ptr[k])
         ap = diff_dim + Int(table.alg_ptr[k])
         wi = Int(table.w_idx[k])
-
-        # f0: s0, s1, omega
-        push!(coord_list[dp],     dp)
-        push!(coord_list[dp],     dp + 1)
-        wi > 0 && push!(coord_list[dp], wi)
-
-        # f1: s0
-        push!(coord_list[dp + 1], dp)
-
-        # f2: s1, s2, s3
-        push!(coord_list[dp + 2], dp + 1)
-        push!(coord_list[dp + 2], dp + 2)
-        push!(coord_list[dp + 2], dp + 3)
-
-        # f3: s2
-        push!(coord_list[dp + 3], dp + 2)
-
-        # f4: s1, s2, s3, s4
-        push!(coord_list[dp + 4], dp + 1)
-        push!(coord_list[dp + 4], dp + 2)
-        push!(coord_list[dp + 4], dp + 3)
-        push!(coord_list[dp + 4], dp + 4)
-
-        # f5: s1, s2, s3, s4, s5
-        push!(coord_list[dp + 5], dp + 1)
-        push!(coord_list[dp + 5], dp + 2)
-        push!(coord_list[dp + 5], dp + 3)
-        push!(coord_list[dp + 5], dp + 4)
-        push!(coord_list[dp + 5], dp + 5)
-
-        # f6: s1, s2, s3, s4, s5, s6
-        push!(coord_list[dp + 6], dp + 1)
-        push!(coord_list[dp + 6], dp + 2)
-        push!(coord_list[dp + 6], dp + 3)
-        push!(coord_list[dp + 6], dp + 4)
-        push!(coord_list[dp + 6], dp + 5)
-        push!(coord_list[dp + 6], dp + 6)
-
-        # f_vs (alg row): s1, s2, s3, s4, s5, s6, vs
-        push!(coord_list[ap], dp + 1)
-        push!(coord_list[ap], dp + 2)
-        push!(coord_list[ap], dp + 3)
-        push!(coord_list[ap], dp + 4)
-        push!(coord_list[ap], dp + 5)
-        push!(coord_list[ap], dp + 6)
-        push!(coord_list[ap], ap)
+        for (r, c) in _IEEEST_PATTERN
+            col = _ieeest_col(c, dp, ap, wi)
+            col > 0 || continue          # unwired omega
+            push!(coord_list[_ieeest_row(r, dp, ap)], col)
+        end
     end
     return nothing
 end
@@ -144,60 +118,27 @@ function ieeest_jac_positions!(table::IEEESTTable, J::SparseMatrixCSC, diff_dim:
         dp = Int(table.diff_ptr[k])
         ap = diff_dim + Int(table.alg_ptr[k])
         wi = Int(table.w_idx[k])
-
-        table.jac_pos[k, J_PSS_R0_s0]    = _find_pos(J, rows, dp,     dp)
-        table.jac_pos[k, J_PSS_R0_s1]    = _find_pos(J, rows, dp,     dp + 1)
-        table.jac_pos[k, J_PSS_R0_omega] = wi > 0 ? _find_pos(J, rows, dp, wi) : Int32(0)
-        table.jac_pos[k, J_PSS_R1_s0]    = _find_pos(J, rows, dp + 1, dp)
-
-        table.jac_pos[k, J_PSS_R2_s1]    = _find_pos(J, rows, dp + 2, dp + 1)
-        table.jac_pos[k, J_PSS_R2_s2]    = _find_pos(J, rows, dp + 2, dp + 2)
-        table.jac_pos[k, J_PSS_R2_s3]    = _find_pos(J, rows, dp + 2, dp + 3)
-
-        table.jac_pos[k, J_PSS_R3_s2]    = _find_pos(J, rows, dp + 3, dp + 2)
-
-        table.jac_pos[k, J_PSS_R4_s1]    = _find_pos(J, rows, dp + 4, dp + 1)
-        table.jac_pos[k, J_PSS_R4_s2]    = _find_pos(J, rows, dp + 4, dp + 2)
-        table.jac_pos[k, J_PSS_R4_s3]    = _find_pos(J, rows, dp + 4, dp + 3)
-        table.jac_pos[k, J_PSS_R4_s4]    = _find_pos(J, rows, dp + 4, dp + 4)
-
-        table.jac_pos[k, J_PSS_R5_s1]    = _find_pos(J, rows, dp + 5, dp + 1)
-        table.jac_pos[k, J_PSS_R5_s2]    = _find_pos(J, rows, dp + 5, dp + 2)
-        table.jac_pos[k, J_PSS_R5_s3]    = _find_pos(J, rows, dp + 5, dp + 3)
-        table.jac_pos[k, J_PSS_R5_s4]    = _find_pos(J, rows, dp + 5, dp + 4)
-        table.jac_pos[k, J_PSS_R5_s5]    = _find_pos(J, rows, dp + 5, dp + 5)
-
-        table.jac_pos[k, J_PSS_R6_s1]    = _find_pos(J, rows, dp + 6, dp + 1)
-        table.jac_pos[k, J_PSS_R6_s2]    = _find_pos(J, rows, dp + 6, dp + 2)
-        table.jac_pos[k, J_PSS_R6_s3]    = _find_pos(J, rows, dp + 6, dp + 3)
-        table.jac_pos[k, J_PSS_R6_s4]    = _find_pos(J, rows, dp + 6, dp + 4)
-        table.jac_pos[k, J_PSS_R6_s5]    = _find_pos(J, rows, dp + 6, dp + 5)
-        table.jac_pos[k, J_PSS_R6_s6]    = _find_pos(J, rows, dp + 6, dp + 6)
-
-        table.jac_pos[k, J_PSS_VA_s1]    = _find_pos(J, rows, ap, dp + 1)
-        table.jac_pos[k, J_PSS_VA_s2]    = _find_pos(J, rows, ap, dp + 2)
-        table.jac_pos[k, J_PSS_VA_s3]    = _find_pos(J, rows, ap, dp + 3)
-        table.jac_pos[k, J_PSS_VA_s4]    = _find_pos(J, rows, ap, dp + 4)
-        table.jac_pos[k, J_PSS_VA_s5]    = _find_pos(J, rows, ap, dp + 5)
-        table.jac_pos[k, J_PSS_VA_s6]    = _find_pos(J, rows, ap, dp + 6)
-        table.jac_pos[k, J_PSS_VA_vs]    = _find_pos(J, rows, ap, ap)
+        for (slot, (r, c)) in enumerate(_IEEEST_PATTERN)
+            col = _ieeest_col(c, dp, ap, wi)
+            table.jac_pos[k, slot] = col > 0 ?
+                _find_pos(J, rows, _ieeest_row(r, dp, ap), col) : Int32(0)
+        end
     end
     return nothing
 end
 
 # --------------------------------------------------------------------
-# Inline helpers: compute chain of algebraic intermediates
+# Inline helper: chain of algebraic intermediates
 # --------------------------------------------------------------------
 
-# Compute y2, y3, y4 from diff states and parameters.
-@inline function _ieeest_chain(s1, s2, s3, s4, s5,
-                                A3, A4, A5, A6,
-                                T1, T2, T3, T4)
-    q = s1 - s3 - A3*s2           # reused: F2 ODE RHS numerator
-    y2 = s3 + A5*s2 + (A6/A4)*q
+@inline function _ieeest_chain(sig, s0, s1, s3, s4, s5,
+                                A1, A2, A5, A6, T1, T2, T3, T4)
+    q1 = sig - s1 - A1*s0
+    y1 = s1 + A5*s0 + (A6/A2)*q1
+    y2 = s3
     y3 = s4 + (T1/T2)*(y2 - s4)
     y4 = s5 + (T3/T4)*(y3 - s5)
-    return y2, y3, y4
+    return q1, y1, y3, y4
 end
 
 # --------------------------------------------------------------------
@@ -217,6 +158,7 @@ end
     A5 = p[pp+4];   A6 = p[pp+5]
     T1 = p[pp+6];   T2 = p[pp+7];  T3 = p[pp+8];  T4 = p[pp+9]
     T5 = p[pp+10];  T6 = p[pp+11]; KS = p[pp+12]
+    LSMAX = p[pp+13]; LSMIN = p[pp+14]
 
     s0 = z[dp];   s1 = z[dp+1]; s2 = z[dp+2]; s3 = z[dp+3]
     s4 = z[dp+4]; s5 = z[dp+5]; s6 = z[dp+6]
@@ -226,16 +168,18 @@ end
     # (omega - 1). So sig = w directly (no subtraction needed).
     sig = wi > 0 ? z[wi] : 0.0
 
-    y2, y3, y4 = _ieeest_chain(s1, s2, s3, s4, s5, A3, A4, A5, A6, T1, T2, T3, T4)
+    q1, y1, y3, y4 = _ieeest_chain(sig, s0, s1, s3, s4, s5,
+                                   A1, A2, A5, A6, T1, T2, T3, T4)
+    vsat, _ = _ieeest_sat((T5/T6)*(KS*y4 - s6), LSMAX, LSMIN)
 
-    f[dp]   = (sig - s1 - A1*s0) / A2
+    f[dp]   = q1 / A2
     f[dp+1] = s0
-    f[dp+2] = (s1 - s3 - A3*s2) / A4
+    f[dp+2] = (y1 - s3 - A3*s2) / A4
     f[dp+3] = s2
-    f[dp+4] = (y2 - s4) / T2
+    f[dp+4] = (s3 - s4) / T2
     f[dp+5] = (y3 - s5) / T4
     f[dp+6] = (KS*y4 - s6) / T6
-    f[ap]   = vs - (T5/T6)*(KS*y4 - s6)
+    f[ap]   = vs - vsat
     end
     return nothing
 end
@@ -258,20 +202,11 @@ end
 # Jacobian batch
 # --------------------------------------------------------------------
 
-# Derivative chain for the inline algebraic intermediates.
-#
-# y2 = s3 + A5*s2 + (A6/A4)*(s1 - s3 - A3*s2)
-#   ∂y2/∂s1 = A6/A4
-#   ∂y2/∂s2 = A5 - A3*A6/A4
-#   ∂y2/∂s3 = 1 - A6/A4
-#
-# y3 = s4 + (T1/T2)*(y2 - s4)  = (1 - T1/T2)*s4 + (T1/T2)*y2
-#   ∂y3/∂s4 = 1 - T1/T2
-#   ∂y3/∂s_j = (T1/T2)*∂y2/∂s_j    for j ∈ {1,2,3}
-#
-# y4 = s5 + (T3/T4)*(y3 - s5) = (1 - T3/T4)*s5 + (T3/T4)*y3
-#   ∂y4/∂s5 = 1 - T3/T4
-#   ∂y4/∂s_j = (T3/T4)*∂y3/∂s_j    for j ∈ {1,2,3,4}
+# Derivatives of the inline intermediates:
+#   y1: ∂/∂s0 = A5 - A6*A1/A2,  ∂/∂s1 = 1 - A6/A2,  ∂/∂w = A6/A2
+#   y3: ∂/∂s3 = r12,  ∂/∂s4 = 1 - r12                    (r12 = T1/T2)
+#   y4: ∂/∂s3 = r34*r12,  ∂/∂s4 = r34*(1 - r12),  ∂/∂s5 = 1 - r34
+#   x = r56*(KS*y4 - s6),  v_s = sat(x),  sat'(x) = 1 - tanh^2
 
 @inline function _ieeest_jacobian_one!(nz, z, p,
         par_ptr, diff_ptr, alg_ptr, w_idx_arr, jac_pos,
@@ -279,80 +214,79 @@ end
     @inbounds begin
     pp = Int(par_ptr[k])
     dp = Int(diff_ptr[k])
-    ap = diff_dim + Int(alg_ptr[k])
     wi = Int(w_idx_arr[k])
 
     A1 = p[pp];   A2 = p[pp+1]; A3 = p[pp+2]; A4 = p[pp+3]
     A5 = p[pp+4]; A6 = p[pp+5]
     T1 = p[pp+6]; T2 = p[pp+7]; T3 = p[pp+8]; T4 = p[pp+9]
     T5 = p[pp+10]; T6 = p[pp+11]; KS = p[pp+12]
+    LSMAX = p[pp+13]; LSMIN = p[pp+14]
 
-    # Derivative chain for inline algebraic intermediates
-    rA = A6/A4
-    dy2_ds1 = rA
-    dy2_ds2 = A5 - A3*rA
-    dy2_ds3 = 1.0 - rA
+    s0 = z[dp]; s1 = z[dp+1]; s3 = z[dp+3]
+    s4 = z[dp+4]; s5 = z[dp+5]; s6 = z[dp+6]
+    sig = wi > 0 ? z[wi] : 0.0
 
-    rT12 = T1/T2
-    dy3_ds1 = rT12 * dy2_ds1
-    dy3_ds2 = rT12 * dy2_ds2
-    dy3_ds3 = rT12 * dy2_ds3
-    dy3_ds4 = 1.0 - rT12
+    r6 = A6 / A2
+    dy1_ds0 = A5 - r6*A1
+    dy1_ds1 = 1.0 - r6
+    dy1_dw  = r6
 
-    rT34 = T3/T4
-    dy4_ds1 = rT34 * dy3_ds1
-    dy4_ds2 = rT34 * dy3_ds2
-    dy4_ds3 = rT34 * dy3_ds3
-    dy4_ds4 = rT34 * dy3_ds4
-    dy4_ds5 = 1.0 - rT34
+    r12 = T1 / T2
+    dy3_ds3 = r12
+    dy3_ds4 = 1.0 - r12
 
-    # Row dp+0: f0 = (sig - s1 - A1*s0) / A2
+    r34 = T3 / T4
+    dy4_ds3 = r34 * dy3_ds3
+    dy4_ds4 = r34 * dy3_ds4
+    dy4_ds5 = 1.0 - r34
+
+    # Row dp+0: f0 = (w - s1 - A1*s0) / A2
     nz[jac_pos[k, J_PSS_R0_s0]] = -A1 / A2
     nz[jac_pos[k, J_PSS_R0_s1]] = -1.0 / A2
     if wi > 0
-        nz[jac_pos[k, J_PSS_R0_omega]] = 1.0 / A2
+        nz[jac_pos[k, J_PSS_R0_w]] = 1.0 / A2
     end
 
     # Row dp+1: f1 = s0
     nz[jac_pos[k, J_PSS_R1_s0]] = 1.0
 
-    # Row dp+2: f2 = (s1 - s3 - A3*s2) / A4
-    nz[jac_pos[k, J_PSS_R2_s1]] = 1.0 / A4
+    # Row dp+2: f2 = (y1 - s3 - A3*s2) / A4
+    nz[jac_pos[k, J_PSS_R2_s0]] = dy1_ds0 / A4
+    nz[jac_pos[k, J_PSS_R2_s1]] = dy1_ds1 / A4
     nz[jac_pos[k, J_PSS_R2_s2]] = -A3 / A4
     nz[jac_pos[k, J_PSS_R2_s3]] = -1.0 / A4
+    if wi > 0
+        nz[jac_pos[k, J_PSS_R2_w]] = dy1_dw / A4
+    end
 
     # Row dp+3: f3 = s2
     nz[jac_pos[k, J_PSS_R3_s2]] = 1.0
 
-    # Row dp+4: f4 = (y2 - s4) / T2
-    nz[jac_pos[k, J_PSS_R4_s1]] = dy2_ds1 / T2
-    nz[jac_pos[k, J_PSS_R4_s2]] = dy2_ds2 / T2
-    nz[jac_pos[k, J_PSS_R4_s3]] = dy2_ds3 / T2
+    # Row dp+4: f4 = (s3 - s4) / T2
+    nz[jac_pos[k, J_PSS_R4_s3]] = 1.0 / T2
     nz[jac_pos[k, J_PSS_R4_s4]] = -1.0 / T2
 
     # Row dp+5: f5 = (y3 - s5) / T4
-    nz[jac_pos[k, J_PSS_R5_s1]] = dy3_ds1 / T4
-    nz[jac_pos[k, J_PSS_R5_s2]] = dy3_ds2 / T4
     nz[jac_pos[k, J_PSS_R5_s3]] = dy3_ds3 / T4
     nz[jac_pos[k, J_PSS_R5_s4]] = dy3_ds4 / T4
     nz[jac_pos[k, J_PSS_R5_s5]] = -1.0 / T4
 
     # Row dp+6: f6 = (KS*y4 - s6) / T6
-    nz[jac_pos[k, J_PSS_R6_s1]] = KS * dy4_ds1 / T6
-    nz[jac_pos[k, J_PSS_R6_s2]] = KS * dy4_ds2 / T6
     nz[jac_pos[k, J_PSS_R6_s3]] = KS * dy4_ds3 / T6
     nz[jac_pos[k, J_PSS_R6_s4]] = KS * dy4_ds4 / T6
     nz[jac_pos[k, J_PSS_R6_s5]] = KS * dy4_ds5 / T6
     nz[jac_pos[k, J_PSS_R6_s6]] = -1.0 / T6
 
-    # Alg row: f_vs = vs - (T5/T6)*(KS*y4 - s6)
-    rT56 = T5/T6
-    nz[jac_pos[k, J_PSS_VA_s1]] = -rT56 * KS * dy4_ds1
-    nz[jac_pos[k, J_PSS_VA_s2]] = -rT56 * KS * dy4_ds2
-    nz[jac_pos[k, J_PSS_VA_s3]] = -rT56 * KS * dy4_ds3
-    nz[jac_pos[k, J_PSS_VA_s4]] = -rT56 * KS * dy4_ds4
-    nz[jac_pos[k, J_PSS_VA_s5]] = -rT56 * KS * dy4_ds5
-    nz[jac_pos[k, J_PSS_VA_s6]] = rT56
+    # Alg row: f_vs = vs - sat(x),  x = (T5/T6)*(KS*y4 - s6)
+    r56 = T5 / T6
+    _, _, _, y4 = _ieeest_chain(sig, s0, s1, s3, s4, s5,
+                                A1, A2, A5, A6, T1, T2, T3, T4)
+    _, dsat = _ieeest_sat(r56*(KS*y4 - s6), LSMAX, LSMIN)
+    g = r56 * dsat
+    nz[jac_pos[k, J_PSS_VA_s3]] = -g * KS * dy4_ds3
+    nz[jac_pos[k, J_PSS_VA_s4]] = -g * KS * dy4_ds4
+    nz[jac_pos[k, J_PSS_VA_s5]] = -g * KS * dy4_ds5
+    nz[jac_pos[k, J_PSS_VA_s6]] = g
     nz[jac_pos[k, J_PSS_VA_vs]] = 1.0
     end
     return nothing

@@ -283,13 +283,27 @@ function compute_pinj!(sinj, v, ybus_mat, nbus)
     end
 end
 
-function runpf(psys::PowerSystem; verbose=false, fdiff=false)
+# `v_init` (interleaved [vm1, va1, vm2, va2, ...], e.g. a previous
+# `PowerFlowSolution.volt`) warm-starts Newton: PQ magnitudes and all angles
+# start from it instead of the case's stored voltages. PV/slack magnitudes are
+# setpoints and always come from `psys.buses`.
+function runpf(psys::PowerSystem; verbose=false, fdiff=false, bus_type=nothing,
+               v_init=nothing)
 
     prF = psys.profiler
 
-    bus_type = [bus.type for bus in psys.buses]
+    # `bus_type` lets runpf! re-solve with PV buses switched to PQ when their
+    # generators hit a reactive limit, without mutating `psys.buses[i].type`
+    # (which the dynamic model and the dataset export still read).
+    bus_type = bus_type === nothing ? [bus.type for bus in psys.buses] : bus_type
     vmag = [bus.v0m for bus in psys.buses]
     vang = [bus.v0a for bus in psys.buses]
+    if v_init !== nothing
+        for i in eachindex(vmag)
+            bus_type[i] == 1 && (vmag[i] = v_init[2i-1])
+            vang[i] = v_init[2i]
+        end
+    end
     pinj = zeros(Float64, length(psys.buses))
     qinj = zeros(Float64, length(psys.buses))
 
@@ -318,11 +332,11 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
 
     for (idx, bus) in enumerate(psys.buses)
         if pq_idx[idx] > 0
-            x0[pq_idx[idx]] = bus.v0m
+            x0[pq_idx[idx]] = vmag[idx]
         end
 
         if pqv_idx[idx] > 0
-            x0[npq + pqv_idx[idx]] = bus.v0a
+            x0[npq + pqv_idx[idx]] = vang[idx]
         end
     end
 
@@ -346,6 +360,10 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
         #@timeit prF "pflow: newton" result, success = newton(x0, J0, func!, jac!, tol = 1e-8, verbose = true)
     end
 
+    ok = converged(result)
+    ok || verbose &&
+        @warn "runpf: Newton did not converge in $(result.iterations) iterations (residual $(result.residual_norm))"
+
     # Retrieve solution
     sol = result.zero
 
@@ -366,24 +384,120 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
     v = Array(vec([vmag vang]'))
     sinj = zeros(length(v))
     compute_pinj!(sinj, v, psys.network.ybus, nbuses)
-    psol = PowerFlowSolution(v, sinj)
+    psol = PowerFlowSolution(v, sinj, ok)
     return psol
 end
 
-# Same as runpf but instead of returning a solution, modifies the
-# PowerSystem struct in place.
-function runpf!(psys::PowerSystem; verbose=false, fdiff=false)
-    psol = runpf(psys, verbose=verbose, fdiff=fdiff)
+# Generation per bus from a power-flow solution: sinj = generation - load, so
+# generation = sinj + load. The injection was built as `pinj -= pd` /
+# `qinj += qd` (qd is stored negated), so the inverse is `+= pd` / `-= qd`.
+# (The P sign used to be `-=`, which double-counted the load whenever the
+# slack bus carries load; IEEE39's slack came out at -0.855 pu, not +7.145.)
+function _pf_generation(psys::PowerSystem, psol::PowerFlowSolution)
+    sgen = copy(psol.sinj)
+    for load in psys.loads
+        sgen[2*load.bus-1] += load.pd
+        sgen[2*load.bus]   -= load.qd
+    end
+    return sgen
+end
 
-    # bus number to generator. This an array of arays
-    # where bus_to_gen[i] gives an array with the indices
-    # of all generators connected to bus i.
-    # NOTE: might need to create this structure in other place
-    # and store it in the PowerSystem struct
-    bus_to_gen = [Array{Int}(undef, 0) for i in 1:length(psys.buses)]
+# Share a bus's total reactive output among its generators in proportion to
+# each unit's reactive range, as MATPOWER does, so every unit sits at the same
+# fraction of its range and a bus at its limit puts every unit at its own
+# limit. Falls back to an even split when the range is unbounded or zero
+# (e.g. MATPOWER/test cases with no Q limits), preserving the old behaviour.
+function _split_q!(gens::Vector{Gen}, idxs::Vector{Int}, qtot::Float64)
+    isempty(idxs) && return nothing
+    qmin = sum(gens[g].qmin for g in idxs)
+    qmax = sum(gens[g].qmax for g in idxs)
+    rng = qmax - qmin
+    if isfinite(rng) && rng > 1e-12
+        for g in idxs
+            gi = gens[g]
+            gi.qsch = gi.qmin + (qtot - qmin) * (gi.qmax - gi.qmin) / rng
+        end
+    else
+        for g in idxs
+            gens[g].qsch = qtot / length(idxs)
+        end
+    end
+    return nothing
+end
+
+"""
+    runpf!(psys; verbose=false, fdiff=false, enforce_qlims=true,
+           qlim_tol=1e-6, max_qlim_iter=50)
+
+Solve the power flow and write the solution back into `psys` (bus voltages,
+generator P/Q setpoints). Returns `true` if Newton converged.
+"""
+function runpf!(psys::PowerSystem; verbose=false, fdiff=false,
+                enforce_qlims::Bool=true, qlim_tol::Float64=1e-6,
+                max_qlim_iter::Int=50)
+    nbus = length(psys.buses)
+    bus_to_gen = [Int[] for _ in 1:nbus]
     for (idx, gen) in enumerate(psys.gens)
         push!(bus_to_gen[gen.bus], idx)
     end
+
+    bus_type = [bus.type for bus in psys.buses]
+    psol = runpf(psys; verbose=verbose, fdiff=fdiff, bus_type=bus_type)
+
+    nswitched = 0
+    if enforce_qlims
+        settled = false
+        for it in 1:max_qlim_iter
+            psol.converged || break   # nothing sensible to switch from
+            sgen = _pf_generation(psys, psol)
+            # (bus, violation, Q limit it is fixed at)
+            viol = Tuple{Int,Float64,Bool}[]
+            for i in 1:nbus
+                bus_type[i] == 2 || continue
+                gens = bus_to_gen[i]
+                isempty(gens) && continue
+                qmax = sum(psys.gens[g].qmax for g in gens)
+                qmin = sum(psys.gens[g].qmin for g in gens)
+                q = sgen[2*i]
+                if q > qmax + qlim_tol
+                    push!(viol, (i, q - qmax, true))
+                elseif q < qmin - qlim_tol
+                    push!(viol, (i, qmin - q, false))
+                end
+            end
+            if isempty(viol)
+                settled = true
+                break
+            end
+            sort!(viol; by = v -> -v[2])
+            k = length(viol)
+            while true
+                trial = copy(bus_type)
+                for (i, _, at_max) in viol[1:k]
+                    for g in bus_to_gen[i]
+                        psys.gens[g].qsch = at_max ? psys.gens[g].qmax : psys.gens[g].qmin
+                    end
+                    trial[i] = 1          # Q now fixed via gen.qsch in runpf's qinj
+                end
+                # Warm-start from the solution just found: restarting from the
+                # case's stored voltages after switching diverged on ACTIVSg2000
+                # at perturbed loadings (residual ~1e5-1e6).
+                ptry = runpf(psys; verbose=verbose, fdiff=fdiff, bus_type=trial,
+                             v_init=psol.volt)
+                if ptry.converged || k == 1
+                    bus_type .= trial
+                    psol = ptry
+                    nswitched += k
+                    break
+                end
+                k = cld(k, 2)
+            end
+        end
+        settled || !psol.converged ||
+            @warn "runpf!: reactive-limit switching did not settle in $max_qlim_iter iterations"
+        nswitched > 0 && @info "runpf!: $nswitched generator bus(es) hit a reactive limit and were switched PV→PQ."
+    end
+    psol.converged || @warn "runpf!: power flow did not converge; the solution written back is not a steady state"
 
     # Update bus voltages
     for (idx, bus) in enumerate(psys.buses)
@@ -391,28 +505,20 @@ function runpf!(psys::PowerSystem; verbose=false, fdiff=false)
         bus.v0a = psol.volt[2*idx]
     end
 
-    # compute generation vector
-    sgen = copy(psol.sinj)
-    for (idx, load) in enumerate(psys.loads)
-        sgen[2*load.bus-1] += load.pd
-        sgen[2*load.bus] -= load.qd
-    end
-
-    # for all the PV buses. we distribute the reactive power
-    # among all the generators evenly.
-    for (idx, bus) in enumerate(psys.buses)
-        ngen = length(bus_to_gen[idx])
-        if bus.type == 2
-            for gen_idx in bus_to_gen[idx]
-                psys.gens[gen_idx].qsch = sgen[2*idx] / ngen
-            end
+    sgen = _pf_generation(psys, psol)
+    for i in 1:nbus
+        gens = bus_to_gen[i]
+        isempty(gens) && continue
+        if bus_type[i] == 2 || bus_type[i] == 3
+            # PV / slack: Q is a result of the solve; share it across units.
+            _split_q!(psys.gens, gens, sgen[2*i])
         end
-
-        if bus.type == 3
-            for gen_idx in bus_to_gen[idx]
-                psys.gens[gen_idx].psch = sgen[2*idx-1] / ngen
-                psys.gens[gen_idx].qsch = sgen[2*idx] / ngen
+        # Buses switched to PQ already hold each unit at its own limit.
+        if bus_type[i] == 3
+            for g in gens
+                psys.gens[g].psch = sgen[2*i-1] / length(gens)
             end
         end
     end
+    return psol.converged
 end

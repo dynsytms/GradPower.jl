@@ -79,8 +79,17 @@ Reads a PSSE raw file and a PSSE dyr file and constructs a PowerSystem
 
 """
 function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
-                    add_static_gen_stubs::Bool=true)
-    raw = read_psse_raw(raw_file)
+                    add_static_gen_stubs::Bool=true, static_gen_mode::Symbol=:pv)
+    return from_psse(read_psse_raw(raw_file), dyr_file;
+                     add_static_gen_stubs=add_static_gen_stubs,
+                     static_gen_mode=static_gen_mode)
+end
+
+# Build from an already-parsed (and possibly modified) raw case. Operating-point
+# sweeps edit loads/dispatch on the `PsystemRaw` before this call, so the
+# ZIP loads and machine models are created from the modified values.
+function from_psse(raw::PsystemRaw, dyr_file::Union{String, Nothing};
+                    add_static_gen_stubs::Bool=true, static_gen_mode::Symbol=:pv)
     sys = raw_to_grad(raw)
     if dyr_file !== nothing
         # Drop GENROU/GENSAL dynamic rows whose (bus, id) doesn't
@@ -92,7 +101,8 @@ function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
             push!(active, (sys.buses[gen.bus].i, _normalize_id(gen.id)))
         end
         psd = PowerSystemDynamics(dyr_file; active_gen_keys=active)
-        set_dynamics!(sys, psd; add_static_gen_stubs=add_static_gen_stubs)
+        set_dynamics!(sys, psd; add_static_gen_stubs=add_static_gen_stubs,
+                      static_gen_mode=static_gen_mode)
     end
     return sys
 end
@@ -106,8 +116,19 @@ const DEVICE_TYPE_MAP = Dict(
     "GENSAL" => Gensal,
     "IEESGO" => IEESGO,
     "TGOV1"  => TGOV1,
+    "IEEEG1" => IEEEG1,
+    "GGOV1"  => GGOV1,
+    "HYGOV"  => HYGOV,
     "SEXS"   => SEXS,
     "ESDC1A" => ESDC1A,
+    "ESST4B" => ESST4B,
+    "IEEET1" => IEEET1,   # src/exciters_psse.jl
+    "EXPIC1" => EXPIC1,   # src/exciters_psse.jl
+    "EXAC2"  => EXAC2,    # src/exciters_psse.jl
+    "EXAC1"  => EXAC1,    # src/exciters_psse.jl (EXAC2 kernels)
+    "ESAC1A" => ESAC1A,   # src/exciters_psse.jl (EXAC2 kernels)
+    "SCRX"   => SCRX,     # src/exciters_psse.jl
+    "ESAC6A" => ESAC6A,   # src/exciters_psse.jl
     "IEEEST" => IEEEST,
     # add more device types here
 )
@@ -196,7 +217,9 @@ function mat_to_grad(mpc)
         bus = busmap[gen["bus"]]
         status_val = gen["status"]
         @assert status_val == 0.0 || status_val == 1.0 "Gen status must be 0 or 1, got $status_val"
-        push!(gens, Gen(bus, " ", gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"], Bool(status_val)))
+        qmax = get(gen, "Qmax", Inf) / baseMVA
+        qmin = get(gen, "Qmin", -Inf) / baseMVA
+        push!(gens, Gen(bus, " ", gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"], Bool(status_val), qmax, qmin))
     end
     for branch in mpc["branch"]
         fr = busmap[branch["fbus"]]
@@ -361,7 +384,8 @@ function raw_to_grad(raw::PsystemRaw)
     for gen in raw.gens
         gen.status == 1 || continue
         bus = busmap[gen.busn]
-        push!(gens, Gen(bus, gen.name, gen.pg/baseMVA, gen.qg/baseMVA, gen.mbase, gen.status))
+        push!(gens, Gen(bus, gen.name, gen.pg/baseMVA, gen.qg/baseMVA, gen.mbase, gen.status,
+                        gen.qt/baseMVA, gen.qb/baseMVA))
         # PV/SLACK buses: voltage setpoint comes from the generator's vs field,
         # not the bus's flat-start magnitude.
         bt = buses[bus].type

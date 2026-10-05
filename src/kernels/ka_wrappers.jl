@@ -76,6 +76,39 @@ end
     end
 end
 
+@kernel function ieeeg1_residual_ka!(f, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        @Const(diff_dim))
+    k = @index(Global)
+    if @inbounds online[k]
+        _ieeeg1_residual_one!(f, z, p,
+            diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+            k, diff_dim)
+    end
+end
+
+@kernel function ggov1_residual_ka!(f, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        @Const(diff_dim))
+    k = @index(Global)
+    if @inbounds online[k]
+        _ggov1_residual_one!(f, z, p,
+            diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+            k, diff_dim)
+    end
+end
+
+@kernel function hygov_residual_ka!(f, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+        @Const(diff_dim))
+    k = @index(Global)
+    if @inbounds online[k]
+        _hygov_residual_one!(f, z, p,
+            diff_ptr, alg_ptr, par_ptr, w_idx_arr,
+            k, diff_dim)
+    end
+end
+
 @kernel function sexs_residual_ka!(f, z, p, online,
         diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr)
     k = @index(Global)
@@ -91,6 +124,16 @@ end
     k = @index(Global)
     if @inbounds online[k]
         _esdc1a_residual_one!(f, z, p,
+            diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr,
+            k)
+    end
+end
+
+@kernel function esst4b_residual_ka!(f, z, p, online,
+        diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr)
+    k = @index(Global)
+    if @inbounds online[k]
+        _esst4b_residual_one!(f, z, p,
             diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr,
             k)
     end
@@ -140,6 +183,36 @@ end
     end
 end
 
+@kernel function ieeeg1_jacobian_ka!(nz, p, online,
+        par_ptr, jac_pos)
+    k = @index(Global)
+    if @inbounds online[k]
+        _ieeeg1_jacobian_one!(nz, p,
+            par_ptr, jac_pos, k)
+    end
+end
+
+@kernel function ggov1_jacobian_ka!(nz, p, online,
+        par_ptr, jac_pos)
+    k = @index(Global)
+    if @inbounds online[k]
+        _ggov1_jacobian_one!(nz, p,
+            par_ptr, jac_pos, k)
+    end
+end
+
+# HYGOV is nonlinear: its Jacobian reads z (like ESST4B/IEEEST).
+@kernel function hygov_jacobian_ka!(nz, z, p, online,
+        diff_ptr, alg_ptr, par_ptr, w_idx_arr, jac_pos,
+        @Const(diff_dim))
+    k = @index(Global)
+    if @inbounds online[k]
+        _hygov_jacobian_one!(nz, z, p,
+            diff_ptr, alg_ptr, par_ptr, w_idx_arr, jac_pos,
+            k, diff_dim)
+    end
+end
+
 @kernel function sexs_jacobian_ka!(nz, z, p, online,
         par_ptr, vr_idx_arr, vs_idx_arr, jac_pos)
     k = @index(Global)
@@ -154,6 +227,15 @@ end
     k = @index(Global)
     if @inbounds online[k]
         _esdc1a_jacobian_one!(nz, z, p,
+            par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos, k)
+    end
+end
+
+@kernel function esst4b_jacobian_ka!(nz, z, p, online,
+        par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos)
+    k = @index(Global)
+    if @inbounds online[k]
+        _esst4b_jacobian_one!(nz, z, p,
             par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos, k)
     end
 end
@@ -300,6 +382,30 @@ function _rhs_fun_ka_cpu!(f::AbstractArray, z::AbstractArray, u::AbstractArray,
                diff_dim; ndrange=tg.n)
     end
 
+    g1 = L.ieeeg1
+    if g1.n > 0
+        kernel = ieeeg1_residual_ka!(backend)
+        kernel(f, z, p, g1.online,
+               g1.diff_ptr, g1.alg_ptr, g1.par_ptr, g1.w_idx,
+               diff_dim; ndrange=g1.n)
+    end
+
+    gg = L.ggov1
+    if gg.n > 0
+        kernel = ggov1_residual_ka!(backend)
+        kernel(f, z, p, gg.online,
+               gg.diff_ptr, gg.alg_ptr, gg.par_ptr, gg.w_idx,
+               diff_dim; ndrange=gg.n)
+    end
+
+    hy = L.hygov
+    if hy.n > 0
+        kernel = hygov_residual_ka!(backend)
+        kernel(f, z, p, hy.online,
+               hy.diff_ptr, hy.alg_ptr, hy.par_ptr, hy.w_idx,
+               diff_dim; ndrange=hy.n)
+    end
+
     pss = L.ieeest
     if pss.n > 0
         kernel = ieeest_residual_ka!(backend)
@@ -321,6 +427,16 @@ function _rhs_fun_ka_cpu!(f::AbstractArray, z::AbstractArray, u::AbstractArray,
         kernel(f, z, p, ex.online,
                ex.diff_ptr, ex.par_ptr, ex.vr_idx, ex.vs_idx; ndrange=ex.n)
     end
+
+    s4 = L.esst4b
+    if s4.n > 0
+        kernel = esst4b_residual_ka!(backend)
+        kernel(f, z, p, s4.online,
+               s4.diff_ptr, s4.par_ptr, s4.vr_idx, s4.vs_idx; ndrange=s4.n)
+    end
+
+    # IEEET1, ... (AbstractStdExciter) — src/kernels/std_exciters_ka.jl
+    std_exc_residual_ka!(backend, f, z, p, L)
 
     # ZIPLoad: inj slots n_genrou+1..n_genrou+n_zipload
     zt = L.zipload

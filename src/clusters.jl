@@ -40,8 +40,12 @@ end
 _device_symbol(::Genrou)           = :genrou
 _device_symbol(::IEESGO)           = :ieesgo
 _device_symbol(::TGOV1)            = :tgov1
+_device_symbol(::IEEEG1)           = :ieeeg1
+_device_symbol(::GGOV1)            = :ggov1
+_device_symbol(::HYGOV)            = :hygov
 _device_symbol(::SEXS)             = :sexs
 _device_symbol(::ESDC1A)           = :esdc1a
+_device_symbol(::ESST4B)           = :esst4b
 _device_symbol(::IEEEST)           = :ieeest
 _device_symbol(::StaticGenerator)  = :static_gen
 _device_symbol(::ZIPLoad)          = :zipload
@@ -350,10 +354,19 @@ function _update_table_pointers!(layout::SimulationLayout, old_to_new::Vector{In
     _remap_ieesgo!(layout.ieesgo, old_to_new, diff_dim, n_da)
     # TGOV1: same as IEESGO
     _remap_tgov1!(layout.tgov1, old_to_new, diff_dim, n_da)
+    # IEEEG1, GGOV1, HYGOV: same shape as TGOV1
+    _remap_tgov1!(layout.ieeeg1, old_to_new, diff_dim, n_da)
+    _remap_tgov1!(layout.ggov1, old_to_new, diff_dim, n_da)
+    _remap_tgov1!(layout.hygov, old_to_new, diff_dim, n_da)
     # SEXS: diff_ptr absolute, no alg_ptr
     _remap_sexs!(layout.sexs, old_to_new, diff_dim, n_da)
     # ESDC1A: diff_ptr absolute, no alg_ptr
     _remap_esdc1a!(layout.esdc1a, old_to_new, diff_dim, n_da)
+    # ESST4B: same shape as ESDC1A
+    _remap_esdc1a!(layout.esst4b, old_to_new, diff_dim, n_da)
+    # IEEET1, ... (AbstractStdExciter): generic remap + _device_symbol live
+    # in src/tables/std_exciters.jl
+    _remap_std_exciters!(layout, old_to_new, diff_dim, n_da)
     # IEEEST: diff_ptr absolute, alg_ptr offset (kernel does diff_dim + alg_ptr)
     _remap_ieeest!(layout.ieeest, old_to_new, diff_dim, n_da)
     # ZIPLoad: no diff/alg states
@@ -402,7 +415,7 @@ function _remap_ieesgo!(table::IEESGOTable, old_to_new::Vector{Int}, diff_dim::I
     return nothing
 end
 
-function _remap_tgov1!(table::TGOV1Table, old_to_new::Vector{Int}, diff_dim::Int, n_da::Int)
+function _remap_tgov1!(table::Union{TGOV1Table,IEEEG1Table,GGOV1Table,HYGOVTable}, old_to_new::Vector{Int}, diff_dim::Int, n_da::Int)
     for k in 1:table.n
         old_dp = Int(table.diff_ptr[k])
         table.diff_ptr[k] = Int32(old_to_new[old_dp])
@@ -434,7 +447,7 @@ function _remap_sexs!(table::SEXSTable, old_to_new::Vector{Int}, diff_dim::Int, 
     return nothing
 end
 
-function _remap_esdc1a!(table::ESDC1ATable, old_to_new::Vector{Int}, diff_dim::Int, n_da::Int)
+function _remap_esdc1a!(table::Union{ESDC1ATable,ESST4BTable}, old_to_new::Vector{Int}, diff_dim::Int, n_da::Int)
     for k in 1:table.n
         old_dp = Int(table.diff_ptr[k])
         table.diff_ptr[k] = Int32(old_to_new[old_dp])
