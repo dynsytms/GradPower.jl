@@ -7,6 +7,9 @@
 #   - PQ (bus type 1):    P and Q are both parameters. No alg states; pure
 #                         current injection into the voltage rows.
 #
+# A PV stub whose bus the power flow converted to PQ under Q-limit enforcement
+# keeps its alg state but stops regulating -- see the `regulating` field.
+#
 # Current injection (all bus types) is:
 #   f[vr] += (p*vr + q*vi) / vm2
 #   f[vi] += (p*vi - q*vr) / vm2
@@ -31,6 +34,13 @@ mutable struct StaticGenerator <: AbstractDeviceType
     # initialization-derived (filled by initialize_static_gens!)
     p0::Float64
     q0::Float64
+    # Whether this stub still regulates its bus voltage. Set false by
+    # `initialize_dynamics!` when the power flow's Q-limit loop converted the
+    # bus to PQ: the machines it aggregates are at a reactive bound, so they
+    # can no longer hold `vset`. The alg state `q` stays (the layout is fixed
+    # long before the power flow runs), but its residual becomes `q = q0`
+    # instead of `vr^2 + vi^2 = vset^2`.
+    regulating::Bool
 end
 
 function StaticGenerator(bus::Int64, bus_type::Int64, gen_idxs::Vector{Int64},
@@ -38,7 +48,7 @@ function StaticGenerator(bus::Int64, bus_type::Int64, gen_idxs::Vector{Int64},
     alg_size = bus_type == 2 ? 1 : (bus_type == 3 ? 2 : 0)
     par_size = 4   # [p, q, vset, aset]
     return StaticGenerator(0, alg_size, 0, par_size, bus, bus_type, gen_idxs,
-                           vset, aset, 0.0, 0.0)
+                           vset, aset, 0.0, 0.0, true)
 end
 
 function fill_pvec!(pvec::AbstractArray, dtype::StaticGenerator)

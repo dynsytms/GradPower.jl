@@ -79,7 +79,8 @@ Reads a PSSE raw file and a PSSE dyr file and constructs a PowerSystem
 
 """
 function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
-                    add_static_gen_stubs::Bool=true)
+                    add_static_gen_stubs::Bool=true,
+                    surrogates::Bool=false)
     raw = read_psse_raw(raw_file)
     sys = raw_to_grad(raw)
     if dyr_file !== nothing
@@ -91,7 +92,7 @@ function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
         for gen in sys.gens
             push!(active, (sys.buses[gen.bus].i, _normalize_id(gen.id)))
         end
-        psd = PowerSystemDynamics(dyr_file; active_gen_keys=active)
+        psd = PowerSystemDynamics(dyr_file; active_gen_keys=active, surrogates=surrogates)
         set_dynamics!(sys, psd; add_static_gen_stubs=add_static_gen_stubs)
     end
     return sys
@@ -111,6 +112,270 @@ const DEVICE_TYPE_MAP = Dict(
     "IEEEST" => IEEEST,
     # add more device types here
 )
+
+# ---------------------------------------------------------------------------
+# Compatibility surrogates
+# ---------------------------------------------------------------------------
+#
+# A surrogate maps a DYR model GradPower has no native kernel for onto a model
+# it does implement. This is what lets a case like ACTIVSg2000 run end to end
+# without first implementing a dozen controller models -- but a surrogate is a
+# STAND-IN, not an implementation: it does not reproduce the source model's
+# equations, and it must never be counted as native coverage or used for
+# scientific validation (plan_enhance.md sections 2.2 and 7.1).
+#
+# Surrogates are OPT-IN. `from_psse(...; surrogates=true)` enables them, and
+# every redirected record is reported distinctly from native ones.
+#
+# Constants for GGOV1, EXPIC1, SCRX and ESAC6A are taken from uqgrid's own
+# compatibility redirects (uqgrid/uqgrid/io/parse.py) so the two simulators
+# agree. `R` is passed on machine base; `set_ratio!` converts it to system
+# base, matching uqgrid's `R * basemva / mbase`.
+#
+# The remaining entries are GradPower-local: uqgrid implements those natively,
+# so there is no upstream mapping to copy. They reuse the same surrogate shape.
+
+_f(fields, i) = parse(Float64, fields[i])
+
+# uqgrid's SEXS surrogate: a plain fast AVR with effectively no output limit.
+_sexs_surrogate(bus, id) = SEXS(bus, id, 0.4, 5.0, 20.0, 1.0, -99.0, 99.0)
+
+# uqgrid's TGOV1 surrogate shape; only the droop R comes from the record.
+_tgov1_surrogate(bus, id, R) = TGOV1(bus, id, R, 0.1, 1.2, 0.0, 0.2, 10.0, 0.0)
+
+_surrogate_bus_id(fields) = (parse(Int64, fields[1]), String(fields[3]))
+
+function _ggov1_as_tgov1(fields)
+    bus, id = _surrogate_bus_id(fields)
+    # uqgrid requires Rselect = Fswitch = 1 for the redirect to be meaningful.
+    rselect, fswitch = Int(_f(fields, 4)), Int(_f(fields, 5))
+    (rselect, fswitch) == (1, 1) ||
+        @warn "GGOV1 surrogate at bus $bus id $id has Rselect=$rselect Fswitch=$fswitch (expected 1,1); droop may not be comparable."
+    _tgov1_surrogate(bus, id, _f(fields, 6))          # field 6 = R
+end
+
+function _hygov_as_tgov1(fields)
+    bus, id = _surrogate_bus_id(fields)
+    _tgov1_surrogate(bus, id, _f(fields, 4))          # field 4 = permanent droop R
+end
+
+function _ieeeg1_as_tgov1(fields)
+    bus, id = _surrogate_bus_id(fields)
+    K = _f(fields, 6)                                  # field 6 = K = 1/R
+    _tgov1_surrogate(bus, id, K > 0 ? 1.0 / K : 0.05)
+end
+
+_exciter_as_sexs(fields) = _sexs_surrogate(_surrogate_bus_id(fields)...)
+
+# Tier 1 -- MIRRORED REDIRECTS. uqgrid itself redirects these four models onto
+# TGOV1/SEXS rather than implementing them, and we copy its mapping and its
+# constants verbatim (uqgrid/uqgrid/io/parse.py). Using them keeps GradPower
+# and the reference simulator on the same footing, so a GradPower-vs-uqgrid
+# comparison on a case containing them remains meaningful.
+const DYR_REDIRECT_MAP = Dict{String,Function}(
+    "GGOV1"  => _ggov1_as_tgov1,
+    "EXPIC1" => _exciter_as_sexs,
+    "SCRX"   => _exciter_as_sexs,
+    "ESAC6A" => _exciter_as_sexs,
+)
+
+# Tier 2 -- LOCAL SURROGATES. uqgrid implements every one of these NATIVELY, so
+# there is no upstream mapping to copy and no oracle behind the substitution.
+# They exist only so a case containing them can be run end to end at all; the
+# dynamics they produce are NOT the source model's dynamics, and a
+# GradPower-vs-uqgrid comparison over them compares different equations.
+#
+# Do not use Tier 2 for validation, parameter studies, or published results.
+# The honest fix is to implement the models (plan_enhance.md phases 2-5);
+# ESST4B is the highest-value one at 278 ACTIVSg2000 records.
+const DYR_LOCAL_SURROGATE_MAP = Dict{String,Function}(
+    "HYGOV"  => _hygov_as_tgov1,
+    "IEEEG1" => _ieeeg1_as_tgov1,
+    "ESST4B" => _exciter_as_sexs,
+    "EXAC1"  => _exciter_as_sexs,
+    "EXAC2"  => _exciter_as_sexs,
+    "ESAC1A" => _exciter_as_sexs,
+    "IEEET1" => _exciter_as_sexs,
+    "ESDC2A" => _exciter_as_sexs,
+)
+
+const DYR_SURROGATE_MAP = merge(DYR_REDIRECT_MAP, DYR_LOCAL_SURROGATE_MAP)
+
+"""DYR models redirected exactly as uqgrid redirects them."""
+redirect_dyr_models() = Set(String.(keys(DYR_REDIRECT_MAP)))
+
+"""DYR models stood in for with no upstream oracle. Not valid for validation."""
+local_surrogate_dyr_models() = Set(String.(keys(DYR_LOCAL_SURROGATE_MAP)))
+
+"""Every source DYR model GradPower can stand in for but does not implement."""
+surrogate_dyr_models() = Set(String.(keys(DYR_SURROGATE_MAP)))
+
+const _DYR_GOVERNOR_MODELS = Set(["GAST", "GGOV1", "HYGOV", "IEEEG1", "IEESGO", "TGOV1"])
+const _DYR_MACHINE_MODELS = Set(["GENROU", "GENSAL"])
+const _DYR_EXCITER_MODELS = Set(["ESAC1A", "ESAC6A", "ESDC1A", "ESDC2A", "ESST4B",
+                                 "EXAC1", "EXAC2", "EXPIC1", "IEEET1", "SCRX", "SEXS"])
+const _DYR_STABILIZER_MODELS = Set(["IEEEST"])
+const _DYR_LOAD_MODELS = Set(["CIM5BL"])
+
+struct DyrRecordCoverage
+    record_index::Int
+    source_model::String
+    effective_model::Union{Nothing,String}
+    bus::Int64
+    device_id::String
+    active::Union{Nothing,Bool}
+    status::Symbol
+end
+
+struct DyrModelCoverage
+    total::Int
+    active::Int
+    inactive::Int
+    native::Int
+    redirected::Int
+    unsupported::Int
+    unmatched::Int
+    duplicate::Int
+end
+
+struct DyrCoverageReport
+    raw_path::String
+    dyr_path::String
+    records::Vector{DyrRecordCoverage}
+    by_source_model::Dict{String,DyrModelCoverage}
+    active_generators_without_machine::Vector{Tuple{Int64,String}}
+end
+
+"""Return the DYR model names implemented by the current `DEVICE_TYPE_MAP`."""
+native_dyr_models() = Set(String.(keys(DEVICE_TYPE_MAP)))
+
+function _dyr_model_family(model::String)
+    model in _DYR_MACHINE_MODELS && return :machine
+    if haskey(DEVICE_TYPE_MAP, model)
+        dtype = DEVICE_TYPE_MAP[model]
+        dtype <: AbstractGeneratorType && return :machine
+        dtype <: AbstractGovernorType && return :governor
+        dtype <: AbstractExciterType && return :exciter
+        dtype <: AbstractStabilizerType && return :stabilizer
+        dtype <: AbstractLoadType && return :load
+    end
+    model in _DYR_GOVERNOR_MODELS && return :governor
+    model in _DYR_EXCITER_MODELS && return :exciter
+    model in _DYR_STABILIZER_MODELS && return :stabilizer
+    model in _DYR_LOAD_MODELS && return :load
+    return Symbol(model)
+end
+
+function _coverage_by_source_model(records::Vector{DyrRecordCoverage})
+    fields = (:total, :active, :inactive, :native, :redirected,
+              :unsupported, :unmatched, :duplicate)
+    counters = Dict{String,Dict{Symbol,Int}}()
+    for record in records
+        counts = get!(counters, record.source_model, Dict(field => 0 for field in fields))
+        counts[:total] += 1
+        record.active === true && (counts[:active] += 1)
+        record.active === false && (counts[:inactive] += 1)
+        record.status != :inactive && (counts[record.status] += 1)
+    end
+    return Dict(model => DyrModelCoverage((counts[field] for field in fields)...)
+                for (model, counts) in counters)
+end
+
+"""Return aggregate active/static-disposition and classification counts."""
+function coverage_counts(report::DyrCoverageReport)
+    statuses = (:native, :redirected, :unsupported, :unmatched, :duplicate)
+    counts = Dict(status => count(r -> r.status == status, report.records) for status in statuses)
+    counts[:active] = count(r -> r.active === true, report.records)
+    counts[:inactive] = count(r -> r.active === false, report.records)
+    return counts
+end
+
+"""Return aggregate coverage for one source model, or all-zero counts if absent."""
+function coverage_by_model(report::DyrCoverageReport, model::AbstractString)
+    return get(report.by_source_model, uppercase(String(model)), DyrModelCoverage(0, 0, 0, 0, 0, 0, 0, 0))
+end
+
+"""Fraction of active DYR records covered by native GradPower models."""
+function native_coverage(report::DyrCoverageReport)
+    counts = coverage_counts(report)
+    return counts[:active] == 0 ? 0.0 : counts[:native] / counts[:active]
+end
+
+"""
+    analyze_dyr_coverage(raw_path, dyr_path; redirects=Dict())
+
+Classify every DYR record as exactly one of `:native`, `:redirected`,
+`:unsupported`, `:unmatched`, `:inactive`, or `:duplicate`. Static equipment is
+matched using the external RAW bus number and normalized PSS/E ID. Redirects are
+opt-in and never contribute to native coverage.
+"""
+function analyze_dyr_coverage(raw_path::String, dyr_path::String;
+                              redirects::AbstractDict=Dict{String,String}())
+    raw = read_psse_raw(raw_path)
+    dyr = read_psse_dyr(dyr_path)
+    native = native_dyr_models()
+    normalized_redirects = Dict(uppercase(String(k)) => uppercase(String(v))
+                                for (k, v) in redirects)
+
+    active_generators = Set(_device_key(gen.busn, gen.name) for gen in raw.gens if gen.status == 1)
+    inactive_generators = Set(_device_key(gen.busn, gen.name) for gen in raw.gens if gen.status == 0)
+    active_loads = Set(_device_key(load.busn, load.name) for load in raw.loads if load.status == 1)
+    inactive_loads = Set(_device_key(load.busn, load.name) for load in raw.loads if load.status == 0)
+
+    seen = Set{Tuple{Symbol,Int64,String}}()
+    covered_machines = Set{Tuple{Int64,String}}()
+    records = DyrRecordCoverage[]
+    for (index, values) in enumerate(dyr)
+        length(values) >= 3 || throw(ArgumentError("Malformed DYR record $index: expected bus, model, and ID"))
+        source_model = uppercase(strip(replace(String(values[2]), "'" => "", "\"" => "")))
+        bus = try
+            parse(Int64, strip(replace(String(values[1]), "'" => "", "\"" => "")))
+        catch
+            throw(ArgumentError("Malformed DYR record $index: invalid bus $(repr(values[1]))"))
+        end
+        key = _device_key(bus, String(values[3]))
+        family = _dyr_model_family(source_model)
+        identity = (family, key...)
+
+        active_keys, inactive_keys = if family == :load
+            active_loads, inactive_loads
+        elseif family in (:machine, :governor, :exciter, :stabilizer) ||
+               source_model in native || haskey(normalized_redirects, source_model)
+            active_generators, inactive_generators
+        else
+            union(active_generators, active_loads), union(inactive_generators, inactive_loads)
+        end
+
+        effective_model = nothing
+        status = if identity in seen
+            :duplicate
+        elseif key in active_keys
+            if source_model in native
+                effective_model = source_model
+                :native
+            elseif haskey(normalized_redirects, source_model)
+                effective_model = normalized_redirects[source_model]
+                :redirected
+            else
+                :unsupported
+            end
+        elseif key in inactive_keys
+            :inactive
+        else
+            :unmatched
+        end
+        push!(seen, identity)
+        family == :machine && status in (:native, :redirected) &&
+            key in active_generators && push!(covered_machines, key)
+        disposition = key in active_keys ? true : key in inactive_keys ? false : nothing
+        push!(records, DyrRecordCoverage(index, source_model, effective_model, key[1], key[2],
+                                         disposition, status))
+    end
+
+    missing_machines = sort!(collect(setdiff(active_generators, covered_machines)))
+    return DyrCoverageReport(raw_path, dyr_path, records,
+                             _coverage_by_source_model(records), missing_machines)
+end
 
 function return_dyr_device(data, dev, ptr)
     ptr += 1
@@ -196,7 +461,8 @@ function mat_to_grad(mpc)
         bus = busmap[gen["bus"]]
         status_val = gen["status"]
         @assert status_val == 0.0 || status_val == 1.0 "Gen status must be 0 or 1, got $status_val"
-        push!(gens, Gen(bus, " ", gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"], Bool(status_val)))
+        push!(gens, Gen(bus, " ", gen["Pg"]/baseMVA, gen["Qg"]/baseMVA, gen["mBase"], Bool(status_val),
+                        get(gen, "Qmax", Inf)/baseMVA, get(gen, "Qmin", -Inf)/baseMVA))
     end
     for branch in mpc["branch"]
         fr = busmap[branch["fbus"]]
@@ -361,7 +627,8 @@ function raw_to_grad(raw::PsystemRaw)
     for gen in raw.gens
         gen.status == 1 || continue
         bus = busmap[gen.busn]
-        push!(gens, Gen(bus, gen.name, gen.pg/baseMVA, gen.qg/baseMVA, gen.mbase, gen.status))
+        push!(gens, Gen(bus, gen.name, gen.pg/baseMVA, gen.qg/baseMVA, gen.mbase, gen.status,
+                        gen.qt/baseMVA, gen.qb/baseMVA))
         # PV/SLACK buses: voltage setpoint comes from the generator's vs field,
         # not the bus's flat-start magnitude.
         bt = buses[bus].type
@@ -408,11 +675,13 @@ end
 Converts a vector of PSSE dyr devices to a vector of AbstractDeviceType structs.
 """
 function create_device_vector(devices;
-                               active_gen_keys::Union{Nothing,Set{Tuple{Int64,String}}}=nothing)
+                               active_gen_keys::Union{Nothing,Set{Tuple{Int64,String}}}=nothing,
+                               surrogates::Bool=false)
     psse_devices = Vector{GradPower.AbstractDeviceType}()
     skipped_inactive_gen = 0
     skipped_orphan_ctrl = 0
     unknown_types = String[]
+    redirected_types = String[]
     kept_gen_keys = Set{Tuple{Int64,String}}()
 
     parsed = Tuple{GradPower.AbstractDeviceType,String}[]
@@ -421,6 +690,11 @@ function create_device_vector(devices;
         if haskey(DEVICE_TYPE_MAP, device_type_name)
             device_type = DEVICE_TYPE_MAP[device_type_name]
             dev = from_data_fields(device_type, device)
+            push!(parsed, (dev, String(device_type_name)))
+        elseif surrogates && haskey(DYR_SURROGATE_MAP, device_type_name)
+            # Stand-in, not an implementation -- tracked separately from native.
+            dev = DYR_SURROGATE_MAP[device_type_name](device)
+            push!(redirected_types, String(device_type_name))
             push!(parsed, (dev, String(device_type_name)))
         else
             push!(unknown_types, String(device_type_name))
@@ -478,6 +752,25 @@ function create_device_vector(devices;
     end
     if skipped_orphan_ctrl > 0
         @info "Skipped $skipped_orphan_ctrl controller row(s) whose target generator was filtered."
+    end
+    if !isempty(redirected_types)
+        mirrored = Dict{String,Int}()
+        local_sub = Dict{String,Int}()
+        for t in redirected_types
+            d = haskey(DYR_REDIRECT_MAP, t) ? mirrored : local_sub
+            d[t] = get(d, t, 0) + 1
+        end
+        if !isempty(mirrored)
+            @info "Applied uqgrid-mirrored DYR redirects to $(sum(values(mirrored))) record(s): $mirrored"
+        end
+        if !isempty(local_sub)
+            @warn """LOCAL SURROGATES applied to $(sum(values(local_sub))) .dyr record(s): $local_sub
+                     uqgrid implements each of these natively; GradPower does not, and these
+                     stand-ins reproduce TGOV1/SEXS dynamics, NOT the source equations. A
+                     GradPower-vs-uqgrid comparison over these records compares DIFFERENT MODELS.
+                     Valid only to get a case running end to end -- never for validation,
+                     parameter studies, or published results. See DYR_LOCAL_SURROGATE_MAP."""
+        end
     end
     if !isempty(unknown_types)
         counts = Dict{String,Int}()

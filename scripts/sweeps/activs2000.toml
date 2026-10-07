@@ -1,0 +1,120 @@
+# ACTIVSg2000 dynamic-stability sweep.
+#
+#   julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/activs2000.toml --dry-run
+#   julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/activs2000.toml
+#
+# ###########################################################################
+# ACTIVSg2000 requires generator reactive limits in the power flow. That is on
+# by default now (`enforce_q_limits` in the case table below); do not turn it
+# off for this case.
+#
+# Why it matters here, measured:
+#   without Q limits  200 of 432 generators solve outside their nameplate
+#                     QT/QB -- bus 7400 absorbs 279 MVAr against an 8 MVAr
+#                     floor -- which drags 20 machines past their pull-out
+#                     angle (internal angle > 90 deg, worst 164 deg). Past
+#                     90 deg the synchronizing torque is negative, so the
+#                     system runs away on its own: a 1e-6 speed kick with no
+#                     fault at all grows to 147.7 deg in 5 s. Every sample
+#                     would be labelled unstable by a mode that has nothing to
+#                     do with the fault.
+#   with Q limits     199 buses switch PV -> PQ, 0 generators end up outside
+#                     their limits, 0 machines past pull-out (worst 66.6 deg),
+#                     and the same 1e-6 kick decays to 0.0018 deg.
+#
+# Validated against uqgrid on the same case, models and fault: identical
+# PV->PQ active set (199 buses, all 2000 bus types agree), bus voltages to
+# 6.7e-15, generator reactive dispatch to 2.3e-13, and machine speeds over the
+# whole fault trajectory to 1.2e-14.
+#
+# Full analysis: docs/activsg2000-diagnosis.md
+# ###########################################################################
+
+output_root = "./dynstab_out"
+
+[sim]
+# 10 s, not 2 s. ACTIVSg2000's first swing routinely peaks at 1.5-5 s, so a
+# short window ends mid-swing and the settling test reads a healthy trajectory
+# as diverging: at 2.5 s it mislabelled 90% of the unstable samples, and reruns
+# at 10 s gave identical separations with the label flipped. Costs ~5x per
+# sample; there is no cheaper fix, because no criterion can judge a swing that
+# has not happened yet.
+t_final    = 10.0
+dt         = 0.008333333333333333   # 1/120 s
+downsample = 2                      # store every 2nd step
+residual_tol = 1e-6
+
+# The guard that catches an operating point which is not actually a stable
+# equilibrium. It is what caught the missing Q limits; keep it on.
+check_self_stability = true
+
+[load]
+# lambda ~ Uniform(low, high), one draw shared by the fault cross product
+# beneath it. Base case is the mean when low + high == 2.
+distribution = "uniform"
+# Verified feasible range is ~0.70 .. 1.08; above 1.08 the dynamic
+# initialization fails (lambda = 1.10 is reachable only by continuation in
+# small steps, and is marginal when it is).
+#
+# Be aware that loading is a WEAK input on this case: lambda = 0.95 and 1.05
+# gave the same 79.2% stable fraction, and 0.90 vs 1.00 produced the same
+# unstable buses. Clearing time and fault location carry this dataset. The
+# range is widened to add operating-point diversity, not because it is
+# expected to move the labels much.
+low       = 0.85
+high      = 1.08
+n_samples = 10
+seed      = 20240917
+
+[fault]
+# "all" faults every bus (2000 of them). Start with a list while you calibrate,
+# then widen: fault location is the STRONGEST of the three inputs on this case
+# (loading is the weakest -- see the note under [load]).
+#
+# These six are a calibrated starter mix, measured at t_final = 10 s, lambda
+# ~1.03, r = 0.01: 3105 and 4045 go unstable even at 0.10 s clearing (peak
+# separation ~45000-57000 deg), while 1001/1002/1003/2056 stay stable past
+# 0.30 s (peak 2.6-36.7 deg). So both classes are represented before you scale
+# up.
+buses     = [1001, 1002, 1003, 2056, 3105, 4045]
+# Severity is NOT monotonic in r_fault: the fault is purely resistive, so the
+# power it absorbs is V^2/r and peaks where r matches the local Thevenin
+# impedance. Sweep on a log grid and check where severity actually peaks.
+r_fault   = [0.01, 0.05, 0.2]
+t_on      = 0.2
+# Reaches across the boundary. Buses 3105 and 4045 already go unstable at
+# 0.10 s while 1002/2056 stay stable past 0.30 s, so this spans both classes.
+durations = [0.05, 0.10, 0.15, 0.20, 0.30]
+
+[label]
+angle_sep_threshold_deg = 180.0
+# Fraction of the window at the end used as the "has it settled" tail, and the
+# fraction of the global peak the tail must fall below. See stability_metrics
+# in scripts/dynstab_io.jl for why this replaced the old settle_ratio.
+tail_fraction           = 0.2
+decay_ratio             = 0.5
+
+[[cases]]
+name = "activs2000"
+raw  = "examples/ACTIVSg2000.raw"
+dyr  = "examples/ACTIVSg2000.dyr"
+add_static_gen_stubs = true
+zip_alpha = 0.5
+# Required for full DYR coverage: 858 records (GGOV1 367, ESST4B 278, EXPIC1
+# 61, IEEEG1 43, EXAC2 38, HYGOV 25, IEEET1 23, ESAC6A 7, EXAC1 6, SCRX 5,
+# ESAC1A 4, ESDC2A 1) have no native kernel and are mapped onto TGOV1/SEXS.
+# Surrogates come in two tiers and are reported separately at parse time:
+#   440 MIRRORED  (GGOV1, EXPIC1, SCRX, ESAC6A) copy uqgrid's own redirects
+#                 verbatim, so GradPower-vs-uqgrid stays comparable.
+#   418 LOCAL     (ESST4B, IEEEG1, HYGOV, EXAC1/2, ESAC1A, IEEET1, ESDC2A)
+#                 have NO upstream oracle -- uqgrid implements them natively.
+#                 These reproduce TGOV1/SEXS dynamics, not the source
+#                 equations. Fine for getting the case to run; NOT valid for
+#                 validation or published results.
+# Without this flag all 858 records are silently skipped.
+surrogates = true
+
+# Hold generators to their .raw QT/QB limits in the power flow (PV->PQ
+# switching). This is the default; it is spelled out here because this case
+# is unusable without it -- see the header.
+enforce_q_limits = true

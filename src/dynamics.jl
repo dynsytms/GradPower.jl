@@ -179,6 +179,23 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         end
         sg.p0 = psum
         sg.q0 = qsum
+        # Re-read the regulated setpoints from the power-flow solution rather
+        # than trusting the values captured at parse time. Without Q-limit
+        # enforcement these are identical -- a PV bus's magnitude is not a
+        # power-flow variable, so `v0m` never leaves `vs`. With enforcement, a
+        # bus that was converted to PQ has a solved voltage that differs from
+        # its original setpoint, and a stub still holding the old `vset` makes
+        # `vr^2 + vi^2 = vset^2` inconsistent with the operating point (0.08 pu
+        # of initialization residual on ACTIVSg2000).
+        sg.vset = ps.buses[map.bus[i]].v0m
+        sg.aset = ps.buses[map.bus[i]].v0a
+        # A PV stub whose bus the power flow converted to PQ is at a reactive
+        # bound and can no longer hold its voltage. Its alg state stays (the
+        # layout was fixed before the power flow ran) but switches from the
+        # voltage-regulation residual to `q = q0`. Without this the stub keeps
+        # regulating with unlimited Q through the transient, which is exactly
+        # the behaviour Q-limit enforcement was meant to remove.
+        sg.regulating = sg.bus_type != 2 || ps.buses[map.bus[i]].type == 2
         # Write alg states using absolute z-index (diff_dim + alg_ptr).
         alg_global = diff_dim + device.alg_ptr
         if sg.bus_type == 2          # PV: alg state is q
@@ -187,9 +204,12 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
             z[alg_global]     = psum
             z[alg_global + 1] = qsum
         end
-        # mirror p0, q0 into pvec so the kernel reads correct values
+        # mirror p0, q0, vset, aset into pvec so the kernel reads correct
+        # values. pvec was filled above, before these were refreshed.
         p[device.par_ptr]     = psum
         p[device.par_ptr + 1] = qsum
+        p[device.par_ptr + 2] = sg.vset
+        p[device.par_ptr + 3] = sg.aset
     end
 
     # Pre-controller hook: stash each Genrou's post-PF e_fd0 onto any
@@ -344,7 +364,8 @@ function beuler!(
     p::AbstractVector,
     sys::PowerSystem,
     diff_dim::Int64,
-    dt::Float64
+    dt::Float64,
+    limits::Union{Nothing,LimitWorkspace}=nothing,
 )
     rhs_fun!(f, z, u, p, sys)
     di = sys.dynamic.diff_indices
@@ -357,6 +378,7 @@ function beuler!(
             f[i] = z[i] - zold[i] - dt*f[i]
         end
     end
+    limits === nothing || apply_limit_residual!(f, z, zold, p, dt, limits)
 end
 
 # Typed variant — caller pre-extracts dyn / ybus / layout once so the
@@ -375,6 +397,7 @@ end
     diff_dim::Int64,
     dt::Float64,
     log::Union{Nothing,SolverLog}=nothing,
+    limits::Union{Nothing,LimitWorkspace}=nothing,
 )
     _rhs_fun_batched!(f, z, u, p, dyn, ybus, L, log)
     di = dyn.diff_indices
@@ -387,6 +410,7 @@ end
             f[i] = z[i] - zold[i] - dt*f[i]
         end
     end
+    limits === nothing || apply_limit_residual!(f, z, zold, p, dt, limits)
     return nothing
 end
 
@@ -398,7 +422,8 @@ function beuler_jac!(
     p::AbstractVector,
     sys::PowerSystem,
     diff_dim::Int64,
-    dt::Float64
+    dt::Float64,
+    limits::Union{Nothing,LimitWorkspace}=nothing,
 )
     # set all elements to zero
     fill!(J.nzval, 0.0)
@@ -413,6 +438,7 @@ function beuler_jac!(
     else
         _jacobian_beuler!(J, diff_dim, dt)
     end
+    limits === nothing || apply_limit_jacobian!(J, z, zold, p, dt, limits)
 end
 
 # Typed variant — same rationale as `beuler_batched!`.
@@ -426,6 +452,8 @@ end
     L::SimulationLayout,
     diff_dim::Int64,
     dt::Float64,
+    zold::Union{Nothing,AbstractVector}=nothing,
+    limits::Union{Nothing,LimitWorkspace}=nothing,
 )
     fill!(J.nzval, 0.0)
     _rhs_jac_batched!(J, z, u, p, dyn, ybus, L)
@@ -434,6 +462,10 @@ end
         _jacobian_beuler_indices!(J, isd, dt)
     else
         _jacobian_beuler!(J, diff_dim, dt)
+    end
+    if limits !== nothing
+        zold === nothing && error("limited backward-Euler Jacobian requires zold")
+        apply_limit_jacobian!(J, z, zold, p, dt, limits)
     end
     return nothing
 end
@@ -509,6 +541,10 @@ function integrate!(
     solver::Symbol=:monolithic,
     newton_tol::Float64=1e-10,
     newton_norm::Symbol=:inf,
+    limit_method::Symbol=:none,
+    limit_mu::Float64=0.0,
+    limit_tolerance::Float64=1e-10,
+    limit_events::Union{Nothing,Vector{LimitEvent}}=nothing,
 )
     # NOTE: Assumes initialize_dynamics!(dp, ps) has been called.
 
@@ -566,11 +602,17 @@ function integrate!(
     # initial condition
     zold .= dp.zvec
     traj[:,1] .= dp.zvec
+    limit_method !== :none && solver !== :monolithic &&
+        throw(ArgumentError("dynamic limits currently support solver=:monolithic only"))
 
     # initialize residual and Jacobian
     f0 = zeros(Float64, system_size)
     J0 = preallocate_jacobian(ps)
-    beuler_jac!(J0, zold, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt)
+    limit_workspace = build_limit_workspace(ps, J0, zold, dp.pvec;
+        method=limit_method, mu=limit_mu, tolerance=limit_tolerance,
+        events=limit_events === nothing ? LimitEvent[] : limit_events)
+    beuler_jac!(J0, zold, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt,
+                limit_workspace)
 
     # pre-factorization
     fact = klu(J0)
@@ -594,8 +636,12 @@ function integrate!(
         elseif use_schur_gmres
             newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
         else
-            newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm)
+            success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace)
+            limit_method === :none || success ||
+                error("limited Newton solve failed at t=$(tvec[k+1]) with method=$limit_method")
         end
+        record_limit_events!(limit_workspace, zold, @view(traj[:, k]), dp.pvec,
+                             dt, tvec[k+1])
         traj[:,k+1] .= zold
 
         # process all events scheduled at this step
@@ -640,7 +686,9 @@ function integrate!(
             elseif use_schur_gmres
                 newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
             else
-                newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm)
+                success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace)
+                limit_method === :none || success ||
+                    error("limited dt=0 event solve failed at t=$(tvec[k+1]) with method=$limit_method")
             end
         end
 

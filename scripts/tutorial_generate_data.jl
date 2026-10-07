@@ -1,0 +1,257 @@
+#!/usr/bin/env julia
+#
+# ===========================================================================
+#  TUTORIAL: generating transient-stability data with GradPower.jl
+# ===========================================================================
+#
+# Read this file top to bottom. It runs a small sweep in a single process --
+# no MPI, no HDF5 -- so you can see every step of what the production driver
+# (scripts/generate_dynamics.jl) does at scale.
+#
+#   julia --project=scripts scripts/tutorial_generate_data.jl
+#
+# One data point ("scenario") is one time-domain simulation, defined by three
+# inputs:
+#
+#   1. LOADING          lambda, a scalar multiplying every load in the system.
+#                       Sampled from a distribution -- this is what makes the
+#                       dataset a Monte Carlo sample of operating points
+#                       rather than a fixed grid.
+#   2. FAULT LOCATION   which bus the fault is applied to.
+#   3. FAULT ADMITTANCE r_fault, a shunt resistance to ground. The solver uses
+#                       y = 1/r_fault, so SMALLER r means MORE admittance.
+#
+# The output is a trajectory plus a stability label.
+#
+# ---------------------------------------------------------------------------
+#  Read this before you trust a single number
+# ---------------------------------------------------------------------------
+#
+# * r_fault severity is NOT monotonic. The fault is purely RESISTIVE, so the
+#   real power it absorbs is V^2/r_fault. As r_fault -> 0 the voltage collapses
+#   but the absorbed power -> 0; as r_fault -> infinity nothing happens. Peak
+#   disturbance is in between, where the fault resistance roughly matches the
+#   network's Thevenin impedance at that bus. On IEEE9 at bus 7 the worst
+#   r_fault is near 0.1, NOT the smallest value. Sweep r_fault on a log grid
+#   and check where severity actually peaks for YOUR case before committing to
+#   a range.
+#
+# * Unstable trajectories are chaotic. Refining dt does not make an unstable
+#   run converge -- it is exponentially sensitive to perturbation. So the
+#   `stable` flag near the stability boundary depends on dt. Treat it as a
+#   screening label, not ground truth, and do a dt-refinement check on a
+#   handful of near-boundary cases.
+#
+# * The `stable` label here is a first-swing angle-separation screen. It is not
+#   center-of-inertia referenced and says nothing about longer horizons.
+#
+# ===========================================================================
+
+using GradPower
+using Printf
+using Random
+
+include(joinpath(@__DIR__, "dynstab_io.jl"))
+
+const E = joinpath(@__DIR__, "..", "examples")
+
+# ---------------------------------------------------------------------------
+# 0. Pick a case.
+# ---------------------------------------------------------------------------
+# Start small. IEEE9 has 3 machines and runs in milliseconds, so you can
+# iterate. Switch to ACTIVSg2000 only once the sweep does what you expect.
+#
+#   ACTIVSg2000: raw/dyr below, and set add_static_gen_stubs => true.
+#   Be aware it is only PARTIALLY modelled -- see the note at the bottom.
+
+case = Dict(
+    "raw" => joinpath(E, "ieee9_v33.raw"),
+    "dyr" => joinpath(E, "ieee9bus_gov.dyr"),
+    "add_static_gen_stubs" => true,
+)
+
+# ZIP load model exponent. alpha = 1.0 is constant power (the parser default);
+# alpha = 0.5 splits constant-power / constant-impedance and is what the
+# repository's reference comparisons use.
+zip_alpha = 0.5
+
+# Integration. dt = 1/120 s with backward Euler is the repo default.
+#
+# t_final must be long enough for the first swing to RESOLVE, not just to
+# start. On IEEE9 a couple of seconds is plenty; on ACTIVSg2000 the first swing
+# peaks at 1.5-5 s and a 2 s window mislabels most samples (see the note at the
+# bottom of this file). When in doubt, run one fault at 10 s and look at where
+# the peak actually falls before you pick a horizon for thousands of runs.
+dt      = 1 / 120
+t_final = 3.0        # IEEE9; use 10.0 for ACTIVSg2000
+
+# ---------------------------------------------------------------------------
+# 1. Build the system once.
+# ---------------------------------------------------------------------------
+# from_psse parses the .raw (network + power flow data) and the .dyr (dynamic
+# device models), build_network! forms Ybus, runpf! solves the base power flow.
+# `build_system` does all three, and hands back the untouched lambda = 1
+# operating point alongside the system -- every lambda is applied to THAT
+# snapshot, so repeated scaling never compounds.
+#
+# The power flow holds generators to their reactive limits (QT/QB from the
+# .raw), converting a PV bus to PQ when its machines run out of reactive
+# capability. Set `enforce_q_limits = false` in the case table to switch that
+# off, but read the note at the bottom of this file before you do.
+
+@info "Building case..."
+sys, base = build_system(case)
+@printf("  %d buses, %d branches, %d dynamic devices (diff=%d, alg=%d)\n",
+        length(sys.buses), length(sys.branches), sys.dynamic.num_devices,
+        sys.dynamic.diff_dim, sys.dynamic.alg_dim)
+
+# ---------------------------------------------------------------------------
+# 2. Define the three input dimensions.
+# ---------------------------------------------------------------------------
+
+# (1) LOADING: sample lambda ~ Uniform(low, high). The base case is the mean
+#     when low + high == 2. Seed it so the dataset is reproducible.
+#
+#     Check the range is FEASIBLE before trusting it: past some loading the
+#     dynamic initialization stops converging (ACTIVSg2000 fails above ~1.08).
+#     initialized_problem throws rather than returning a bad operating point,
+#     so an infeasible draw is loud, not silent.
+rng        = MersenneTwister(20240917)
+n_lambda   = 3
+lambda_lo, lambda_hi = 0.90, 1.10
+lambdas    = [lambda_lo + (lambda_hi - lambda_lo) * rand(rng) for _ in 1:n_lambda]
+
+# (2) FAULT LOCATION: external PSS/E bus numbers. `sys.busmap` maps those to
+#     the internal indices the solver wants.
+fault_buses_ext = [5, 7]
+
+# (3) FAULT ADMITTANCE: shunt resistance, y = 1/r. See the non-monotonicity
+#     warning above before choosing a range.
+r_faults = [0.01, 0.1]
+
+# Fault applied at 0.2 s and cleared `duration` later. Pick clearing times that
+# straddle the critical clearing time, or every sample lands in one class and
+# the dataset teaches nothing: on IEEE39, 0.05-0.15 s is 100% stable while the
+# CCT sits at 0.16-0.34 s depending on where the fault is.
+t_on, duration = 0.2, 0.25
+
+@printf("\nSweep: %d lambda x %d bus x %d r_fault = %d scenarios\n",
+        n_lambda, length(fault_buses_ext), length(r_faults),
+        n_lambda * length(fault_buses_ext) * length(r_faults))
+@printf("lambda draws: %s\n\n", join((@sprintf("%.4f", l) for l in lambdas), ", "))
+
+# ---------------------------------------------------------------------------
+# 3. Run the sweep.
+# ---------------------------------------------------------------------------
+# Loop order matters for cost. Changing lambda means re-solving the power flow
+# and re-initializing the dynamics; changing the fault does not. So lambda is
+# the OUTER loop and its setup cost is amortized over every fault beneath it.
+
+results = NamedTuple[]
+
+for (li, lambda) in enumerate(lambdas)
+
+    # --- new operating point -------------------------------------------------
+    # Scale loads and non-slack generation, re-solve the power flow, and
+    # re-sync the ZIP load devices (including their reference voltage v0mag,
+    # which must follow the new power-flow solution -- see apply_load_scale!).
+    apply_load_scale!(sys, base, lambda; zip_alpha=zip_alpha)
+
+    # Initialize the dynamic states from the power flow. This ASSERTS that the
+    # residual is ~0, i.e. that we really are sitting at an equilibrium. If the
+    # operating point were inconsistent, it would throw here rather than
+    # silently produce a trajectory that drifts.
+    empty!(sys.dynamic.events)
+    dprob, residual = initialized_problem(sys)
+    z0 = copy(dprob.zvec)          # every fault below restarts from this
+    @printf("lambda = %.4f  (equilibrium residual %.2e)\n", lambda, residual)
+
+    for bus_ext in fault_buses_ext, r_fault in r_faults
+
+        bus_internal = sys.busmap[bus_ext]
+
+        # --- apply the fault and integrate ---------------------------------
+        empty!(sys.dynamic.events)          # clear the previous scenario
+        dprob.zvec .= z0                    # rewind to the operating point
+        GradPower.add_event!(sys,
+            GradPower.ContingencyEvent(bus_internal, r_fault, t_on, t_on + duration))
+
+        tvec, traj = GradPower.integrate!(dprob, sys, t_final; dt=dt)
+
+        # --- extract channels and label ------------------------------------
+        # traj is [n_states, n_steps+1]. dynamics_channels pulls out the parts
+        # you actually want as [n, T] Float32: bus voltage magnitude/angle and
+        # per-machine rotor angle / speed deviation.
+        ch = dynamics_channels(sys, traj; downsample=1)
+        m  = stability_metrics(sys, traj;
+                               angle_sep_threshold=deg2rad(180.0),
+                               tail_fraction=0.2, decay_ratio=0.5)
+
+        push!(results, (lambda=lambda, bus=bus_ext, r_fault=r_fault,
+                        sep=m["max_angle_sep_deg"], fdev=m["max_freq_dev"],
+                        stable=m["stable"]))
+
+        @printf("   bus %-3d r=%-5.3f -> max sep %7.2f deg | max |dw| %.3e | %s\n",
+                bus_ext, r_fault, m["max_angle_sep_deg"], m["max_freq_dev"],
+                m["stable"] ? "STABLE" : "UNSTABLE")
+    end
+    println()
+end
+
+# ---------------------------------------------------------------------------
+# 4. What you just produced.
+# ---------------------------------------------------------------------------
+nstable = count(r -> r.stable, results)
+@printf("%d scenarios: %d stable, %d unstable\n", length(results), nstable,
+        length(results) - nstable)
+
+println("""
+
+Shapes per scenario (for the case above):
+  bus_vm, bus_va      [n_bus, T]   voltage magnitude (pu) and angle (rad)
+  gen_delta, gen_omega[n_gen, T]   rotor angle (rad), speed deviation (pu)
+
+To generate a real dataset, do NOT extend this script. Use the production
+driver, which shards the same sweep across MPI ranks and writes compressed
+HDF5:
+
+  julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/activs2000.toml --dry-run
+  julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/activs2000.toml
+
+and on Polaris:
+
+  SWEEP=scripts/sweeps/activs2000.toml qsub -V -q debug -l select=1 \\
+      -l walltime=01:00:00 scripts/hpc/gen-polaris.sh
+
+Always run --dry-run first: it prints the scenario count and the sampled
+lambda range without simulating anything.
+
+NOTES on ACTIVSg2000:
+
+1. IT NEEDS POWER-FLOW Q LIMITS, WHICH ARE ON BY DEFAULT. Without them 200 of
+   432 generators solve outside their nameplate QT/QB -- bus 7400 absorbs
+   279 MVAr against an 8 MVAr floor. That drags 20 machines past their
+   pull-out angle (internal angle > 90 deg, worst 164 deg), where the
+   synchronizing torque is negative, and the system then runs away on its own:
+   a 1e-6 speed kick with no fault at all grows to 147.7 deg in 5 s, so every
+   label would describe that mode rather than the fault.
+
+   With limits enforced, 199 buses switch PV -> PQ, no generator ends up
+   outside its limits, no machine is past pull-out, and the same kick decays
+   to 0.0018 deg. Validated against uqgrid on the same case, models and fault:
+   identical PV->PQ active set and machine speeds agreeing to 1.2e-14 over the
+   whole trajectory.
+
+   Leave `enforce_q_limits` alone unless you are deliberately reproducing a
+   pre-fix dataset. `check_self_stability` in the sweep config is the guard
+   that catches this class of problem; keep it on.
+
+2. MODEL COVERAGE. Separately, 858 .dyr records have no native kernel and are
+   silently skipped unless you pass surrogates => true, which maps them onto
+   TGOV1/SEXS in two tiers (440 mirrored from uqgrid, 418 GradPower-local with
+   no oracle). Surrogates are stand-ins, never native coverage. Note this was
+   NOT the cause of the instability above -- removing exciters entirely
+   changed nothing, because the defect was in the operating point.
+
+   Full analysis: docs/activsg2000-diagnosis.md
+""")

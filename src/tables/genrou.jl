@@ -5,14 +5,12 @@
 # by `genrou_jac_positions!` / `genrou_jacobian_batch!` in
 # src/kernels/genrou.jl; both must agree on the slot-to-entry mapping.
 
-# 42 entries: 6 diff rows (3+3+3+3+8+1) + 4 alg rows (4+4+4+4) + 2 net rows (3+3).
+# Fixed slots include both-axis saturation cross-couplings and optional
+# governor/exciter control columns.
 # Row tallies (one-based diff row k):
-#   diff[1]: 3, diff[2]: 3, diff[3]: 3, diff[4]: 3, diff[5]: 7+(1 if gov), diff[6]: 1
-#   With governor wiring the batched kernel writes the w_idx coupling
-#   directly via the d_pm column entry. Today GENROU has no exciter wiring
-#   active in tracked cases; we reserve no slot for e_fd (0 entries) and a
-#   single optional slot for p_m → see GENROU_JAC_PM_COL_SLOT below.
-const GENROU_JAC_NENTRIES = 46  # 42 base + pm-col (43) + sat cross-cols (44,45) + efd-col (46)
+#   diff[1]: 5+(1 if exc), diff[2]: 5, diff[3]: 3, diff[4]: 3,
+#   diff[5]: 7+(1 if gov), diff[6]: 1; alg rows: 4 each; net rows: 3 each.
+const GENROU_JAC_NENTRIES = 48
 const GENROU_JAC_PM_COL_SLOT = 43  # ∂f5/∂p_m when has_gov[k]; 0-fill when not wired
 
 #

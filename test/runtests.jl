@@ -12,11 +12,16 @@ include("test_case9data.jl")
     end
     @testset "power flow" begin
         include("test_pflow.jl")
+        include("test_pflow_qlimits.jl")
     end
     include("test_matpower_parser.jl")
+    include("test_dyr_coverage.jl")
+    include("test_state_metadata.jl")
+    include("test_regression_helpers.jl")
 end
 @testset "dynamic" begin
     include("test_integrate.jl")
+    include("test_tgov1_limits.jl")
 end
 @testset "layout" begin
     include("test_layout.jl")

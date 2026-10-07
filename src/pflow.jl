@@ -370,21 +370,75 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
     return psol
 end
 
-# Same as runpf but instead of returning a solution, modifies the
-# PowerSystem struct in place.
-function runpf!(psys::PowerSystem; verbose=false, fdiff=false)
-    psol = runpf(psys, verbose=verbose, fdiff=fdiff)
+# Apply a converged power-flow solution back onto the PowerSystem: bus
+# voltages, and the reactive (and, at the slack, active) dispatch implied by
+# the solution. Buses that the Q-limit loop has pinned are type 1 (PQ) by then,
+# so their `qsch` is left at the limit value rather than recomputed.
+# Split a bus's reactive dispatch `qtot` across its generators.
+#
+# The even split is what this code has always done and is what you want with no
+# limit data: every machine at the bus carries the same share. But under
+# Q-limit enforcement it is wrong at the machine level. A bus can sit inside
+# its AGGREGATE limits while an even split pushes a small unit far outside its
+# own: ACTIVSg2000 bus 7422 has one 3.5 MVAr unit alongside four 57 MVAr units,
+# and an even split hands the small one 0.41 pu against a 0.035 pu ceiling.
+#
+# So when limits are being enforced we project the even split onto the box
+# while preserving the bus total, which is what uqgrid's power flow does:
+# hand out an equal share; any unit for which that share is outside its own
+# range is fixed at the violated bound and removed; re-share the remainder
+# among the rest; repeat. Each pass fixes at least one unit, so it terminates.
+#
+# This is deliberately a strict generalisation of the even split rather than,
+# say, allocating in proportion to each unit's reactive range: when no limit
+# binds it reproduces the even split exactly, so enabling `enforce_q_limits`
+# changes the dispatch only at buses where a machine really is at a bound.
+#
+# `qtot` outside the aggregate box has no projection that preserves the sum.
+# That happens only at the slack, which is intentionally never limited, so we
+# fall back to the even split there.
+function _distribute_q!(psys::PowerSystem, gidx, qtot::Float64, proportional::Bool)
+    n = length(gidx)
+    even!() = for g in gidx; psys.gens[g].qsch = qtot / n; end
 
-    # bus number to generator. This an array of arays
-    # where bus_to_gen[i] gives an array with the indices
-    # of all generators connected to bus i.
-    # NOTE: might need to create this structure in other place
-    # and store it in the PowerSystem struct
-    bus_to_gen = [Array{Int}(undef, 0) for i in 1:length(psys.buses)]
-    for (idx, gen) in enumerate(psys.gens)
-        push!(bus_to_gen[gen.bus], idx)
+    proportional || return even!()
+    qmin_s = sum(psys.gens[g].qmin for g in gidx)
+    qmax_s = sum(psys.gens[g].qmax for g in gidx)
+    (qtot < qmin_s || qtot > qmax_s) && return even!()
+
+    free = trues(n)
+    remaining = qtot
+    nfree = n
+    while nfree > 0
+        share = remaining / nfree
+        fixed = 0
+        for k in 1:n
+            free[k] || continue
+            gen = psys.gens[gidx[k]]
+            if share < gen.qmin
+                gen.qsch = gen.qmin
+            elseif share > gen.qmax
+                gen.qsch = gen.qmax
+            else
+                continue
+            end
+            remaining -= gen.qsch
+            free[k] = false
+            nfree -= 1
+            fixed += 1
+        end
+        if fixed == 0                       # share is feasible for every unit left
+            for k in 1:n
+                free[k] && (psys.gens[gidx[k]].qsch = share)
+            end
+            break
+        end
     end
+    return nothing
+end
 
+function _apply_pf_solution!(psys::PowerSystem, psol::PowerFlowSolution, bus_to_gen;
+                             proportional_q::Bool=false)
     # Update bus voltages
     for (idx, bus) in enumerate(psys.buses)
         bus.v0m = psol.volt[2*idx-1]
@@ -401,18 +455,168 @@ function runpf!(psys::PowerSystem; verbose=false, fdiff=false)
     # for all the PV buses. we distribute the reactive power
     # among all the generators evenly.
     for (idx, bus) in enumerate(psys.buses)
-        ngen = length(bus_to_gen[idx])
+        gidx = bus_to_gen[idx]
+        isempty(gidx) && continue
         if bus.type == 2
-            for gen_idx in bus_to_gen[idx]
-                psys.gens[gen_idx].qsch = sgen[2*idx] / ngen
+            _distribute_q!(psys, gidx, sgen[2*idx], proportional_q)
+        elseif bus.type == 3
+            for gen_idx in gidx
+                psys.gens[gen_idx].psch = sgen[2*idx-1] / length(gidx)
+            end
+            _distribute_q!(psys, gidx, sgen[2*idx], proportional_q)
+        end
+    end
+    return sgen
+end
+
+# bus number to generator. This is an array of arrays where bus_to_gen[i] gives
+# an array with the indices of all generators connected to bus i.
+# NOTE: might need to create this structure in other place
+# and store it in the PowerSystem struct
+function _bus_to_gen(psys::PowerSystem)
+    bus_to_gen = [Array{Int}(undef, 0) for i in 1:length(psys.buses)]
+    for (idx, gen) in enumerate(psys.gens)
+        push!(bus_to_gen[gen.bus], idx)
+    end
+    return bus_to_gen
+end
+
+"""
+    runpf!(psys; verbose=false, fdiff=false, enforce_q_limits=false,
+           max_q_outer=50, q_tol=1e-6)
+
+Same as `runpf` but writes the solution back into the `PowerSystem` in place.
+
+## Generator reactive limits (`enforce_q_limits`)
+
+With `enforce_q_limits=false` (the default, and the behaviour before this
+option existed) a PV bus holds its scheduled voltage no matter how much
+reactive power that takes. The solution is then a fixed point of the power-flow
+equations but not necessarily a physical operating point: machines can be left
+absorbing or producing far outside their nameplate `QT`/`QB`.
+
+That is not a cosmetic problem. On ACTIVSg2000, 200 of 432 generators solve
+outside their limits (one bus absorbs 279 MVAr against an 8 MVAr floor). The
+excess reactive flow drags 20 machines past their pull-out angle -- internal
+angle `delta - angle(V)` above 90 degrees, where `dP/ddelta < 0` -- which puts
+18 non-oscillatory unstable eigenvalues into the linearised dynamics. Any
+transient run from that point diverges regardless of the disturbance.
+
+With `enforce_q_limits=true` we run the standard outer loop:
+
+ 1. Solve the power flow with the current PV/PQ assignment.
+ 2. For each bus that started as PV, compare the reactive dispatch against the
+    sum of its generators' limits. If it is above the aggregate `qmax` (below
+    `qmin`), convert the bus to PQ, hold every generator there at its own
+    `qmax` (`qmin`), and release the voltage.
+ 3. Repeat until an iteration converts nothing, or `max_q_outer` is reached.
+
+Pinning each generator at its own limit is exact rather than a heuristic: a bus
+sits at its aggregate limit precisely when every machine on it is at its own.
+
+Conversion is one-way, as in MATPOWER's default `enforce_q_lims = 1`. Allowing
+a pinned bus back to PV once its voltage recovers past setpoint is tempting and
+is what `enforce_q_lims = 2` does, but on ACTIVSg2000 it cycles: a handful of
+buses pin, release, and re-pin forever, and the loop exits on the iteration cap
+with those buses still violating. One-way conversion is monotone -- every
+iteration either pins at least one more bus or stops -- so it terminates, and
+when it stops no PV bus is outside its limits. The cost is mild conservatism: a
+bus can stay pinned when it could have held its voltage after the rest of the
+system moved.
+
+The slack bus is never limited -- it has to absorb the system mismatch, and
+capping it would leave the power flow with no degree of freedom to close on.
+If the slack ends up outside its limits that is a property of the case, and
+`verbose=true` reports it.
+
+Buses whose only generation is a `StaticGenerator` stub are switched here too,
+but note the stub regulates voltage with unlimited reactive power *during the
+transient* regardless -- the limit is respected by the operating point, not by
+the dynamics.
+
+Limits come from the `.raw` generator records (`QT`/`QB`, converted to the
+system base at parse time). Records that carry the usual +/-9999 placeholder
+simply never bind. Cases built without limit data default to `+/-Inf`, so
+`enforce_q_limits=true` is a no-op for them rather than an error.
+
+Returns the number of buses left pinned at a limit.
+"""
+function runpf!(psys::PowerSystem; verbose=false, fdiff=false,
+                enforce_q_limits::Bool=false, max_q_outer::Int=50,
+                q_tol::Float64=1e-6)
+    bus_to_gen = _bus_to_gen(psys)
+
+    if !enforce_q_limits
+        _apply_pf_solution!(psys, runpf(psys; verbose=verbose, fdiff=fdiff), bus_to_gen)
+        return 0
+    end
+
+    nbus = length(psys.buses)
+    orig_type = [bus.type for bus in psys.buses]
+    pinned    = zeros(Int, nbus)   # 0 free, +1 held at qmax, -1 held at qmin
+
+    outer = 0
+    for it in 1:max_q_outer
+        outer = it
+        _apply_pf_solution!(psys, runpf(psys; verbose=verbose, fdiff=fdiff), bus_to_gen;
+                            proportional_q=true)
+
+        changed = 0
+        for i in 1:nbus
+            orig_type[i] == 2 || continue          # slack and pure PQ are exempt
+            gidx = bus_to_gen[i]
+            isempty(gidx) && continue
+
+            qmax = sum(psys.gens[g].qmax for g in gidx)
+            qmin = sum(psys.gens[g].qmin for g in gidx)
+            qmax >= qmin || continue               # inconsistent limit data; skip
+
+            pinned[i] == 0 || continue             # one-way: never un-pin
+            q = sum(psys.gens[g].qsch for g in gidx)
+            if q > qmax + q_tol
+                pinned[i] = 1
+                psys.buses[i].type = 1
+                for g in gidx
+                    psys.gens[g].qsch = psys.gens[g].qmax
+                end
+                changed += 1
+            elseif q < qmin - q_tol
+                pinned[i] = -1
+                psys.buses[i].type = 1
+                for g in gidx
+                    psys.gens[g].qsch = psys.gens[g].qmin
+                end
+                changed += 1
             end
         end
 
-        if bus.type == 3
-            for gen_idx in bus_to_gen[idx]
-                psys.gens[gen_idx].psch = sgen[2*idx-1] / ngen
-                psys.gens[gen_idx].qsch = sgen[2*idx] / ngen
-            end
+        verbose && @info "pflow Q-limit outer iteration $it: $changed switch(es), $(count(!=(0), pinned)) bus(es) pinned"
+        changed == 0 && break
+    end
+
+    npin = count(!=(0), pinned)
+    if outer == max_q_outer && npin > 0
+        # We stopped on the iteration cap, so the last solve may still violate.
+        still = 0
+        for i in 1:nbus
+            orig_type[i] == 2 && pinned[i] == 0 || continue
+            gidx = bus_to_gen[i]; isempty(gidx) && continue
+            q = sum(psys.gens[g].qsch for g in gidx)
+            (q > sum(psys.gens[g].qmax for g in gidx) + q_tol ||
+             q < sum(psys.gens[g].qmin for g in gidx) - q_tol) && (still += 1)
+        end
+        still > 0 && @warn "pflow Q-limit loop hit max_q_outer=$max_q_outer with $still bus(es) still violating"
+    end
+
+    if verbose
+        sl = findfirst(==(3), orig_type)
+        if sl !== nothing && !isempty(bus_to_gen[sl])
+            q = sum(psys.gens[g].qsch for g in bus_to_gen[sl])
+            qm = sum(psys.gens[g].qmax for g in bus_to_gen[sl])
+            qb = sum(psys.gens[g].qmin for g in bus_to_gen[sl])
+            (q > qm + q_tol || q < qb - q_tol) &&
+                @info "pflow: slack bus is outside its reactive limits (q=$q, [$qb, $qm]); slack is never limited"
         end
     end
+    return npin
 end

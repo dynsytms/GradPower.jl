@@ -39,6 +39,7 @@ consumes_signals(::T) where {T} = consumes_signals(T)
 # even within a single file (IEESGO records often unquote what GENROU
 # records quote), so normalization is required for cross-device matching.
 _normalize_id(s::AbstractString) = strip(replace(replace(s, "'" => ""), " " => ""))
+_device_key(bus::Integer, id::AbstractString) = (Int64(bus), _normalize_id(id))
 
 # Helper: position (1-based) of the generator's `w` state within its diff block.
 # Genrou layout: diff_ptr+0..5 → e_qp, e_dp, phi_1d, phi_2q, w, delta.

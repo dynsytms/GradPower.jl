@@ -15,7 +15,8 @@
 #   slot 9: (ap, vr)        — PV, SLACK
 #   slot 10: (ap, vi)       — PV only
 #   slot 11: (ap+1, vi)     — SLACK only
-const STATIC_GEN_JAC_NENTRIES = 11
+#   slot 12: (ap, ap)       — PV only, used when the stub is de-regulated
+const STATIC_GEN_JAC_NENTRIES = 12
 
 const J_SG_VR_VR  = 1
 const J_SG_VR_VI  = 2
@@ -28,6 +29,7 @@ const J_SG_VI_AP1 = 8
 const J_SG_AP_VR  = 9
 const J_SG_AP_VI  = 10
 const J_SG_AP1_VI = 11
+const J_SG_AP_AP  = 12
 
 struct StaticGenTable
     n::Int
@@ -40,6 +42,7 @@ struct StaticGenTable
     q::Vector{Float64}
     vset::Vector{Float64}
     aset::Vector{Float64}
+    regulating::Vector{Bool}  # PV stubs only; false once the PF pins the bus
     # net_ptr offset of vr for this device's bus (filled during build_layout!
     # using the external-bus index; remapped in fix_static_gen_bus_idx!)
     vr_idx::Vector{Int32}
@@ -61,6 +64,7 @@ function _build_static_gen_table_impl(psd)
     q        = zeros(Float64, n)
     vset     = Vector{Float64}(undef, n)
     aset     = Vector{Float64}(undef, n)
+    regulating = fill(true, n)
     vr_idx   = Vector{Int32}(undef, n)
     jac_pos  = zeros(Int32, n, STATIC_GEN_JAC_NENTRIES)
 
@@ -85,7 +89,7 @@ function _build_static_gen_table_impl(psd)
 
     online = fill(true, n)
     return StaticGenTable(n, bus, bus_type, alg_ptr, par_ptr,
-                          p, q, vset, aset, vr_idx, jac_pos, online)
+                          p, q, vset, aset, regulating, vr_idx, jac_pos, online)
 end
 
 # Remap bus (external PSS/E number) → internal 1-based index and rebuild
@@ -105,7 +109,7 @@ function fix_static_gen_bus_idx!(psd, ps)
     return nothing
 end
 
-# Post-init refresh: copy p0, q0, vset, aset from device structs to table.
+# Post-init refresh: copy p0, q0, vset, aset, regulating from device structs.
 function refresh_static_gen_table!(psd)
     table = psd.layout.static_gen
     table.n == 0 && return nothing
@@ -118,6 +122,7 @@ function refresh_static_gen_table!(psd)
         table.q[k]    = sg.q0
         table.vset[k] = sg.vset
         table.aset[k] = sg.aset
+        table.regulating[k] = sg.regulating
     end
     return nothing
 end

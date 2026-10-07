@@ -104,14 +104,15 @@ independent of `PowerSystem`. Caller:
     psi_qe = -(x_ddp - xl)/(x_qp - xl)*e_dp +
               (x_qp  - x_ddp)/(x_qp - xl)*phi_2q
 
-    # Quadratic open-circuit saturation: adds -Se*psi_de to the e_qp eq.
+    # Quadratic open-circuit saturation acts along both rotor axes.
     sat_a, sat_b = _genrou_sat_coefficients(S1, S2)
     psi2 = sqrt(psi_de*psi_de + psi_qe*psi_qe)
     Se = _genrou_sat_se(psi2, sat_a, sat_b)
+    gqd = (x_q - xl) / (x_d - xl)
 
     # ----- diff residuals -----
     f[dp]     = (-e_qp + e_fd - (i_d - (-x_ddp + x_dp)*(-e_qp + i_d*(x_dp - xl) + phi_1d)/((x_dp - xl)^2)) * (x_d - x_dp) - Se*psi_de) / T_d0p
-    f[dp + 1] = (-e_dp +        (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl) + phi_2q)/((x_qp - xl)^2)) * (x_q - x_qp)) / T_q0p
+    f[dp + 1] = (-e_dp +        (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl) + phi_2q)/((x_qp - xl)^2)) * (x_q - x_qp) + Se*psi_qe*gqd) / T_q0p
     f[dp + 2] = ( e_qp - i_d*(x_dp - xl) - phi_1d) / T_d0dp
     f[dp + 3] = (-e_dp - i_q*(x_qp - xl) - phi_2q) / T_q0dp
     f[dp + 4] = (p_m - D*w - psi_de*i_q + psi_qe*i_d) / (2.0 * H)
@@ -172,10 +173,12 @@ const J_GR_R1_phi1d = 2
 const J_GR_R1_id    = 3
 const J_GR_R1_edp   = 44
 const J_GR_R1_phi2q = 45
-# Diff row 2 (df2/d{e_dp, phi_2q, i_q})
+# Diff row 2 (df2/d{e_qp, e_dp, phi_1d, phi_2q, i_q})
 const J_GR_R2_edp   = 4
 const J_GR_R2_phi2q = 5
 const J_GR_R2_iq    = 6
+const J_GR_R2_eqp   = 47
+const J_GR_R2_phi1d = 48
 # Diff row 3 (df3/d{e_qp, phi_1d, i_d})
 const J_GR_R3_eqp   = 7
 const J_GR_R3_phi1d = 8
@@ -229,7 +232,7 @@ const J_GR_R5_pm    = 43
 const J_GR_R1_efd   = 46
 
 # Sanity check: must match GENROU_JAC_NENTRIES declared in tables/genrou.jl.
-@assert J_GR_R1_efd == GENROU_JAC_NENTRIES "Slot table out of sync with GENROU_JAC_NENTRIES"
+@assert J_GR_R2_phi1d == GENROU_JAC_NENTRIES "Slot table out of sync with GENROU_JAC_NENTRIES"
 
 """
     genrou_coupling_preallocate!(coord_list, table::GenrouTable)
@@ -257,8 +260,8 @@ end
     genrou_jac_positions!(table::GenrouTable, J::SparseMatrixCSC,
                           diff_dim::Int, net_ptr::Int)
 
-For every GENROU device, look up the index into `J.nzval` for each of
-the 42 (row, col) entries the Jacobian kernel writes, and store it in
+For every GENROU device, look up the index into `J.nzval` for each
+(row, col) entry the Jacobian kernel writes, and store it in
 `table.jac_pos[k, slot]`. Must be called once after `preallocate_jacobian`
 returns, before any `genrou_jacobian_batch!` call.
 
@@ -301,7 +304,9 @@ function genrou_jac_positions!(
         table.jac_pos[k, J_GR_R1_edp]   = _find_pos(J, rows, dp,     e_dp_idx)
         table.jac_pos[k, J_GR_R1_phi2q] = _find_pos(J, rows, dp,     phi_2q_idx)
         # Diff row 2
+        table.jac_pos[k, J_GR_R2_eqp]   = _find_pos(J, rows, dp + 1, e_qp_idx)
         table.jac_pos[k, J_GR_R2_edp]   = _find_pos(J, rows, dp + 1, e_dp_idx)
+        table.jac_pos[k, J_GR_R2_phi1d] = _find_pos(J, rows, dp + 1, phi_1d_idx)
         table.jac_pos[k, J_GR_R2_phi2q] = _find_pos(J, rows, dp + 1, phi_2q_idx)
         table.jac_pos[k, J_GR_R2_iq]    = _find_pos(J, rows, dp + 1, i_q_idx)
         # Diff row 3
@@ -392,7 +397,7 @@ end
 """
     genrou_jacobian_batch!(J, z, u, table::GenrouTable, diff_dim, net_ptr)
 
-For every GENROU device, write the 42 Jacobian entries directly to
+For every GENROU device, write its Jacobian entries directly to
 `J.nzval[table.jac_pos[k, slot]]`. No CSR row search per iteration.
 
 The current-injection rows (`vr`, `vi`) are ACCUMULATED via `+=` because
@@ -475,6 +480,15 @@ cleared them.
     dT_dedp_sat   = dT_dpsi_qe * dpsi_qe_dedp / T_d0p
     dT_dphi2q_sat = dT_dpsi_qe * dpsi_qe_phi2q / T_d0p
 
+    # d(gqd*Se*psi_qe)/d*: q-axis saturation contribution.
+    gqd = (x_q - xl) / (x_d - xl)
+    dQ_dpsi_de = gqd * dSe_dpsi_de * psi_qe
+    dQ_dpsi_qe = gqd * (dSe_dpsi_qe * psi_qe + Se)
+    dQ_deqp_sat   = dQ_dpsi_de * dpsi_de_deqp / T_q0p
+    dQ_dphi1d_sat = dQ_dpsi_de * dpsi_de_phi1d / T_q0p
+    dQ_dedp_sat   = dQ_dpsi_qe * dpsi_qe_dedp / T_q0p
+    dQ_dphi2q_sat = dQ_dpsi_qe * dpsi_qe_phi2q / T_q0p
+
     # ===== diff row 1 =====
     nz[jac_pos[k, J_GR_R1_eqp]]   = (-(x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) - 1) / T_d0p + dT_deqp_sat
     nz[jac_pos[k, J_GR_R1_phi1d]] =  (x_d - x_dp)*(-x_ddp + x_dp)*(x_dp - xl)^(-2.0) / T_d0p + dT_dphi1d_sat
@@ -487,8 +501,10 @@ cleared them.
     end
 
     # ===== diff row 2 =====
-    nz[jac_pos[k, J_GR_R2_edp]]   = (-(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) - 1) / T_q0p
-    nz[jac_pos[k, J_GR_R2_phi2q]] = -(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) / T_q0p
+    nz[jac_pos[k, J_GR_R2_eqp]]   = dQ_deqp_sat
+    nz[jac_pos[k, J_GR_R2_edp]]   = (-(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) - 1) / T_q0p + dQ_dedp_sat
+    nz[jac_pos[k, J_GR_R2_phi1d]] = dQ_dphi1d_sat
+    nz[jac_pos[k, J_GR_R2_phi2q]] = -(x_q - x_qp)*(-x_qdp + x_qp)*(x_qp - xl)^(-2.0) / T_q0p + dQ_dphi2q_sat
     nz[jac_pos[k, J_GR_R2_iq]]    =  (x_q - x_qp)*(-(-x_qdp + x_qp)*(x_qp - xl)^(-1.0) + 1) / T_q0p
 
     # ===== diff row 3 =====
