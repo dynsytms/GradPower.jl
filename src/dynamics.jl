@@ -539,6 +539,7 @@ function integrate!(
     verbose::Bool=false,
     log::Union{Nothing,SolverLog}=nothing,
     solver::Symbol=:monolithic,
+    linear_solver::AbstractDirectSolverBackend=KLUBackend(),
     newton_tol::Float64=1e-10,
     newton_norm::Symbol=:inf,
     limit_method::Symbol=:none,
@@ -614,18 +615,14 @@ function integrate!(
     beuler_jac!(J0, zold, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt,
                 limit_workspace)
 
-    # pre-factorization
-    fact = klu(J0)
-    fact.common.scale = 0
-    fact.common.btf = 0
-    fact.common.ordering = 1
-    fact.common.tol = 1e-3
+    # pre-factorization (symbolic analysis reused by every Newton iteration)
+    fact = ds_solver(linear_solver, J0; tuned=true)
 
     # Schur workspace (preallocated once, reused every step)
     use_schur = solver === :schur
     use_schur_gmres = solver === :schur_gmres
-    sw = use_schur ? SchurWorkspace(ps) : nothing
-    gsw = use_schur_gmres ? GmresSchurWorkspace(ps, zold, dp.pvec, dt) : nothing
+    sw = use_schur ? SchurWorkspace(ps; linear_solver) : nothing
+    gsw = use_schur_gmres ? GmresSchurWorkspace(ps, zold, dp.pvec, dt; linear_solver) : nothing
 
     # time loop
     sched_idx = 1  # pointer into sorted event_schedule

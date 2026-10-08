@@ -362,7 +362,8 @@ function _newton_step_batched!(bl::BatchedLayout, dyn::PowerSystemDynamics,
                                 facts::Vector{Any},
                                 dx_buf::Vector{Float64},
                                 f_buf::Vector{Float64};
-                                itermax::Int=30, tol::Float64=1e-10)
+                                itermax::Int=30, tol::Float64=1e-10,
+                                linear_solver::AbstractDirectSolverBackend=KLUBackend())
     M = bl.M
     sys_dim = bl.sys_dim
 
@@ -385,15 +386,15 @@ function _newton_step_batched!(bl::BatchedLayout, dyn::PowerSystemDynamics,
         # Evaluate Jacobian
         _beuler_jac_all_scenarios!(bl, dyn, L, dt)
 
-        # Solve per scenario — match newton_step! pattern: klu() on iter 1, klu!() after
+        # Solve per scenario — fresh factorization on iter 1, refactorization after
         for m in 1:M
             J_m = J_bufs[m]
             copyto!(J_m.nzval, @view bl.J_nzval[m, :])
             copyto!(f_buf, @view bl.f[m, :])
             if iter == 1
-                facts[m] = klu(J_m)
+                facts[m] = ds_solver(linear_solver, J_m)
             else
-                klu!(facts[m], J_m)
+                facts[m] = ds_factorize!(facts[m], J_m)
             end
             ldiv!(dx_buf, facts[m], f_buf)
             @inbounds for k in 1:sys_dim
@@ -409,13 +410,16 @@ end
 # -----------------------------------------------------------------------
 
 """
-    integrate_batched!(bl, ps, tf; dt=1/120)
+    integrate_batched!(bl, ps, tf; dt=1/120, linear_solver=KLUBackend())
 
 Batched CPU integration using the KA CPU backend with the 2D layout.
+`linear_solver` selects the sparse direct solver (`KLUBackend()` or
+`SparseDirectSolverBackend()`).
 Returns (tvec, traj) where traj[m] is the trajectory for scenario m.
 """
 function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
-                             dt::Float64=1.0/120.0, newton_tol::Float64=1e-10)
+                             dt::Float64=1.0/120.0, newton_tol::Float64=1e-10,
+                             linear_solver::AbstractDirectSolverBackend=KLUBackend())
     dyn = ps.dynamic::PowerSystemDynamics
     L = dyn.layout::SimulationLayout
     M = bl.M
@@ -456,7 +460,7 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
         copyto!(bl.zold, bl.z)
 
         # Newton step
-        _newton_step_batched!(bl, dyn, L, dt, J_bufs, facts, dx_buf, f_buf; tol=newton_tol)
+        _newton_step_batched!(bl, dyn, L, dt, J_bufs, facts, dx_buf, f_buf; tol=newton_tol, linear_solver)
 
         # Store trajectory
         for m in 1:M
@@ -479,7 +483,7 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
         if any_event
             # Re-solve at dt=0 after event
             copyto!(bl.zold, bl.z)
-            _newton_step_batched!(bl, dyn, L, 0.0, J_bufs, facts, dx_buf, f_buf; tol=newton_tol)
+            _newton_step_batched!(bl, dyn, L, 0.0, J_bufs, facts, dx_buf, f_buf; tol=newton_tol, linear_solver)
         end
     end
 

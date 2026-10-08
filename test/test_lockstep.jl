@@ -3,11 +3,25 @@
 
 const HAS_CUDA_14c = try
     @eval using CUDA
-    @eval using CUDSS
     @eval using CUDA.CUSPARSE
     CUDA.functional()
 catch
     false
+end
+
+# GPU sparse direct solvers available for the trajectory test
+const LOCKSTEP_SOLVERS = GradPower.AbstractDirectSolverBackend[]
+if HAS_CUDA_14c
+    try
+        @eval using CUDSS
+        push!(LOCKSTEP_SOLVERS, CUDSSBackend())
+    catch
+    end
+    try
+        @eval using SparseDirectSolver
+        push!(LOCKSTEP_SOLVERS, SparseDirectSolverBackend())
+    catch
+    end
 end
 
 if !HAS_CUDA_14c
@@ -142,7 +156,7 @@ end
     @test abs(gpu_max - cpu_max) <= 1e-15
 end
 
-@testset "GPU single-scenario trajectory matches CPU (≤ 1e-6)" begin
+@testset "GPU single-scenario trajectory matches CPU (≤ 1e-6) ($(nameof(typeof(ls))))" for ls in LOCKSTEP_SOLVERS
     HAS_CUDA_14c || return
 
     ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
@@ -170,7 +184,7 @@ end
     GradPower.initialize_dynamics!(dp2, ps)
     GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 0.02, 0.1, 0.2))
 
-    gbl = ext.GpuBatchedLayout(dp2, ps, 1)
+    gbl = ext.GpuBatchedLayout(dp2, ps, 1; linear_solver = ls)
     tvec_gpu, trajs_gpu = ext.integrate_gpu_cudss!(gbl, ps, 0.5; dt=1.0/120.0, newton_tol=1e-10)
 
     @test maximum(abs, trajs_gpu[1] - traj_ref) <= 1e-6

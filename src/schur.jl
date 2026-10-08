@@ -40,7 +40,8 @@ struct SchurWorkspace
     # global_to_reduced[g] = reduced index (0 if eliminated)
     global_to_reduced::Vector{Int}
 
-    # KLU factorization of S
+    # Direct-solver factorization of S (backend chosen by `linear_solver`)
+    linear_solver::AbstractDirectSolverBackend
     S_fact::Base.RefValue{Any}
 
     # Reduced RHS vector
@@ -50,7 +51,8 @@ struct SchurWorkspace
     dz::Vector{Float64}
 end
 
-function SchurWorkspace(ps::PowerSystem)
+function SchurWorkspace(ps::PowerSystem;
+                        linear_solver::AbstractDirectSolverBackend=KLUBackend())
     ct = ps.dynamic.clusters::ClusterTable
     nbus = length(ps.buses)
     diff_dim = ps.dynamic.diff_dim
@@ -135,7 +137,7 @@ function SchurWorkspace(ps::PowerSystem)
             end
         end
     end
-    s_fact = Ref{Any}(klu(S))
+    s_fact = Ref{Any}(ds_solver(linear_solver, S))
 
     rhs_red = zeros(Float64, n_red)
     dz = zeros(Float64, sys_dim)
@@ -164,7 +166,7 @@ function SchurWorkspace(ps::PowerSystem)
 
     return SchurWorkspace(nt_groups, A_k_bufs, B_k_bufs, C_k_bufs, D_k_bufs,
                           lu_pivots, tmp_w, S, reduced_global, g2r,
-                          s_fact, rhs_red, dz)
+                          linear_solver, s_fact, rhs_red, dz)
 end
 
 function _group_by_wsize(ct::ClusterTable, nt_ids::Vector{Int})
@@ -359,9 +361,9 @@ function newton_step_schur!(
         if log !== nothing
             _t0 = time_ns()
             if iter == 1
-                sw.S_fact[] = klu(sw.S)
+                sw.S_fact[] = ds_solver(sw.linear_solver, sw.S)
             else
-                klu!(sw.S_fact[], sw.S)
+                sw.S_fact[] = ds_factorize!(sw.S_fact[], sw.S)
             end
             log.lsolve_factor_ns += time_ns() - _t0
             log.lsolve_factor_count += 1
@@ -372,9 +374,9 @@ function newton_step_schur!(
             log.lsolve_solve_count += 1
         else
             if iter == 1
-                sw.S_fact[] = klu(sw.S)
+                sw.S_fact[] = ds_solver(sw.linear_solver, sw.S)
             else
-                klu!(sw.S_fact[], sw.S)
+                sw.S_fact[] = ds_factorize!(sw.S_fact[], sw.S)
             end
             ldiv!(sw.S_fact[], sw.rhs_red)
         end
@@ -591,7 +593,7 @@ function build_y_preconditioner(sw::SchurWorkspace, ps::PowerSystem,
                                  dt::Float64)
     P = copy(sw.S)
     _fill_y_preconditioner!(P, sw, ps, z0, p_vec, dt)
-    fact = Ref{Any}(klu(P))
+    fact = Ref{Any}(ds_solver(sw.linear_solver, P))
     return YPreconditioner(P, fact)
 end
 
@@ -708,7 +710,7 @@ function refresh_y_preconditioner!(prec::YPreconditioner, sw::SchurWorkspace,
                                     ps::PowerSystem, z0::AbstractVector,
                                     p_vec::AbstractVector, dt::Float64)
     _fill_y_preconditioner!(prec.P, sw, ps, z0, p_vec, dt)
-    klu!(prec.fact[], prec.P)
+    prec.fact[] = ds_factorize!(prec.fact[], prec.P)
     return nothing
 end
 
@@ -736,8 +738,9 @@ function GmresSchurWorkspace(ps::PowerSystem, z0::AbstractVector,
                               gmres_atol::Float64=1e-12,
                               gmres_rtol::Float64=1e-10,
                               gmres_maxiter::Int=100,
-                              gmres_restart::Int=80)
-    sw = SchurWorkspace(ps)
+                              gmres_restart::Int=80,
+                              linear_solver::AbstractDirectSolverBackend=KLUBackend())
+    sw = SchurWorkspace(ps; linear_solver)
     n_red = length(sw.reduced_idx)
 
     prec = build_y_preconditioner(sw, ps, z0, p_vec, dt)

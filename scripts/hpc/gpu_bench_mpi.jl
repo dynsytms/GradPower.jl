@@ -11,6 +11,7 @@
 #   --case     ieee9 | ieee39                    [ieee39]
 #   --M        scenarios per GPU                 [512]
 #   --method   schur_cudss | shared | cpu        [schur_cudss]
+#   --solver   default | cudss | sds | klu       [default; env GP_SOLVER]
 #   --seconds  sustained load window per rank    [15.0]
 #   --tfinal   simulated seconds                 [1.0]
 #   --dt       backward-Euler step               [0.008333333333333333]
@@ -21,6 +22,10 @@ haskey(ENV, "GP_ENV") && Pkg.activate(ENV["GP_ENV"])
 
 using CUDA
 using CUDSS
+# SparseDirectSolver.jl is optional: load it for `--solver sds`.
+if get(ENV, "GP_SOLVER", "") == "sds" || any(a -> a == "sds" || a == "--solver=sds", ARGS)
+    using SparseDirectSolver
+end
 using Printf
 
 include(joinpath(@__DIR__, "gpu_bench_common.jl"))
@@ -28,6 +33,7 @@ include(joinpath(@__DIR__, "gpu_bench_common.jl"))
 opts = parse_args(ARGS, Dict(
     "case"    => get(ENV, "GP_CASE", "ieee39"),
     "M"       => get(ENV, "GP_M", "512"),
+    "solver"  => get(ENV, "GP_SOLVER", "default"),
     "method"  => get(ENV, "GP_METHODS", "schur_cudss"),
     "seconds" => "15.0",
     "tfinal"  => "1.0",
@@ -42,6 +48,7 @@ method  = opts["method"]
 seconds = parse(Float64, opts["seconds"])
 tfinal  = parse(Float64, opts["tfinal"])
 dt      = parse(Float64, opts["dt"])
+lsolver = linear_solver_backend(opts["solver"])
 
 dev = select_device!(rank, lrank)
 info = device_info()
@@ -55,7 +62,8 @@ if rank == 0
 end
 
 ps, dp = build_case(case)
-r = bench_sustained(method, ps, dp, M; tfinal = tfinal, dt = dt, seconds = seconds)
+r = bench_sustained(method, ps, dp, M; tfinal = tfinal, dt = dt, seconds = seconds,
+                    linear_solver = lsolver)
 
 @printf("[rank %4d/%d] %s dev%d  %6.1f scen/s  (%d calls / %.1fs)  %s\n",
         rank, world, host, dev, r.scen_per_s, r.calls, r.wall,
