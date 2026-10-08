@@ -664,6 +664,7 @@ end
 
 # Include files. functionality.
 include("utils.jl")
+include("direct_solver.jl")
 include("numerics.jl")
 include("network.jl")
 include("pflow.jl")
@@ -789,5 +790,6 @@ export get_device_name, get_diff_names, get_alg_names, get_param_names
 export DyrRecordCoverage, DyrModelCoverage, DyrCoverageReport
 export analyze_dyr_coverage, native_dyr_models, coverage_counts, coverage_by_model, native_coverage
 export SolverLog
+export AbstractDirectSolverBackend, KLUBackend, CUDSSBackend, SparseDirectSolverBackend
 
 end # module GradPower

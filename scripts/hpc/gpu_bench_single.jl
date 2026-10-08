@@ -8,6 +8,8 @@
 #   --case     ieee9 | ieee39                      [ieee39]
 #   --M        comma-separated batch sizes         [1,16,64,256,1024,2048]
 #   --methods  schur_cudss | shared | cpu (csv)    [schur_cudss]
+#   --solver   default | cudss | sds | klu         [default; env GP_SOLVER]
+#              (sds = SparseDirectSolver.jl; default = CUDSS on GPU, KLU on CPU)
 #   --tfinal   simulated seconds                   [1.0]
 #   --dt       backward-Euler step                 [0.008333333333333333]
 #   --reps     timed repetitions per point         [3]
@@ -21,12 +23,17 @@ haskey(ENV, "GP_ENV") && Pkg.activate(ENV["GP_ENV"])
 
 using CUDA
 using CUDSS
+# SparseDirectSolver.jl is optional: load it for `--solver sds`.
+if get(ENV, "GP_SOLVER", "") == "sds" || any(a -> a == "sds" || a == "--solver=sds", ARGS)
+    using SparseDirectSolver
+end
 
 include(joinpath(@__DIR__, "gpu_bench_common.jl"))
 
 opts = parse_args(ARGS, Dict(
     "case"    => get(ENV, "GP_CASE", "ieee39"),
     "M"       => get(ENV, "GP_M", "1,16,64,256,1024,2048"),
+    "solver"  => get(ENV, "GP_SOLVER", "default"),
     "methods" => get(ENV, "GP_METHODS", "schur_cudss"),
     "tfinal"  => "1.0",
     "dt"      => string(1.0 / 120.0),
@@ -44,11 +51,12 @@ dt      = parse(Float64, opts["dt"])
 reps    = parse(Int, opts["reps"])
 warmup  = parse(Int, opts["warmup"])
 cpu_max = parse(Int, opts["cpu-max-M"])
+lsolver = linear_solver_backend(opts["solver"])
 
 dev = select_device!()
 info = device_info()
 println("=== GradPower GPU batch sweep ===")
-println("case=$case  methods=$(join(methods, ","))  M=$(join(Ms, ","))  tfinal=$tfinal  dt=$dt  reps=$reps")
+println("case=$case  solver=$(opts["solver"])  methods=$(join(methods, ","))  M=$(join(Ms, ","))  tfinal=$tfinal  dt=$dt  reps=$reps")
 println("device[$dev] = $(info.gpu) ($(info.total_mem_gib > 0 ? round(info.total_mem_gib, digits=1) : 0) GiB), CUDA $(info.cuda_runtime)")
 
 ps, dp = build_case(case)
@@ -63,7 +71,8 @@ for m in methods, M in Ms
         push!(skipped, M)
         continue
     end
-    r = bench_point(m, ps, dp, M; tfinal = tfinal, dt = dt, reps = reps, warmup = warmup)
+    r = bench_point(m, ps, dp, M; tfinal = tfinal, dt = dt, reps = reps, warmup = warmup,
+                    linear_solver = lsolver)
     print_row(r)
     flush(stdout)
     push!(rows, r)

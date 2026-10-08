@@ -137,19 +137,12 @@ function newton_step!(
         end
 
         # Numeric re-factorization: reuse the symbolic analysis from the
-        # caller-provided `fact` (created once in `integrate!` with tuned
-        # KLU settings). Only the numeric values are updated each iteration.
-        # If klu! hits a zero pivot (SingularException), fall back to a
-        # fresh klu() with new symbolic analysis — this is rare but can
-        # happen after large state jumps (e.g. fault clearing).
+        # caller-provided `fact` (created once in `integrate!` by
+        # `ds_solver`). Only the numeric values are updated each iteration.
+        # The KLU backend falls back to a fresh klu() on a zero pivot.
         if log !== nothing
             _t0 = time_ns()
-            try
-                klu!(fact, J0)
-            catch e
-                e isa LinearAlgebra.SingularException || rethrow()
-                fact = klu(J0)
-            end
+            fact = ds_factorize!(fact, J0)
             log.lsolve_factor_ns += time_ns() - _t0
             log.lsolve_factor_count += 1
 
@@ -158,12 +151,7 @@ function newton_step!(
             log.lsolve_solve_ns += time_ns() - _t0
             log.lsolve_solve_count += 1
         else
-            try
-                klu!(fact, J0)
-            catch e
-                e isa LinearAlgebra.SingularException || rethrow()
-                fact = klu(J0)
-            end
+            fact = ds_factorize!(fact, J0)
             ldiv!(dx_buf, fact, f0)
         end
 

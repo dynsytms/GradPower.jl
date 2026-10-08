@@ -3,7 +3,6 @@ module GradPowerCUDAExt
 using CUDA
 using CUDA.CUBLAS
 using CUDA.CUSPARSE
-using CUDSS
 using LinearAlgebra
 using SparseArrays
 using KernelAbstractions
@@ -17,33 +16,33 @@ using KLU
 # -----------------------------------------------------------------------
 
 """
-    CuDSSPreconditioner
+    CuDSSPreconditioner(Y_csc; linear_solver = GradPower.default_gpu_backend())
 
-GPU-resident sparse LU preconditioner wrapping a CudssSolver from CUDSS.jl.
+GPU-resident sparse LU preconditioner. The factorization comes from the GPU
+direct solver selected by `linear_solver` (`CUDSSBackend()` or
+`SparseDirectSolverBackend()`); the name is kept for backward compatibility.
 Satisfies `LinearAlgebra.ldiv!(y, P, x)` for Krylov.jl compatibility.
-
-API surface used: CudssSolver, cudss("analysis"/"factorization"/"solve").
-Fallback: if CUDSS proves unusable, replace with ILU(0) from
-KrylovPreconditioners.jl.
 """
 struct CuDSSPreconditioner
-    solver::CudssSolver{Float64, Int32}
+    solver::Any
     Y_csr::CuSparseMatrixCSR{Float64, Int32}
 end
 
-function CuDSSPreconditioner(Y_csc::SparseMatrixCSC{Float64, Int})
+function CuDSSPreconditioner(Y_csc::SparseMatrixCSC{Float64, Int};
+                             linear_solver::GradPower.AbstractDirectSolverBackend =
+                                 GradPower.default_gpu_backend())
     Y_csr = CuSparseMatrixCSR(Y_csc)
-    solver = CudssSolver(Y_csr, "G", 'F')
+    solver = GradPower.ds_solver(linear_solver, Y_csr, "G", 'F')
     x_d = CUDA.zeros(Float64, size(Y_csc, 1))
     b_d = CUDA.zeros(Float64, size(Y_csc, 1))
-    cudss("analysis", solver, x_d, b_d)
-    cudss("factorization", solver, x_d, b_d)
+    GradPower.ds_execute!("analysis", solver, x_d, b_d)
+    GradPower.ds_execute!("factorization", solver, x_d, b_d)
     return CuDSSPreconditioner(solver, Y_csr)
 end
 
 function LinearAlgebra.ldiv!(y::CuVector{Float64}, P::CuDSSPreconditioner, x::CuVector{Float64})
     copyto!(y, x)
-    cudss("solve", P.solver, y, x)
+    GradPower.ds_execute!("solve", P.solver, y, x)
     return y
 end
 
@@ -56,10 +55,10 @@ existing nonzero entries.
 """
 function refresh_cudss_preconditioner!(P::CuDSSPreconditioner, Y_csc::SparseMatrixCSC{Float64, Int})
     Y_csr_new = CuSparseMatrixCSR(Y_csc)
-    cudss_set(P.solver.matrix, Y_csr_new)
+    GradPower.ds_update!(P.solver, Y_csr_new)
     x_d = CUDA.zeros(Float64, size(Y_csc, 1))
     b_d = CUDA.zeros(Float64, size(Y_csc, 1))
-    cudss("factorization", P.solver, x_d, b_d)
+    GradPower.ds_execute!("factorization", P.solver, x_d, b_d)
     return nothing
 end
 
@@ -396,8 +395,8 @@ struct GpuBatchedLayout
     schur_group_D_offsets::Vector{Int}         # 4 entries per cluster, sequential
     schur_cluster_bus_reduced::Vector{Vector{Tuple{Int,Int}}} # (vr_l, vi_l) per cluster per group
     schur_cluster_w_start::Vector{Vector{Int}} # w_start per cluster per group
-    # cuDSS solver for the reduced Schur system S
-    cudss_S_solver::Union{Nothing, CudssSolver{Float64, Int32}}
+    # Direct solver for the reduced Schur system S
+    cudss_S_solver::Any
     cudss_S_csr::Union{Nothing, CuSparseMatrixCSR{Float64, Int32}}
     csc_to_csr_perm_S::Union{Nothing, CuVector{Int32}}
     cudss_S_rhs::Union{Nothing, CuVector{Float64}}
@@ -411,16 +410,16 @@ struct GpuBatchedLayout
     schur_rhs_batched::CuMatrix{Float64}               # (n_red, M) — batched reduced RHS
     # Batched cuDSS for reduced system S (Step 3)
     S_csr_nzval_batched::CuMatrix{Float64}             # (S_nnz_csr, M) — CSR values for batched S
-    cudss_S_solver_batched::CudssSolver                # CudssSolver uniform batch
-    cudss_S_rhs_batched_wrap::CudssMatrix              # CudssMatrix wrapper for RHS
-    cudss_S_sol_batched_wrap::CudssMatrix              # CudssMatrix wrapper for solution
+    cudss_S_solver_batched::Any                        # direct solver, uniform batch
+    cudss_S_rhs_batched_wrap::Any                      # batched RHS wrapper (ds_matrix)
+    cudss_S_sol_batched_wrap::Any                      # batched solution wrapper (ds_matrix)
     S_sol_buf::CuMatrix{Float64}                       # (n_red, M) — solution buffer
     # GPU copies of per-cluster metadata for fused kernels
     schur_w_start_gpu::Vector{CuVector{Int}}           # per group: w_start for each cluster
     schur_vr_l_gpu::Vector{CuVector{Int}}              # per group: reduced vr index
     schur_vi_l_gpu::Vector{CuVector{Int}}              # per group: reduced vi index
     # Shared-factor Schur solver (one P factorization, multi-RHS solve)
-    sf_P_solver::Union{Nothing, CudssSolver{Float64, Int32}}
+    sf_P_solver::Any
     sf_P_csr_nzval::Union{Nothing, CuVector{Float64}}        # P's CSR nzval
     sf_P_rhs::Union{Nothing, CuMatrix{Float64}}              # (n_red, M) multi-RHS
     sf_P_sol::Union{Nothing, CuMatrix{Float64}}              # (n_red, M) solution
@@ -443,18 +442,20 @@ struct GpuBatchedLayout
     # CPU copy of global-to-reduced mapping (for Woodbury precomputation)
     g2r_cpu::Vector{Int}
     # cuDSS monolithic direct solver (phase 14c) — single scenario (legacy)
-    cudss_solver::Union{Nothing, CudssSolver{Float64, Int32}}
+    cudss_solver::Any
     cudss_csr::Union{Nothing, CuSparseMatrixCSR{Float64, Int32}}  # persistent CSR shell
     csc_to_csr_perm::Union{Nothing, CuVector{Int32}}              # nzval reorder map
     cudss_rhs::Union{Nothing, CuVector{Float64}}                  # reusable RHS buffer
     cudss_sol::Union{Nothing, CuVector{Float64}}                  # reusable solution buffer
     # cuDSS uniform batched solver — all M scenarios in one call
     csr_nzval_batched::CuMatrix{Float64}         # (nnz_csr, M)
-    cudss_solver_batched::CudssSolver             # uniform batch solver
-    cudss_rhs_batched::CudssMatrix                # (sys_dim, M)
-    cudss_sol_batched::CudssMatrix                # (sys_dim, M)
+    cudss_solver_batched::Any                     # uniform batch solver
+    cudss_rhs_batched::Any                        # (sys_dim, M) wrapper
+    cudss_sol_batched::Any                        # (sys_dim, M) wrapper
     sol_buf::CuMatrix{Float64}                    # (sys_dim, M)
     rhs_buf::CuMatrix{Float64}                    # (sys_dim, M)
+    # Sparse direct solver backend behind all solver fields above
+    linear_solver::GradPower.AbstractDirectSolverBackend
 end
 
 """
@@ -463,7 +464,10 @@ end
 Construct a GPU-resident batched layout. Initialization runs on CPU,
 then arrays are transferred to GPU.
 """
-function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSystem, M::Int)
+function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSystem, M::Int;
+                          linear_solver::GradPower.AbstractDirectSolverBackend =
+                              GradPower.default_gpu_backend())
+    ds = linear_solver
     # Build CPU layout first (reuses existing code)
     bl_cpu = GradPower.BatchedLayout(dp, ps, M)
 
@@ -785,10 +789,10 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
                                   copy(sw_tmp.S.colptr), copy(rowvals(sw_tmp.S)),
                                   ones(Float64, S_nnz_val))
     cudss_S_csr_v = CuSparseMatrixCSR(S_csc_ones)
-    cudss_S_solver_v = CudssSolver(cudss_S_csr_v, "G", 'F')
+    cudss_S_solver_v = GradPower.ds_solver(ds, cudss_S_csr_v, "G", 'F')
     _tmp_sx = CUDA.zeros(Float64, n_red)
     _tmp_sb = CUDA.zeros(Float64, n_red)
-    cudss("analysis", cudss_S_solver_v, _tmp_sx, _tmp_sb)
+    GradPower.ds_execute!("analysis", cudss_S_solver_v, _tmp_sx, _tmp_sb)
     cudss_S_rhs_v = CUDA.zeros(Float64, n_red)
     cudss_S_sol_v = CUDA.zeros(Float64, n_red)
 
@@ -808,15 +812,15 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     # Batched cuDSS for reduced system S (Step 3)
     S_nnz_csr = length(csc_to_csr_perm_S_v)
     S_csr_nzval_batched_v = CUDA.zeros(Float64, S_nnz_csr, M)
-    solver_S_b = CudssSolver(cudss_S_csr_v.rowPtr, cudss_S_csr_v.colVal,
-                              S_csr_nzval_batched_v, "G", 'F')
-    cudss_set(solver_S_b, "ubatch_size", M)
+    solver_S_b = GradPower.ds_solver(ds, cudss_S_csr_v.rowPtr, cudss_S_csr_v.colVal,
+                                      S_csr_nzval_batched_v, "G", 'F')
+    GradPower.ds_set!(solver_S_b, "ubatch_size", M)
     S_sol_buf_v = CUDA.zeros(Float64, n_red, M)
-    cudss_S_sol_b_wrap = CudssMatrix(Float64, n_red; nbatch=M)
-    cudss_update(cudss_S_sol_b_wrap, S_sol_buf_v)
-    cudss_S_rhs_b_wrap = CudssMatrix(Float64, n_red; nbatch=M)
-    cudss_update(cudss_S_rhs_b_wrap, schur_rhs_batched_v)
-    cudss("analysis", solver_S_b, cudss_S_sol_b_wrap, cudss_S_rhs_b_wrap)
+    cudss_S_sol_b_wrap = GradPower.ds_matrix(ds, Float64, n_red; nbatch=M)
+    GradPower.ds_update!(cudss_S_sol_b_wrap, S_sol_buf_v)
+    cudss_S_rhs_b_wrap = GradPower.ds_matrix(ds, Float64, n_red; nbatch=M)
+    GradPower.ds_update!(cudss_S_rhs_b_wrap, schur_rhs_batched_v)
+    GradPower.ds_execute!("analysis", solver_S_b, cudss_S_sol_b_wrap, cudss_S_rhs_b_wrap)
 
     # GPU copies of per-cluster metadata for fused kernels
     schur_w_start_gpu_v = CuVector{Int}[]
@@ -830,9 +834,9 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
 
     # --- Shared-factor Schur solver setup ---
     sf_P_csr_nzval_v = CUDA.zeros(Float64, S_nnz_csr)
-    sf_P_solver_v = CudssSolver(cudss_S_csr_v.rowPtr, cudss_S_csr_v.colVal,
-                                 sf_P_csr_nzval_v, "G", 'F')
-    cudss("analysis", sf_P_solver_v, _tmp_sx, _tmp_sb)
+    sf_P_solver_v = GradPower.ds_solver(ds, cudss_S_csr_v.rowPtr, cudss_S_csr_v.colVal,
+                                         sf_P_csr_nzval_v, "G", 'F')
+    GradPower.ds_execute!("analysis", sf_P_solver_v, _tmp_sx, _tmp_sb)
     sf_P_rhs_v = CUDA.zeros(Float64, n_red, M)
     sf_P_sol_v = CUDA.zeros(Float64, n_red, M)
     sf_W_v = CUDA.zeros(Float64, n_red, 2)
@@ -864,10 +868,10 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     cudss_csr = CuSparseMatrixCSR(J_csc_ones)
 
     # Create solver and perform symbolic analysis (once)
-    cudss_solver = CudssSolver(cudss_csr, "G", 'F')
+    cudss_solver = GradPower.ds_solver(ds, cudss_csr, "G", 'F')
     _tmp_x = CUDA.zeros(Float64, bl_cpu.sys_dim)
     _tmp_b = CUDA.zeros(Float64, bl_cpu.sys_dim)
-    cudss("analysis", cudss_solver, _tmp_x, _tmp_b)
+    GradPower.ds_execute!("analysis", cudss_solver, _tmp_x, _tmp_b)
 
     cudss_rhs = CUDA.zeros(Float64, bl_cpu.sys_dim)
     cudss_sol = CUDA.zeros(Float64, bl_cpu.sys_dim)
@@ -876,18 +880,18 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     nnz_csr = length(csc_to_csr_perm)
     csr_nzval_batched = CUDA.zeros(Float64, nnz_csr, M)
 
-    solver_batched = CudssSolver(cudss_csr.rowPtr, cudss_csr.colVal,
-                                  csr_nzval_batched, "G", 'F')
-    cudss_set(solver_batched, "ubatch_size", M)
+    solver_batched = GradPower.ds_solver(ds, cudss_csr.rowPtr, cudss_csr.colVal,
+                                          csr_nzval_batched, "G", 'F')
+    GradPower.ds_set!(solver_batched, "ubatch_size", M)
 
     rhs_buf = CUDA.zeros(Float64, bl_cpu.sys_dim, M)
     sol_buf = CUDA.zeros(Float64, bl_cpu.sys_dim, M)
-    cudss_rhs_b = CudssMatrix(Float64, bl_cpu.sys_dim; nbatch=M)
-    cudss_update(cudss_rhs_b, rhs_buf)
-    cudss_sol_b = CudssMatrix(Float64, bl_cpu.sys_dim; nbatch=M)
-    cudss_update(cudss_sol_b, sol_buf)
+    cudss_rhs_b = GradPower.ds_matrix(ds, Float64, bl_cpu.sys_dim; nbatch=M)
+    GradPower.ds_update!(cudss_rhs_b, rhs_buf)
+    cudss_sol_b = GradPower.ds_matrix(ds, Float64, bl_cpu.sys_dim; nbatch=M)
+    GradPower.ds_update!(cudss_sol_b, sol_buf)
 
-    cudss("analysis", solver_batched, cudss_sol_b, cudss_rhs_b)
+    GradPower.ds_execute!("analysis", solver_batched, cudss_sol_b, cudss_rhs_b)
 
     return GpuBatchedLayout(M, bl_cpu.sys_dim, bl_cpu.diff_dim, bl_cpu.alg_dim,
                              bl_cpu.nbus,
@@ -941,7 +945,7 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
                              cudss_rhs, cudss_sol,
                              csr_nzval_batched, solver_batched,
                              cudss_rhs_b, cudss_sol_b,
-                             sol_buf, rhs_buf)
+                             sol_buf, rhs_buf, ds)
 end
 
 # -----------------------------------------------------------------------
@@ -2167,7 +2171,7 @@ function _factor_shared_P_gpu!(
 
     _tmp_x = CUDA.zeros(Float64, n_red)
     _tmp_b = CUDA.zeros(Float64, n_red)
-    cudss("factorization", gbl.sf_P_solver, _tmp_x, _tmp_b; asynchronous=false)
+    GradPower.ds_execute!("factorization", gbl.sf_P_solver, _tmp_x, _tmp_b; asynchronous=false)
     gbl.sf_P_factored[] = true
     return nothing
 end
@@ -2188,7 +2192,7 @@ function _precompute_woodbury_gpu!(
     CUDA.@allowscalar rhs[vr_l, 1] = 1.0
     CUDA.@allowscalar rhs[vi_l, 2] = 1.0
     W_gpu = CUDA.zeros(Float64, n_red, 2)
-    cudss("solve", gbl.sf_P_solver, W_gpu, rhs; asynchronous=false)
+    GradPower.ds_execute!("solve", gbl.sf_P_solver, W_gpu, rhs; asynchronous=false)
 
     W_cpu = Array(W_gpu)
     H = [-rfault + W_cpu[vr_l, 1]  W_cpu[vr_l, 2];
@@ -2259,7 +2263,7 @@ function _newton_step_shared_gpu!(
         CUDA.CUBLAS.scal!(n_red * M, -1.0, gbl.schur_rhs_batched)
 
         copyto!(gbl.sf_P_rhs, gbl.schur_rhs_batched)
-        cudss("solve", gbl.sf_P_solver, gbl.sf_P_sol, gbl.sf_P_rhs; asynchronous=false)
+        GradPower.ds_execute!("solve", gbl.sf_P_solver, gbl.sf_P_sol, gbl.sf_P_rhs; asynchronous=false)
 
         if gbl.sf_woodbury_active[]
             k1 = woodbury_dots_ka!(backend)
@@ -2464,7 +2468,7 @@ function _precompute_woodbury_multi_gpu!(
 
     rhs_gpu = CuMatrix(rhs_cpu)
     W_gpu = CUDA.zeros(Float64, n_red, 2 * M)
-    cudss("solve", gbl.sf_P_solver, W_gpu, rhs_gpu; asynchronous=false)
+    GradPower.ds_execute!("solve", gbl.sf_P_solver, W_gpu, rhs_gpu; asynchronous=false)
 
     W_cpu = Array(W_gpu)
 
@@ -2594,7 +2598,7 @@ function _newton_step_shared_multi_gpu!(
 
         # 5e. Multi-RHS solve with frozen P
         copyto!(gbl.sf_P_rhs, gbl.schur_rhs_batched)
-        cudss("solve", gbl.sf_P_solver, gbl.sf_P_sol, gbl.sf_P_rhs; asynchronous=false)
+        GradPower.ds_execute!("solve", gbl.sf_P_solver, gbl.sf_P_sol, gbl.sf_P_rhs; asynchronous=false)
 
         # Per-scenario Woodbury correction
         k1 = woodbury_dots_multi_ka!(backend)
@@ -2786,16 +2790,16 @@ function _newton_step_schur_cudss_gpu!(
 
         # Batched cuDSS factorization of S
         if first_factor
-            cudss("factorization", gbl.cudss_S_solver_batched,
+            GradPower.ds_execute!("factorization", gbl.cudss_S_solver_batched,
                   gbl.cudss_S_sol_batched_wrap, gbl.cudss_S_rhs_batched_wrap; asynchronous=false)
             first_factor = false
         else
-            cudss("refactorization", gbl.cudss_S_solver_batched,
+            GradPower.ds_execute!("refactorization", gbl.cudss_S_solver_batched,
                   gbl.cudss_S_sol_batched_wrap, gbl.cudss_S_rhs_batched_wrap; asynchronous=false)
         end
 
         # Batched cuDSS solve
-        cudss("solve", gbl.cudss_S_solver_batched,
+        GradPower.ds_execute!("solve", gbl.cudss_S_solver_batched,
               gbl.cudss_S_sol_batched_wrap, gbl.cudss_S_rhs_batched_wrap; asynchronous=false)
 
         # 5f. Scatter dv into z for all M scenarios
@@ -2866,14 +2870,14 @@ function _newton_step_cudss_gpu!(
         KernelAbstractions.synchronize(backend)
 
         # 5. Batched factorization (all M scenarios at once)
-        # No cudss_update needed — solver already holds a pointer to
+        # No ds_update! needed — solver already holds a pointer to
         # csr_nzval_batched, which the kernel updated in-place above.
         if first_factor
-            cudss("factorization", gbl.cudss_solver_batched,
+            GradPower.ds_execute!("factorization", gbl.cudss_solver_batched,
                   gbl.cudss_sol_batched, gbl.cudss_rhs_batched; asynchronous=false)
             first_factor = false
         else
-            cudss("refactorization", gbl.cudss_solver_batched,
+            GradPower.ds_execute!("refactorization", gbl.cudss_solver_batched,
                   gbl.cudss_sol_batched, gbl.cudss_rhs_batched; asynchronous=false)
         end
 
@@ -2881,11 +2885,11 @@ function _newton_step_cudss_gpu!(
         kernel = _transpose_negate_ka!(backend)
         kernel(gbl.rhs_buf, gbl.f; ndrange=(sys_dim, M))
         KernelAbstractions.synchronize(backend)
-        # No cudss_update needed — rhs_batched already holds a pointer to
+        # No ds_update! needed — rhs_batched already holds a pointer to
         # rhs_buf, which the kernel updated in-place above.
 
         # 7. Batched solve (all M scenarios at once)
-        cudss("solve", gbl.cudss_solver_batched,
+        GradPower.ds_execute!("solve", gbl.cudss_solver_batched,
               gbl.cudss_sol_batched, gbl.cudss_rhs_batched; asynchronous=false)
 
         # 8. Update z from solution: z is (M, sys_dim), sol_buf is (sys_dim, M)
