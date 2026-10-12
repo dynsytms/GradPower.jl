@@ -94,6 +94,7 @@ struct GpuStaticGenArrays
     alg_ptr::CuVector{Int32}
     par_ptr::CuVector{Int32}
     bus_type::CuVector{Int8}
+    regulating::CuVector{Bool}
     online::CuVector{Bool}
     jac_pos::CuMatrix{Int32}
 end
@@ -122,11 +123,11 @@ end
 function GpuStaticGenArrays(st::GradPower.StaticGenTable)
     st.n == 0 && return GpuStaticGenArrays(0, CuVector{Int32}(undef,0),
         CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
-        CuVector{Int8}(undef,0), CuVector{Bool}(undef,0),
+        CuVector{Int8}(undef,0), CuVector{Bool}(undef,0), CuVector{Bool}(undef,0),
         CuMatrix{Int32}(undef,0,0))
     GpuStaticGenArrays(st.n, CuVector(st.vr_idx), CuVector(st.alg_ptr),
                         CuVector(st.par_ptr), CuVector(st.bus_type),
-                        CuVector(st.online), CuMatrix(st.jac_pos))
+                        CuVector(st.regulating), CuVector(st.online), CuMatrix(st.jac_pos))
 end
 
 # -----------------------------------------------------------------------
@@ -1136,12 +1137,12 @@ end
 end
 
 @kernel function static_gen_residual_batched_ka!(f, z, p, inj, online,
-        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr,
         @Const(inj_offset))
     k, m = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._static_gen_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
-            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr,
+            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr,
             k, @view(inj[m,:]), inj_offset + k)
     end
 end
@@ -1250,11 +1251,11 @@ end
 end
 
 @kernel function static_gen_jacobian_batched_ka!(nzval, z, p, online,
-        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos)
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr, jac_pos)
     k, m = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._static_gen_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
-            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, jac_pos, k)
+            vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr, jac_pos, k)
     end
 end
 
@@ -1397,7 +1398,7 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
     if st.n > 0
         kernel = static_gen_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, gbl.inj, st.online,
-               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type,
+               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.regulating,
                n_genrou + n_zipload; ndrange=(st.n, M))
     end
 
@@ -1498,7 +1499,7 @@ function _jacobian_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
     if st.n > 0
         kernel = static_gen_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.z, gbl.p, st.online,
-               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.jac_pos; ndrange=(st.n, M))
+               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.regulating, st.jac_pos; ndrange=(st.n, M))
     end
 
     # 4. Event Jacobian: add -1/rfault to bus diagonals for active faults
