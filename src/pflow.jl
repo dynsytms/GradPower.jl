@@ -366,7 +366,19 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
     v = Array(vec([vmag vang]'))
     sinj = zeros(length(v))
     compute_pinj!(sinj, v, psys.network.ybus, nbuses)
-    psol = PowerFlowSolution(v, sinj)
+    psol = PowerFlowSolution(v, sinj, converged(result))
+    return psol
+end
+
+"""Thrown by `runpf!` when Newton does not converge. The system keeps its last converged solution."""
+struct PowerFlowError <: Exception
+    msg::String
+end
+Base.showerror(io::IO, e::PowerFlowError) = print(io, "PowerFlowError: ", e.msg)
+
+function _solve_pf(psys::PowerSystem; verbose=false, fdiff=false)
+    psol = runpf(psys; verbose=verbose, fdiff=fdiff)
+    psol.converged || throw(PowerFlowError("power flow did not converge"))
     return psol
 end
 
@@ -539,6 +551,13 @@ system base at parse time). Records that carry the usual +/-9999 placeholder
 simply never bind. Cases built without limit data default to `+/-Inf`, so
 `enforce_q_limits=true` is a no-op for them rather than an error.
 
+Pinning every violator at once can make the re-solve diverge: on ACTIVSg2000
+at perturbed dispatches several hundred buses violate together. When that
+happens the loop backs off and pins only the worst half of them, and so on
+down to one. If even that one does not converge, or the initial solve does
+not, `runpf!` throws a `PowerFlowError` and the system keeps its last converged
+solution. (It used to write the diverged voltages back as if solved.)
+
 Returns the number of buses left pinned at a limit.
 """
 function runpf!(psys::PowerSystem; verbose=false, fdiff=false,
@@ -547,7 +566,7 @@ function runpf!(psys::PowerSystem; verbose=false, fdiff=false,
     bus_to_gen = _bus_to_gen(psys)
 
     if !enforce_q_limits
-        _apply_pf_solution!(psys, runpf(psys; verbose=verbose, fdiff=fdiff), bus_to_gen)
+        _apply_pf_solution!(psys, _solve_pf(psys; verbose=verbose, fdiff=fdiff), bus_to_gen)
         return 0
     end
 
@@ -555,13 +574,12 @@ function runpf!(psys::PowerSystem; verbose=false, fdiff=false,
     orig_type = [bus.type for bus in psys.buses]
     pinned    = zeros(Int, nbus)   # 0 free, +1 held at qmax, -1 held at qmin
 
+    _apply_pf_solution!(psys, _solve_pf(psys; verbose=verbose, fdiff=fdiff), bus_to_gen;
+                        proportional_q=true)
     outer = 0
     for it in 1:max_q_outer
         outer = it
-        _apply_pf_solution!(psys, runpf(psys; verbose=verbose, fdiff=fdiff), bus_to_gen;
-                            proportional_q=true)
-
-        changed = 0
+        viol = Tuple{Int,Int,Float64}[]            # (bus, +1 qmax / -1 qmin, excess)
         for i in 1:nbus
             orig_type[i] == 2 || continue          # slack and pure PQ are exempt
             gidx = bus_to_gen[i]
@@ -574,24 +592,43 @@ function runpf!(psys::PowerSystem; verbose=false, fdiff=false,
             pinned[i] == 0 || continue             # one-way: never un-pin
             q = sum(psys.gens[g].qsch for g in gidx)
             if q > qmax + q_tol
-                pinned[i] = 1
-                psys.buses[i].type = 1
-                for g in gidx
-                    psys.gens[g].qsch = psys.gens[g].qmax
-                end
-                changed += 1
+                push!(viol, (i, 1, q - qmax))
             elseif q < qmin - q_tol
-                pinned[i] = -1
-                psys.buses[i].type = 1
-                for g in gidx
-                    psys.gens[g].qsch = psys.gens[g].qmin
-                end
-                changed += 1
+                push!(viol, (i, -1, qmin - q))
             end
         end
 
-        verbose && @info "pflow Q-limit outer iteration $it: $changed switch(es), $(count(!=(0), pinned)) bus(es) pinned"
-        changed == 0 && break
+        verbose && @info "pflow Q-limit outer iteration $it: $(length(viol)) violation(s), $(count(!=(0), pinned)) bus(es) pinned"
+        isempty(viol) && break
+
+        sort!(viol; by = v -> -v[3])               # worst first, for the back-off
+        qsave = [g.qsch for g in psys.gens]
+        k = length(viol)
+        psol = nothing
+        while true
+            for (i, side, _) in viol[1:k]
+                psys.buses[i].type = 1
+                for g in bus_to_gen[i]
+                    psys.gens[g].qsch = side > 0 ? psys.gens[g].qmax : psys.gens[g].qmin
+                end
+            end
+            psol = runpf(psys; verbose=verbose, fdiff=fdiff)
+            psol.converged && break
+            for (i, _, _) in viol[1:k]
+                psys.buses[i].type = 2
+            end
+            for (g, q) in enumerate(qsave)
+                psys.gens[g].qsch = q
+            end
+            k == 1 && throw(PowerFlowError(
+                "power flow did not converge after pinning bus $(psys.buses[viol[1][1]].i) " *
+                "at its reactive limit ($(count(!=(0), pinned)) bus(es) already pinned)"))
+            k = cld(k, 2)
+        end
+        for (i, side, _) in viol[1:k]
+            pinned[i] = side
+        end
+        _apply_pf_solution!(psys, psol, bus_to_gen; proportional_q=true)
     end
 
     npin = count(!=(0), pinned)
