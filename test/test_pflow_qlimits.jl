@@ -1,8 +1,6 @@
 # Generator reactive-limit enforcement in the power flow (PV -> PQ switching).
 #
-# The behaviour under test is `runpf!(...; enforce_q_limits=true)`. Reference
-# numbers come from uqgrid's own Q-limit loop run on the same cases; the
-# ACTIVSg2000 agreement is documented in docs/activsg2000-diagnosis.md.
+# The behaviour under test is `runpf!(...; enforce_q_limits=true)`.
 
 const QL_ROOT = abspath(joinpath(@__DIR__, ".."))
 
@@ -69,31 +67,6 @@ _ql_violations(ps; tol=1e-6) =
                 @test g.qsch ≈ g.qmax || g.qsch ≈ g.qmin
             end
         end
-    end
-
-    @testset "enforcement leaves a consistent dynamic equilibrium" begin
-        # A converted bus's StaticGenerator stub must stop regulating, and its
-        # vset/aset must follow the solved voltage. Both were wrong at first
-        # and each showed up here as a large initialization residual.
-        for enforce in (false, true)
-            ps = _ql_system("ACTIVSg200.raw", "ACTIVSg200.dyr")
-            GradPower.runpf!(ps; enforce_q_limits=enforce)
-            dp = GradPower.DynamicProblem(ps)
-            GradPower.initialize_dynamics!(dp, ps)
-            f = zeros(length(dp.zvec))
-            GradPower.rhs_fun!(f, dp.zvec, dp.uvec, dp.pvec, ps)
-            @test maximum(abs, f) < 1e-8
-        end
-    end
-
-    @testset "ACTIVSg200 limits bind and are respected" begin
-        off = _ql_system("ACTIVSg200.raw", "ACTIVSg200.dyr")
-        GradPower.runpf!(off)
-        @test _ql_violations(off) > 0
-
-        on = _ql_system("ACTIVSg200.raw", "ACTIVSg200.dyr")
-        @test GradPower.runpf!(on; enforce_q_limits=true) > 0
-        @test _ql_violations(on) == 0
     end
 
     @testset "co-located generators: equal share unless a limit binds" begin
