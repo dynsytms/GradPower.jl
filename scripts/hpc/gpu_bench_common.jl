@@ -61,28 +61,50 @@ end
 _gpu_reclaim(ext) = ext === nothing ? nothing : (try; ext.CUDA.reclaim(); catch; end; nothing)
 
 """
-    bench_point(method, ps, dp, M; tfinal, dt, reps, warmup) -> NamedTuple
+    linear_solver_backend(name) -> Union{Nothing, AbstractDirectSolverBackend}
 
-`method` is one of `"schur_cudss"`, `"shared"`, or `"cpu"`
+Map a `--solver` option to a GradPower direct-solver backend: `"default"`
+(nothing: KLU on the CPU, CUDSS if loaded else SparseDirectSolver on the GPU),
+`"klu"`, `"cudss"`, or `"sds"` (SparseDirectSolver.jl, which the driver must
+have loaded).
+"""
+function linear_solver_backend(name::AbstractString)
+    name == "default" && return nothing
+    name == "klu"     && return GradPower.KLUBackend()
+    name == "cudss"   && return GradPower.CUDSSBackend()
+    name == "sds"     && return GradPower.SparseDirectSolverBackend()
+    error("unknown solver '$name' (default | klu | cudss | sds)")
+end
+
+_solver_kw(ls) = ls === nothing ? (;) : (; linear_solver = ls)
+
+"""
+    bench_point(method, ps, dp, M; tfinal, dt, reps, warmup, linear_solver) -> NamedTuple
+
+`method` is one of `"schur_cudss"`, `"shared"`, or `"cpu"`. `linear_solver`
+is a GradPower direct-solver backend, or `nothing` for the default.
 
 The batch layout is rebuilt outside the timed region for every rep, so the
 timing covers integration only.
 """
 function bench_point(method::AbstractString, ps, dp, M::Int;
-                     tfinal = 1.0, dt = 1.0 / 120.0, reps = 3, warmup = 1)
+                     tfinal = 1.0, dt = 1.0 / 120.0, reps = 3, warmup = 1,
+                     linear_solver = nothing)
     ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
     gpu = method != "cpu"
     gpu && ext === nothing && error("GradPowerCUDAExt not loaded — cannot run method '$method'")
 
+    # CUDSS is GPU only: the CPU reference keeps KLU when `--solver cudss`
+    skw = _solver_kw(method == "cpu" && linear_solver isa GradPower.CUDSSBackend ? nothing : linear_solver)
     make_layout, run! = if method == "schur_cudss"
-        (() -> ext.GpuBatchedLayout(dp, ps, M)),
+        (() -> ext.GpuBatchedLayout(dp, ps, M; skw...)),
         ((bl) -> ext.integrate_gpu_schur_cudss!(bl, ps, tfinal; dt = dt))
     elseif method == "shared"
-        (() -> ext.GpuBatchedLayout(dp, ps, M)),
+        (() -> ext.GpuBatchedLayout(dp, ps, M; skw...)),
         ((bl) -> ext.integrate_gpu_shared!(bl, ps, tfinal; dt = dt))
     elseif method == "cpu"
         (() -> GradPower.BatchedLayout(dp, ps, M)),
-        ((bl) -> GradPower.integrate_batched!(bl, ps, tfinal; dt = dt))
+        ((bl) -> GradPower.integrate_batched!(bl, ps, tfinal; dt = dt, skw...))
     else
         error("unknown method '$method' (schur_cudss | shared | cpu)")
     end
@@ -131,20 +153,23 @@ end
 
 """
 function bench_sustained(method::AbstractString, ps, dp, M::Int;
-                         tfinal = 1.0, dt = 1.0 / 120.0, seconds = 15.0, warmup = 1)
+                         tfinal = 1.0, dt = 1.0 / 120.0, seconds = 15.0, warmup = 1,
+                         linear_solver = nothing)
     ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
     gpu = method != "cpu"
     gpu && ext === nothing && error("GradPowerCUDAExt not loaded — cannot run method '$method'")
 
+    # CUDSS is GPU only: the CPU reference keeps KLU when `--solver cudss`
+    skw = _solver_kw(method == "cpu" && linear_solver isa GradPower.CUDSSBackend ? nothing : linear_solver)
     make_layout, run! = if method == "schur_cudss"
-        (() -> ext.GpuBatchedLayout(dp, ps, M)),
+        (() -> ext.GpuBatchedLayout(dp, ps, M; skw...)),
         ((bl) -> ext.integrate_gpu_schur_cudss!(bl, ps, tfinal; dt = dt))
     elseif method == "shared"
-        (() -> ext.GpuBatchedLayout(dp, ps, M)),
+        (() -> ext.GpuBatchedLayout(dp, ps, M; skw...)),
         ((bl) -> ext.integrate_gpu_shared!(bl, ps, tfinal; dt = dt))
     elseif method == "cpu"
         (() -> GradPower.BatchedLayout(dp, ps, M)),
-        ((bl) -> GradPower.integrate_batched!(bl, ps, tfinal; dt = dt))
+        ((bl) -> GradPower.integrate_batched!(bl, ps, tfinal; dt = dt, skw...))
     else
         error("unknown method '$method' (schur_cudss | shared | cpu)")
     end

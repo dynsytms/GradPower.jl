@@ -19,13 +19,16 @@ call.
 - Struct-of-arrays state layout and per-device-type batched residual /
   Jacobian kernels via KernelAbstractions.jl (CPU and GPU backends).
 - **GPU acceleration** via a CUDA extension: residual, Jacobian assembly,
-  and sparse direct solve (cuDSS) run entirely on the GPU with zero
-  host-device transfers per Newton iteration.
+  and sparse direct solve (cuDSS or SparseDirectSolver.jl) run entirely on
+  the GPU with zero host-device transfers per Newton iteration.
+- **Switchable sparse direct solver**: KLU (default on CPU), CUDSS.jl
+  (GPU), or SparseDirectSolver.jl (CPU and GPU), selected with the
+  `linear_solver` keyword.
 - **Batched multi-scenario simulation**: integrate M independent contingency
   scenarios in one call, sharing the Jacobian sparsity pattern.
 - **Schur-complement reduction**: optional block-elimination solver that
   factors per-generator dense blocks with batched cuBLAS and solves only the
-  reduced network system with cuDSS.
+  reduced network system with the GPU sparse direct solver.
 - Supported device models: GENROU, GENSAL, IEESGO, TGOV1, SEXS, ESDC1A,
   IEEEST (PSS), ZIPLoad, StaticGenerator.
 
@@ -106,10 +109,36 @@ tvec, trajs = GradPower.integrate_batched!(bl, sys, 1.0; dt=1.0/120.0)
 # trajs[m] is the trajectory matrix for scenario m
 ```
 
+### Choosing the sparse direct solver
+
+Every Newton solve goes through a sparse direct solver chosen with the
+`linear_solver` keyword:
+
+| Backend | Where | Requires |
+| --- | --- | --- |
+| `KLUBackend()` | CPU (default) | nothing (KLU.jl is a dependency) |
+| `CUDSSBackend()` | GPU | `using CUDA, CUDSS` |
+| `SparseDirectSolverBackend()` | CPU and GPU | `using SparseDirectSolver` (plus `using CUDA` on the GPU) |
+
+SparseDirectSolver.jl is an optional, unregistered dependency. Install it with
+`Pkg.add(url="https://github.com/exanauts/SparseDirectSolver.jl")`.
+
+```julia
+using GradPower, SparseDirectSolver
+
+tvec, traj = integrate!(dp, sys, 10.0; linear_solver=SparseDirectSolverBackend())
+tvec, trajs = GradPower.integrate_batched!(bl, sys, 1.0;
+                                           linear_solver=SparseDirectSolverBackend())
+```
+
+`integrate!` accepts `linear_solver` with every `solver=` choice
+(`:monolithic`, `:schur`, `:schur_gmres`).
+
 ### GPU acceleration (NVIDIA)
 
-With CUDA.jl and CUDSS.jl installed, the CUDA extension loads automatically.
-All residual/Jacobian assembly and the sparse direct solve run on the GPU:
+With CUDA.jl and a GPU sparse direct solver installed (CUDSS.jl or
+SparseDirectSolver.jl), the CUDA extension loads automatically. All
+residual/Jacobian assembly and the sparse direct solve run on the GPU:
 
 ```julia
 using GradPower, CUDA, CUDSS
@@ -134,6 +163,19 @@ tvec, trajs = ext.integrate_gpu_cudss!(gbl, sys, 1.0; dt=1.0/120.0)
 tvec, trajs = ext.integrate_gpu_schur_cudss!(gbl, sys, 1.0; dt=1.0/120.0)
 ```
 
+`GpuBatchedLayout` picks the GPU solver with
+`linear_solver=CUDSSBackend()` or `linear_solver=SparseDirectSolverBackend()`.
+Without the keyword it uses CUDSS when CUDSS.jl is loaded, else
+SparseDirectSolver.jl. The `integrate_gpu_*` functions keep their names
+whichever solver the layout holds:
+
+```julia
+using GradPower, CUDA, SparseDirectSolver
+
+gbl = ext.GpuBatchedLayout(dp, sys, M; linear_solver=SparseDirectSolverBackend())
+tvec, trajs = ext.integrate_gpu_cudss!(gbl, sys, 1.0; dt=1.0/120.0)
+```
+
 On a Quadro GV100, the GPU path achieves ~11x speedup over CPU KLU for
 a 70,000-bus system (216k unknowns).
 
@@ -142,7 +184,7 @@ a 70,000-bus system (216k unknowns).
 | Path | Contents |
 | --- | --- |
 | `src/`        | Package source (CPU kernels, dynamics, parsing, Schur complement) |
-| `ext/`        | CUDA extension (GPU kernels, cuDSS solver, batched GPU layout) |
+| `ext/`        | CUDA extension (GPU kernels, batched GPU layout) and sparse direct solver extensions (CUDSS.jl, SparseDirectSolver.jl) |
 | `examples/`   | PSS/E `.raw` / `.dyr` files (2-bus through 70k-bus) |
 | `test/`       | Unit tests (`julia --project -e 'using Pkg; Pkg.test()'`) |
 | `docs/`       | Design proposal and notes |

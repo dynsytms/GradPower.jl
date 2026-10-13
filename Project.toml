@@ -23,13 +23,17 @@ TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 CUDSS = "45b445bb-4962-46a0-9369-b4df9d0f772e"
+SparseDirectSolver = "dc8e0fd9-41f1-440b-9624-22817132f700"
 
 [extensions]
-GradPowerCUDAExt = ["CUDA", "CUDSS"]
+GradPowerCUDAExt = "CUDA"
+GradPowerCUDSSExt = "CUDSS"
+GradPowerSparseDirectSolverExt = "SparseDirectSolver"
 
 [compat]
 CUDA = "6"
 NLsolve = "4.5"
 CUDSS = "0.8"
+SparseDirectSolver = "0.1"
 KernelAbstractions = "0.9.41"
 Krylov = "0.10.6"

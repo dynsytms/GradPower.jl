@@ -43,6 +43,9 @@ end
 @testset "batched_layout" begin
     include("test_batched_layout.jl")
 end
+@testset "direct_solver" begin
+    include("test_direct_solver.jl")
+end
 @testset "gpu_backend" begin
     include("test_gpu_backend.jl")
 end
