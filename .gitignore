@@ -21,9 +21,9 @@ scratch/
 artifacts/
 
 # Loose data files in root (should be under examples/)
-*.raw
-*.dyr
-*.npz
+/*.raw
+/*.dyr
+/*.npz
 
 # Regression / verification runners (tracked under test/regression/ and scripts/)
 regression/
