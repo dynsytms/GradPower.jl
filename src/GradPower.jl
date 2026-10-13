@@ -258,6 +258,7 @@ end
 struct PowerFlowSolution
     volt::AbstractArray
     sinj::AbstractArray
+    converged::Bool
 end
 
 """
