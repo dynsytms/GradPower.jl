@@ -153,3 +153,18 @@ end
         @test result[ap_k] > 0.0
     end
 end
+
+# -----------------------------------------------------------------------
+# Newton non-convergence is reported, not silently recorded
+# -----------------------------------------------------------------------
+
+@testset "Newton non-convergence throws" begin
+    ps, dp = _build_and_init("2bus.raw", "2bus.dyr")
+    for solver in (:monolithic, :schur, :schur_gmres)
+        @test_throws GradPower.NewtonConvergenceError GradPower.integrate!(
+            dp, ps, 0.05; dt=1.0/120.0, solver=solver, newton_tol=1e-300)
+    end
+    bl = GradPower.BatchedLayout(dp, ps, 2)
+    @test_throws GradPower.NewtonConvergenceError GradPower.integrate_batched!(
+        bl, ps, 0.05; dt=1.0/120.0, newton_tol=1e-300)
+end

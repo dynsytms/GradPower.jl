@@ -2,6 +2,18 @@
 
 using LinearAlgebra
 
+"""Thrown by the integrators when a Newton solve does not converge within its iteration limit."""
+struct NewtonConvergenceError <: Exception
+    t::Float64
+    msg::String
+end
+Base.showerror(io::IO, e::NewtonConvergenceError) =
+    print(io, "NewtonConvergenceError at t = ", e.t, " s: ", e.msg)
+
+# Throw `NewtonConvergenceError` unless `success`. `what` describes the solve.
+@inline check_newton(success::Bool, t::Real, what::AbstractString) =
+    success || throw(NewtonConvergenceError(Float64(t), what))
+
 """
     newton(x0, J0, rhs_fun!, jac_fun!; itermax=100, tol=1e-12, verbose=false)
 

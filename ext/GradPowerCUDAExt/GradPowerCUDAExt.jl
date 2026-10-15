@@ -2342,7 +2342,8 @@ function integrate_gpu_shared!(
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
 
-        _newton_step_shared_gpu!(gbl, dyn, L, dt, sf_vr_l, sf_vi_l; tol = newton_tol)
+        ok = _newton_step_shared_gpu!(gbl, dyn, L, dt, sf_vr_l, sf_vi_l; tol = newton_tol)
+        GradPower.check_newton(ok, tvec[k + 1], "GPU shared time step")
 
         snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
         KernelAbstractions.synchronize(backend)
@@ -2366,7 +2367,8 @@ function integrate_gpu_shared!(
                 CUDA.@allowscalar gbl.event_status[ei] = ev.status
             end
             copyto!(gbl.zold, gbl.z)
-            _newton_step_shared_gpu!(gbl, dyn, L, 0.0, sf_vr_l, sf_vi_l; tol = newton_tol)
+            ok = _newton_step_shared_gpu!(gbl, dyn, L, 0.0, sf_vr_l, sf_vi_l; tol = newton_tol)
+            GradPower.check_newton(ok, tvec[k + 1], "GPU shared dt=0 event re-solve")
         end
     end
 
@@ -2686,8 +2688,9 @@ function integrate_gpu_shared_multi!(
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
 
-        _newton_step_shared_multi_gpu!(gbl, dyn, L, dt,
+        ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, dt,
             fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
+        GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi time step")
 
         snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
         KernelAbstractions.synchronize(backend)
@@ -2696,13 +2699,15 @@ function integrate_gpu_shared_multi!(
         if k == step_on
             fill!(gbl.sf_fault_active_gpu, true)
             copyto!(gbl.zold, gbl.z)
-            _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
+            ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
                 fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
+            GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi dt=0 event re-solve")
         elseif k == step_off
             fill!(gbl.sf_fault_active_gpu, false)
             copyto!(gbl.zold, gbl.z)
-            _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
+            ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
                 fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
+            GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi dt=0 event re-solve")
         end
     end
 
@@ -2962,7 +2967,8 @@ function integrate_gpu_cudss!(
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
 
-        _newton_step_cudss_gpu!(gbl, dyn, L, dt; tol = newton_tol)
+        ok = _newton_step_cudss_gpu!(gbl, dyn, L, dt; tol = newton_tol)
+        GradPower.check_newton(ok, tvec[k + 1], "GPU cuDSS time step")
 
         # Trajectory snapshot — GPU to GPU, no download
         snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
@@ -2985,7 +2991,8 @@ function integrate_gpu_cudss!(
                 CUDA.@allowscalar gbl.event_status[ei] = ev.status
             end
             copyto!(gbl.zold, gbl.z)
-            _newton_step_cudss_gpu!(gbl, dyn, L, 0.0; tol = newton_tol)
+            ok = _newton_step_cudss_gpu!(gbl, dyn, L, 0.0; tol = newton_tol)
+            GradPower.check_newton(ok, tvec[k + 1], "GPU cuDSS dt=0 event re-solve")
         end
     end
 
@@ -3046,7 +3053,8 @@ function integrate_gpu_schur_cudss!(
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
 
-        _newton_step_schur_cudss_gpu!(gbl, dyn, L, dt; tol=newton_tol)
+        ok = _newton_step_schur_cudss_gpu!(gbl, dyn, L, dt; tol=newton_tol)
+        GradPower.check_newton(ok, tvec[k + 1], "GPU Schur time step")
 
         # Trajectory snapshot — GPU to GPU, no download
         snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
@@ -3069,7 +3077,8 @@ function integrate_gpu_schur_cudss!(
                 CUDA.@allowscalar gbl.event_status[ei] = ev.status
             end
             copyto!(gbl.zold, gbl.z)
-            _newton_step_schur_cudss_gpu!(gbl, dyn, L, 0.0; tol=newton_tol)
+            ok = _newton_step_schur_cudss_gpu!(gbl, dyn, L, 0.0; tol=newton_tol)
+            GradPower.check_newton(ok, tvec[k + 1], "GPU Schur dt=0 event re-solve")
         end
     end
 
