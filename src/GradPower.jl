@@ -235,6 +235,11 @@ mutable struct PowerSystemDynamics
     clusters::Any  # Union{Nothing,ClusterTable} — can't use ClusterTable here (defined later in clusters.jl)
     diff_indices::Union{Nothing,Vector{Int}}  # z-positions of differential states after cluster reordering
     is_diff::Union{Nothing,BitVector}  # precomputed mask: is_diff[i] = true iff z[i] is a diff state
+    # z-rows (diff and alg) of offline devices. Their residual is zeroed and
+    # alg rows get a unit Jacobian diagonal, so the states stay frozen at
+    # their value when the device was disconnected.
+    offline_diff_rows::Vector{Int}
+    offline_alg_rows::Vector{Int}
 end
 
 mutable struct PowerSystem
@@ -290,7 +295,7 @@ function SolverLog()
 end
 
 function PowerSystemDynamics()
-    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, nothing, Vector{ContingencyEvent}(), Vector{DisconnectDeviceEvent}(), Vector{TripLineEvent}(), nothing, nothing, nothing, nothing)
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, nothing, Vector{ContingencyEvent}(), Vector{DisconnectDeviceEvent}(), Vector{TripLineEvent}(), nothing, nothing, nothing, nothing, Int[], Int[])
     return psd
 end
 
@@ -730,7 +735,11 @@ whose `online` entry is false.
 """
 function _set_device_offline!(psd::PowerSystemDynamics, device_idx::Int)
     device = psd.devices[device_idx]
+    device.online || return nothing
     device.online = false
+    append!(psd.offline_diff_rows, device.diff_ptr:device.diff_ptr+device.dtype.diff_size-1)
+    alg0 = psd.diff_dim + device.alg_ptr
+    append!(psd.offline_alg_rows, alg0:alg0+device.dtype.alg_size-1)
 
     # Find the device's table-local index and set online[k] = false.
     dtype = device.dtype

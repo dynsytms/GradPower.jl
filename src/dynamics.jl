@@ -316,7 +316,38 @@ end
     zipload_residual_batch!(f, z, p, L.zipload, net_ptr)
     static_gen_residual_batch!(f, z, p, L.static_gen)
 
+    _zero_offline_rows!(f, dyn)
     _apply_events_fun!(f, v, dyn.events, net_ptr)
+    return nothing
+end
+
+# Offline devices are skipped by the kernels, so their rows of `f` would keep
+# stale values. Zero them: diff rows then become `z - zold = 0` under backward
+# Euler and alg rows `0 = 0` (with the unit diagonal set by
+# `_pin_offline_jacobian!`), i.e. the states are frozen.
+@inline function _zero_offline_rows!(f::AbstractArray, dyn::PowerSystemDynamics)
+    @inbounds for i in dyn.offline_diff_rows
+        f[i] = 0.0
+    end
+    @inbounds for i in dyn.offline_alg_rows
+        f[i] = 0.0
+    end
+    return nothing
+end
+
+# Unit diagonal on offline alg rows (their other entries are zero because the
+# kernels skip offline devices). `preallocate_jacobian` puts the diagonal in
+# the pattern for every device with a scheduled disconnect.
+function _pin_offline_jacobian!(jac::SparseMatrixCSC, dyn::PowerSystemDynamics)
+    rv = rowvals(jac)
+    nz = nonzeros(jac)
+    @inbounds for i in dyn.offline_alg_rows
+        r = nzrange(jac, i)
+        j = first(r) + searchsortedfirst(view(rv, r), i) - 1
+        (j <= last(r) && rv[j] == i) ||
+            error("offline alg row $i has no structural diagonal; disconnect events must be added before preallocate_jacobian")
+        nz[j] = 1.0
+    end
     return nothing
 end
 
@@ -706,6 +737,7 @@ function _snapshot_event_state(ps::PowerSystem)
     L = dyn.layout::SimulationLayout
     return (ybus_nzval = copy(nonzeros(ps.network.ybus_real)),
             device_online = [d.online for d in dyn.devices],
+            offline_rows = (copy(dyn.offline_diff_rows), copy(dyn.offline_alg_rows)),
             table_online = map(t -> copy(t.online), values(L.tables)))
 end
 
@@ -719,6 +751,8 @@ function _restore_event_state!(ps::PowerSystem, saved)
         d.online = on
     end
     foreach((t, on) -> copyto!(t.online, on), values(L.tables), saved.table_online)
+    copy!(dyn.offline_diff_rows, saved.offline_rows[1])
+    copy!(dyn.offline_alg_rows, saved.offline_rows[2])
     foreach(deactivate!, dyn.events)
     return nothing
 end
@@ -777,6 +811,18 @@ function preallocate_jacobian(ps::PowerSystem)
         end
     else
         for i in 1:diff_dim
+            push!(coord_list[i], i)
+        end
+    end
+
+    # Alg rows of devices scheduled for disconnection get a structural
+    # diagonal: some have none (e.g. Genrou's v_q/v_d/i_q/i_d), and an
+    # offline device's alg rows are pinned to the identity
+    # (`_pin_offline_jacobian!`). Duplicates are summed away by `sparse`.
+    for ev in ps.dynamic.disconnect_events
+        dev = ps.dynamic.devices[ev.device_idx]
+        a0 = diff_dim + dev.alg_ptr
+        for i in a0:a0+dev.dtype.alg_size-1
             push!(coord_list[i], i)
         end
     end
@@ -906,6 +952,7 @@ end
     zipload_jacobian_batch!(jac, z, p, L.zipload, net_ptr)
     static_gen_jacobian_batch!(jac, z, p, L.static_gen)
 
+    isempty(dyn.offline_alg_rows) || _pin_offline_jacobian!(jac, dyn)
     _apply_events_jac!(jac, dyn.events, net_ptr)
     return nothing
 end

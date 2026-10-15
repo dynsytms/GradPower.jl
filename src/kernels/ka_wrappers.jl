@@ -346,6 +346,7 @@ function _rhs_fun_ka_cpu!(f::AbstractArray, z::AbstractArray, u::AbstractArray,
         kernel(f, inj, inj_meta.bus_map, net_ptr; ndrange=inj_meta.n_total)
     end
 
+    _zero_offline_rows!(f, dyn)
     _apply_events_fun!(f, v, dyn.events, net_ptr)
     return nothing
 end
