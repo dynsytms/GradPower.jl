@@ -550,8 +550,7 @@ function integrate!(
     # NOTE: Assumes initialize_dynamics!(dp, ps) has been called.
 
     # calculate number of steps
-    nsteps = Int(round(tf/dt))
-    tvec = collect(0:dt:tf)
+    nsteps, tvec = _time_grid(tf, dt)
 
     # retrieve events — build sorted schedule of (step, event_index, action)
     # tuples so the time loop can process all events at each step in O(1).

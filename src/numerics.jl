@@ -10,6 +10,19 @@ end
 Base.showerror(io::IO, e::NewtonConvergenceError) =
     print(io, "NewtonConvergenceError at t = ", e.t, " s: ", e.msg)
 
+"""
+    _time_grid(tf, dt) -> (nsteps, tvec)
+
+Fixed-step grid used by all integrators: `nsteps = round(tf/dt)` steps and
+`tvec[k] = (k-1)*dt`, so `length(tvec) == nsteps + 1` always matches the
+trajectory. The final time is `nsteps*dt`, which differs from `tf` when
+`tf` is not a multiple of `dt`.
+"""
+function _time_grid(tf::Real, dt::Real)
+    nsteps = Int(round(tf / dt))
+    return nsteps, collect(range(0.0, step=Float64(dt), length=nsteps + 1))
+end
+
 # Throw `NewtonConvergenceError` unless `success`. `what` describes the solve.
 @inline check_newton(success::Bool, t::Real, what::AbstractString) =
     success || throw(NewtonConvergenceError(Float64(t), what))
