@@ -454,6 +454,7 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
     dx_buf = zeros(Float64, sys_dim)
     f_buf  = zeros(Float64, sys_dim)
 
+    try
     sched_idx = 1
     for k in 1:nsteps
         # Copy current z to zold
@@ -488,10 +489,8 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
             check_newton(ok, tvec[k + 1], "batched dt=0 event re-solve")
         end
     end
-
-    # Deactivate events
-    for event in events
-        deactivate!(event)
+    finally
+        foreach(deactivate!, events)
     end
 
     return tvec, trajs

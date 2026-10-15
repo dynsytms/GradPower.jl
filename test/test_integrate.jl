@@ -168,3 +168,79 @@ end
     @test_throws GradPower.NewtonConvergenceError GradPower.integrate_batched!(
         bl, ps, 0.05; dt=1.0/120.0, newton_tol=1e-300)
 end
+
+# -----------------------------------------------------------------------
+# integrate! leaves the system as it found it (topology / online flags)
+# -----------------------------------------------------------------------
+
+@testset "integrate! restores system state" begin
+    function _rerun_flat(ps)
+        dp = GradPower.DynamicProblem(ps)
+        GradPower.initialize_dynamics!(dp, ps)
+        _, traj = GradPower.integrate!(dp, ps, 0.2; dt=1.0/120.0)
+        return traj
+    end
+
+    ps, _ = _build_and_init("ieee9_v33.raw", "ieee9bus_gov.dyr")
+    ref = _rerun_flat(ps)
+    ybus0 = copy(ps.network.ybus_real)
+    online0 = [d.online for d in ps.dynamic.devices]
+
+    @testset "permanent line trip" begin
+        tev = GradPower.create_trip_line_event(ps, 4, 5, 0.05)
+        GradPower.add_trip_event!(ps, tev)
+        dp = GradPower.DynamicProblem(ps)
+        GradPower.initialize_dynamics!(dp, ps)
+        GradPower.integrate!(dp, ps, 0.2; dt=1.0/120.0)
+        @test ps.network.ybus_real == ybus0
+        empty!(ps.dynamic.trip_events)
+        @test _rerun_flat(ps) == ref
+    end
+
+    @testset "device disconnect" begin
+        # ZIPLoad has no states, so disconnecting it (load shedding) keeps
+        # the Jacobian nonsingular.
+        gidx = findfirst(d -> d.dtype isa GradPower.ZIPLoad, ps.dynamic.devices)
+        GradPower.add_disconnect_event!(ps, GradPower.DisconnectDeviceEvent(gidx, 0.05))
+        dp = GradPower.DynamicProblem(ps)
+        GradPower.initialize_dynamics!(dp, ps)
+        GradPower.integrate!(dp, ps, 0.2; dt=1.0/120.0)
+        @test [d.online for d in ps.dynamic.devices] == online0
+        @test all(all(t.online) for t in values(ps.dynamic.layout.tables))
+        empty!(ps.dynamic.disconnect_events)
+        @test _rerun_flat(ps) == ref
+    end
+
+    @testset "restored after a failed run" begin
+        tev = GradPower.create_trip_line_event(ps, 4, 5, 1.0/120.0)
+        GradPower.add_trip_event!(ps, tev)
+        # Disconnecting a governor leaves its state rows empty, so the
+        # dt=0 re-solve after the step-1 events fails — after the trip and
+        # the disconnect have already mutated the system.
+        gidx = findfirst(d -> d.dtype isa GradPower.IEESGO, ps.dynamic.devices)
+        GradPower.add_disconnect_event!(ps, GradPower.DisconnectDeviceEvent(gidx, 1.0/120.0))
+        GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 0.02, 1.0/120.0, 0.1))
+        dp = GradPower.DynamicProblem(ps)
+        GradPower.initialize_dynamics!(dp, ps)
+        @test_throws Exception GradPower.integrate!(dp, ps, 0.1; dt=1.0/120.0)
+        @test ps.network.ybus_real == ybus0
+        @test [d.online for d in ps.dynamic.devices] == online0
+        @test !any(ev.status for ev in ps.dynamic.events)
+        empty!(ps.dynamic.trip_events)
+        empty!(ps.dynamic.disconnect_events)
+        _clear_events!(ps)
+    end
+
+    @testset "batched: fault deactivated after a failed run" begin
+        GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 0.02, 1.0/120.0, 0.1))
+        dp = GradPower.DynamicProblem(ps)
+        GradPower.initialize_dynamics!(dp, ps)
+        bl = GradPower.BatchedLayout(dp, ps, 1)
+        # Fault active as if mid-run; the first Newton solve then fails.
+        GradPower.activate!(ps.dynamic.events[1])
+        @test_throws GradPower.NewtonConvergenceError GradPower.integrate_batched!(
+            bl, ps, 0.1; dt=1.0/120.0, newton_tol=1e-300)
+        @test !any(ev.status for ev in ps.dynamic.events)
+        _clear_events!(ps)
+    end
+end
