@@ -624,6 +624,12 @@ function integrate!(
     sw = use_schur ? SchurWorkspace(ps; linear_solver) : nothing
     gsw = use_schur_gmres ? GmresSchurWorkspace(ps, zold, dp.pvec, dt; linear_solver) : nothing
 
+    # Events mutate the system (Ybus for trips, online flags for
+    # disconnects). Snapshot both and restore them on exit, including on
+    # error, so repeated integrations of the same `ps` are independent.
+    saved = _snapshot_event_state(ps)
+
+    try
     # time loop
     sched_idx = 1  # pointer into sorted event_schedule
     for k in 1:nsteps
@@ -688,13 +694,34 @@ function integrate!(
         end
 
     end
-    # ensure fault is deactivated at the end
-    for event in events
-        deactivate!(event)
+    finally
+        _restore_event_state!(ps, saved)
     end
 
     dp.zvec = traj[:,end]
     return tvec, traj
+end
+
+function _snapshot_event_state(ps::PowerSystem)
+    dyn = ps.dynamic::PowerSystemDynamics
+    L = dyn.layout::SimulationLayout
+    return (ybus_nzval = copy(nonzeros(ps.network.ybus_real)),
+            device_online = [d.online for d in dyn.devices],
+            table_online = map(t -> copy(t.online), values(L.tables)))
+end
+
+function _restore_event_state!(ps::PowerSystem, saved)
+    dyn = ps.dynamic::PowerSystemDynamics
+    L = dyn.layout::SimulationLayout
+    # Trips/recloses only touch existing entries, so the sparsity pattern is
+    # unchanged and restoring nzval is exact.
+    copyto!(nonzeros(ps.network.ybus_real), saved.ybus_nzval)
+    for (d, on) in zip(dyn.devices, saved.device_online)
+        d.online = on
+    end
+    foreach((t, on) -> copyto!(t.online, on), values(L.tables), saved.table_online)
+    foreach(deactivate!, dyn.events)
+    return nothing
 end
 
 

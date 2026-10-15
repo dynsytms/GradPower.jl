@@ -2338,6 +2338,7 @@ function integrate_gpu_shared!(
         sf_vr_l, sf_vi_l = _precompute_woodbury_gpu!(gbl, ev.bus, ev.rfault)
     end
 
+    try
     sched_idx = 1
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
@@ -2371,9 +2372,8 @@ function integrate_gpu_shared!(
             GradPower.check_newton(ok, tvec[k + 1], "GPU shared dt=0 event re-solve")
         end
     end
-
-    for event in events
-        GradPower.deactivate!(event)
+    finally
+        foreach(GradPower.deactivate!, events)
     end
 
     z_hist_cpu = Array(z_hist)
@@ -2963,6 +2963,7 @@ function integrate_gpu_cudss!(
 
     copyto!(gbl.zold, gbl.z)
 
+    try
     sched_idx = 1
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
@@ -2995,9 +2996,8 @@ function integrate_gpu_cudss!(
             GradPower.check_newton(ok, tvec[k + 1], "GPU cuDSS dt=0 event re-solve")
         end
     end
-
-    for event in events
-        GradPower.deactivate!(event)
+    finally
+        foreach(GradPower.deactivate!, events)
     end
 
     # Single bulk download at the end
@@ -3049,6 +3049,7 @@ function integrate_gpu_schur_cudss!(
 
     copyto!(gbl.zold, gbl.z)
 
+    try
     sched_idx = 1
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
@@ -3081,9 +3082,8 @@ function integrate_gpu_schur_cudss!(
             GradPower.check_newton(ok, tvec[k + 1], "GPU Schur dt=0 event re-solve")
         end
     end
-
-    for event in events
-        GradPower.deactivate!(event)
+    finally
+        foreach(GradPower.deactivate!, events)
     end
 
     # Single bulk download at the end
