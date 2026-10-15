@@ -194,7 +194,8 @@ end
 
 struct SimulationLayout{T<:NamedTuple}
     tables::T
-    # Network admittance entries' positions in J.nzval
+    # net_jac_pos[k]: index into J.nzval of Ybus stored entry k (shifted to
+    # the network block). Filled by preallocate_jacobian.
     net_jac_pos::Vector{Int32}
 end
 

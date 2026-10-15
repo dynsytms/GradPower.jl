@@ -647,8 +647,8 @@ function _fill_y_preconditioner!(P::SparseMatrixCSC, sw::SchurWorkspace,
     if has_trivial
         J_min = preallocate_jacobian(ps)
         fill!(J_min.nzval, 0.0)
-        current_injection_jacobian!(J_min, ybus, net_ptr)
         L = dyn.layout::SimulationLayout
+        current_injection_jacobian!(J_min, ybus, L.net_jac_pos)
         static_gen_jacobian_batch!(J_min, z0, p_vec, L.static_gen)
         isd = dyn.is_diff
         if isd !== nothing

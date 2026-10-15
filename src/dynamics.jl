@@ -896,6 +896,7 @@ function preallocate_jacobian(ps::PowerSystem)
     # `nz[table.jac_pos[k, slot]] = val` without per-iteration row
     # search. Filled in once here per simulation setup.
     net_ptr = diff_dim + alg_dim
+    copy!(L.net_jac_pos, ybus_jac_positions(ps.network.ybus_real, Jsp, net_ptr))
     genrou_jac_positions!(L.genrou, Jsp, diff_dim, net_ptr)
     ieesgo_jac_positions!(L.ieesgo, Jsp, diff_dim)
     tgov1_jac_positions!(L.tgov1, Jsp, diff_dim)
@@ -942,7 +943,7 @@ end
     alg_dim  = dyn.alg_dim
     net_ptr  = diff_dim + alg_dim
 
-    current_injection_jacobian!(jac, ybus, net_ptr)
+    current_injection_jacobian!(jac, ybus, L.net_jac_pos)
     genrou_jacobian_batch!(jac, z, u, p, L.genrou, diff_dim, net_ptr)
     ieesgo_jacobian_batch!(jac, p, L.ieesgo, diff_dim)
     tgov1_jacobian_batch!(jac, p, L.tgov1, diff_dim)
@@ -974,38 +975,46 @@ end
 
 
 """
-    current_injection_jacobian!(ybus::SparseMatrixCSC, jac::SparseMatrixCSC, dev::Int)
+    ybus_jac_positions(ybus, J, net_ptr) -> Vector{Int32}
 
-Copy the data from `ybus` to `jac` with an offset `dev` for row and column indices.
+For each stored entry `k` of `ybus`, the index into `nonzeros(J)` of the
+entry at `(row + net_ptr, col + net_ptr)`. Errors if `J`'s pattern does not
+contain the whole network block.
 """
-function current_injection_jacobian!(jac::SparseMatrixCSC, ybus::SparseMatrixCSC, dev::Int)
-    n_cols = size(ybus, 2)
-    
-    ybus_rows = rowvals(ybus)
-    ybus_vals = nonzeros(ybus)
-    
-    jac_rows = rowvals(jac)
-    jac_vals = nonzeros(jac)
-    
-    # Loop through each column
-    for col_idx in 1:n_cols
-        for i in nzrange(ybus, col_idx)
-            row_idx = ybus_rows[i]
-            val = -ybus_vals[i]
-            
-            # Calculate new row and column indices with offset dev
-            new_row = row_idx + dev
-            new_col = col_idx + dev
-            
-            # Find corresponding position in jac using nzrange
-            for j in nzrange(jac, new_col)
-                if jac_rows[j] == new_row
-                    jac_vals[j] = val
-                    break
-                end
-            end
+function ybus_jac_positions(ybus::SparseMatrixCSC, J::SparseMatrixCSC, net_ptr::Int)
+    yrows = rowvals(ybus)
+    jrows = rowvals(J)
+    pos = Vector{Int32}(undef, nnz(ybus))
+    for col in 1:size(ybus, 2)
+        jr = nzrange(J, col + net_ptr)
+        for k in nzrange(ybus, col)
+            row = yrows[k] + net_ptr
+            j = first(jr) + searchsortedfirst(view(jrows, jr), row) - 1
+            (j <= last(jr) && jrows[j] == row) ||
+                error("Jacobian pattern is missing network entry ($row, $(col + net_ptr))")
+            pos[k] = j
         end
     end
+    return pos
+end
+
+"""
+    current_injection_jacobian!(jac, ybus, pos)
+
+Write `-ybus` into the network block of `jac`, using the positions
+`pos = ybus_jac_positions(ybus, jac, net_ptr)`. The Ybus sparsity pattern
+must be the one `pos` was built for (line trips only change values).
+"""
+function current_injection_jacobian!(jac::SparseMatrixCSC, ybus::SparseMatrixCSC,
+                                     pos::Vector{Int32})
+    yv = nonzeros(ybus)
+    jv = nonzeros(jac)
+    length(pos) == length(yv) ||
+        error("stale Ybus -> Jacobian positions: rebuild with preallocate_jacobian")
+    @inbounds for k in eachindex(pos)
+        jv[pos[k]] = -yv[k]
+    end
+    return nothing
 end
 
 

@@ -167,40 +167,6 @@ function _ybus_mul_batched!(f::Matrix{Float64}, z::Matrix{Float64},
 end
 
 """
-    current_injection_jacobian_batched!(J_nzval, ybus, net_ptr, J_colptr, J_rowval, M)
-
-Copy -ybus entries into J_nzval[m, :] for all scenarios m.
-"""
-function current_injection_jacobian_batched!(J_nzval::Matrix{Float64},
-                                              ybus::SparseMatrixCSC{Float64,Int},
-                                              net_ptr::Int,
-                                              J_colptr::Vector{Int},
-                                              J_rowval::Vector{Int},
-                                              M::Int)
-    ybus_rows = rowvals(ybus)
-    ybus_vals = nonzeros(ybus)
-    n_cols = size(ybus, 2)
-    @inbounds for col_idx in 1:n_cols
-        for i in nzrange(ybus, col_idx)
-            row_idx = ybus_rows[i]
-            val = -ybus_vals[i]
-            new_row = row_idx + net_ptr
-            new_col = col_idx + net_ptr
-            # Find position in J_nzval
-            for j in J_colptr[new_col]:(J_colptr[new_col+1]-1)
-                if J_rowval[j] == new_row
-                    for m in 1:M
-                        J_nzval[m, j] = val
-                    end
-                    break
-                end
-            end
-        end
-    end
-    return nothing
-end
-
-"""
     beuler_batched_2d!(f, z, zold, diff_dim, is_diff, dt, M)
 
 Apply backward Euler scaling: f[m,i] = z[m,i] - zold[m,i] - dt*f[m,i]

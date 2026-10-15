@@ -528,26 +528,9 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
 
     # Ybus→J_nzval index map (phase 14c D2)
     ybus_cpu_mat = bl_cpu.ybus
-    net_ptr_cpu = bl_cpu.diff_dim + dyn.alg_dim
-    J_colptr_cpu = bl_cpu.J_colptr
-    J_rowval_cpu = bl_cpu.J_rowval
-    ybus_rows = rowvals(ybus_cpu_mat)
-    ybus_nnz = length(nonzeros(ybus_cpu_mat))
-    ybus_to_jnz_cpu = zeros(Int32, ybus_nnz)
-    for col_y in 1:size(ybus_cpu_mat, 2)
-        for nz_y in nzrange(ybus_cpu_mat, col_y)
-            row_y = ybus_rows[nz_y]
-            new_row = row_y + net_ptr_cpu
-            new_col = col_y + net_ptr_cpu
-            for j in J_colptr_cpu[new_col]:(J_colptr_cpu[new_col+1]-1)
-                if J_rowval_cpu[j] == new_row
-                    ybus_to_jnz_cpu[nz_y] = Int32(j)
-                    break
-                end
-            end
-        end
-    end
-    ybus_to_jnz_gpu = CuVector(ybus_to_jnz_cpu)
+    # BatchedLayout(...) ran preallocate_jacobian, which filled net_jac_pos
+    # for this exact J pattern.
+    ybus_to_jnz_gpu = CuVector(L.net_jac_pos)
     ybus_nzval_cpu_arr = copy(nonzeros(ybus_cpu_mat))
 
     # Event Jacobian diagonal positions
