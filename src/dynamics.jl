@@ -629,14 +629,13 @@ function integrate!(
     for k in 1:nsteps
         verbose && println("Time-stepping. t = $(tvec[k]) s.")
         if use_schur
-            newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
+            success = newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
         elseif use_schur_gmres
-            newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
+            success = newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
         else
             success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace)
-            limit_method === :none || success ||
-                error("limited Newton solve failed at t=$(tvec[k+1]) with method=$limit_method")
         end
+        check_newton(success, tvec[k+1], "time step (solver=$solver, limit_method=$limit_method)")
         record_limit_events!(limit_workspace, zold, @view(traj[:, k]), dp.pvec,
                              dt, tvec[k+1])
         traj[:,k+1] .= zold
@@ -679,14 +678,13 @@ function integrate!(
         # re-solve at dt=0 after any event state change
         if any_event
             if use_schur
-                newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
+                success = newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
             elseif use_schur_gmres
-                newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
+                success = newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
             else
                 success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace)
-                limit_method === :none || success ||
-                    error("limited dt=0 event solve failed at t=$(tvec[k+1]) with method=$limit_method")
             end
+            check_newton(success, tvec[k+1], "dt=0 event re-solve (solver=$solver, limit_method=$limit_method)")
         end
 
     end

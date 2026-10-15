@@ -460,7 +460,8 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
         copyto!(bl.zold, bl.z)
 
         # Newton step
-        _newton_step_batched!(bl, dyn, L, dt, J_bufs, facts, dx_buf, f_buf; tol=newton_tol, linear_solver)
+        ok = _newton_step_batched!(bl, dyn, L, dt, J_bufs, facts, dx_buf, f_buf; tol=newton_tol, linear_solver)
+        check_newton(ok, tvec[k + 1], "batched time step")
 
         # Store trajectory
         for m in 1:M
@@ -483,7 +484,8 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
         if any_event
             # Re-solve at dt=0 after event
             copyto!(bl.zold, bl.z)
-            _newton_step_batched!(bl, dyn, L, 0.0, J_bufs, facts, dx_buf, f_buf; tol=newton_tol, linear_solver)
+            ok = _newton_step_batched!(bl, dyn, L, 0.0, J_bufs, facts, dx_buf, f_buf; tol=newton_tol, linear_solver)
+            check_newton(ok, tvec[k + 1], "batched dt=0 event re-solve")
         end
     end
 
