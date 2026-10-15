@@ -425,8 +425,7 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
     M = bl.M
     sys_dim = bl.sys_dim
 
-    nsteps = Int(round(tf / dt))
-    tvec = collect(0:dt:tf)
+    nsteps, tvec = _time_grid(tf, dt)
 
     # Build event schedule
     events = dyn.events

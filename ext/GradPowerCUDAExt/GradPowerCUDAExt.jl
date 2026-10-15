@@ -2310,8 +2310,7 @@ function integrate_gpu_shared!(
     M       = gbl.M
     sys_dim = gbl.sys_dim
 
-    nsteps = Int(round(tf / dt))
-    tvec   = collect(0:dt:tf)
+    nsteps, tvec = GradPower._time_grid(tf, dt)
 
     events = dyn.events
     event_schedule = Tuple{Int,Int,Symbol}[]
@@ -2662,8 +2661,7 @@ function integrate_gpu_shared_multi!(
     @assert length(fault_buses) == M
     @assert length(rfaults) == M
 
-    nsteps = Int(round(tf / dt))
-    tvec   = collect(0:dt:tf)
+    nsteps, tvec = GradPower._time_grid(tf, dt)
     step_on  = Int(round(ton / dt))
     step_off = Int(round(toff / dt))
 
@@ -2943,8 +2941,7 @@ function integrate_gpu_cudss!(
     M       = gbl.M
     sys_dim = gbl.sys_dim
 
-    nsteps = Int(round(tf / dt))
-    tvec   = collect(0:dt:tf)
+    nsteps, tvec = GradPower._time_grid(tf, dt)
 
     events = dyn.events
     event_schedule = Tuple{Int,Int,Symbol}[]
@@ -3029,8 +3026,7 @@ function integrate_gpu_schur_cudss!(
     M       = gbl.M
     sys_dim = gbl.sys_dim
 
-    nsteps = Int(round(tf / dt))
-    tvec   = collect(0:dt:tf)
+    nsteps, tvec = GradPower._time_grid(tf, dt)
 
     events = dyn.events
     event_schedule = Tuple{Int,Int,Symbol}[]

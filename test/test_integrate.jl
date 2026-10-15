@@ -244,3 +244,23 @@ end
         _clear_events!(ps)
     end
 end
+
+# -----------------------------------------------------------------------
+# Time grid: tvec and trajectory agree when tf is not a multiple of dt
+# -----------------------------------------------------------------------
+
+@testset "tvec length matches trajectory" begin
+    ps, dp = _build_and_init("2bus.raw", "2bus.dyr")
+    for (tf, dt) in ((0.26, 0.1), (0.24, 0.1), (0.3, 0.1), (1.0, 1.0/120.0))
+        tvec, traj = GradPower.integrate!(dp, ps, tf; dt=dt)
+        @test length(tvec) == size(traj, 2)
+        @test tvec[1] == 0.0
+        @test tvec[end] ≈ (length(tvec) - 1) * dt
+        bl = GradPower.BatchedLayout(dp, ps, 1)
+        tvec_b, trajs = GradPower.integrate_batched!(bl, ps, tf; dt=dt)
+        @test tvec_b == tvec
+        @test length(tvec_b) == size(trajs[1], 2)
+    end
+    # Unchanged values when tf is a multiple of dt.
+    @test GradPower._time_grid(1.0, 1.0/120.0)[2] == collect(0:1.0/120.0:1.0)
+end
