@@ -119,11 +119,17 @@ end
 ds_solver(::KLUBackend, args...; kwargs...) =
     throw(ArgumentError("KLUBackend only supports CPU SparseMatrixCSC matrices; use CUDSSBackend() or SparseDirectSolverBackend() for GPU/batched solves"))
 
-# klu! with a fallback to a fresh klu() when the pivot sequence chosen at
-# analysis time hits a zero pivot (rare; happens after large state jumps).
+# klu! reuses the pivot sequence chosen at analysis time. After a large
+# change in the matrix (a line trip, a device disconnect, a big state jump)
+# that sequence can hit a zero pivot, or, worse, a tiny one that leaves the
+# factors numerically useless without raising. Fall back to a fresh klu() in
+# both cases. `rcond` here is KLU's cheap min/max |diag(U)| estimate.
+const KLU_REFACTOR_MIN_RCOND = 1e-20
+
 function ds_factorize!(fact::KLU.KLUFactorization, A::SparseMatrixCSC)
     try
         klu!(fact, A)
+        KLU.rcond(fact) < KLU_REFACTOR_MIN_RCOND && (fact = klu(A))
     catch e
         e isa LinearAlgebra.SingularException || rethrow()
         fact = klu(A)

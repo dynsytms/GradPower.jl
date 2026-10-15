@@ -1,0 +1,126 @@
+        - # Builder for IEESGOTable.
+        - #
+        - # This file is included from src/GradPower.jl AFTER both layout.jl (for the
+        - # IEESGOTable type) and dynamics.jl (which transitively includes
+        - # governors.jl for the IEESGO struct).
+        - #
+        - # The stub `build_ieesgo_table` defined in src/layout.jl delegates to
+        - # `_build_ieesgo_table_impl` below.
+        - 
+        - """
+        -     _build_ieesgo_table_impl(psd) -> IEESGOTable
+        - 
+        - Scan `psd.devices` once and emit a struct-of-arrays table for every IEESGO
+        - governor. All vectors have length `n` = number of IEESGO devices.
+        - 
+        - `w_idx[k]` is the global z-index of the generator's `w` state that governor
+        - `k` reads. This is resolved from `psd.uvec_idx[ctrl_ptr]`, which
+        - `set_dynamics!` populates BEFORE `build_layout!` is called. If a governor
+        - has no matching generator (orphan in `.dyr`), `psd.uvec_idx[ctrl_ptr] == 0`
+        - and `w_idx[k] = 0`; kernels skip these.
+        - 
+        - `jac_pos` is allocated as an `n × 0` Int32 matrix; `preallocate_jacobian`
+        - widens its second dimension.
+        - """
+        - function _build_ieesgo_table_impl(psd)
+        -     # 1. Count IEESGO governors.
+        -     n = 0
+        0     for device in psd.devices
+        0         if device.dtype isa IEESGO
+        0             n += 1
+        -         end
+        0     end
+        - 
+        -     # 2. Allocate global pointer vectors.
+        0     bus      = Vector{Int32}(undef, n)
+        0     diff_ptr = Vector{Int32}(undef, n)
+        0     alg_ptr  = Vector{Int32}(undef, n)
+        0     ctrl_ptr = Vector{Int32}(undef, n)
+        0     par_ptr  = Vector{Int32}(undef, n)
+        - 
+        -     # 3. Allocate parameter vectors (11 IEESGO parameters).
+        0     T1   = Vector{Float64}(undef, n)
+        0     T2   = Vector{Float64}(undef, n)
+        0     T3   = Vector{Float64}(undef, n)
+        0     T4   = Vector{Float64}(undef, n)
+        0     T5   = Vector{Float64}(undef, n)
+        0     T6   = Vector{Float64}(undef, n)
+        0     K1   = Vector{Float64}(undef, n)
+        0     K2   = Vector{Float64}(undef, n)
+        0     K3   = Vector{Float64}(undef, n)
+        0     pmax = Vector{Float64}(undef, n)
+        0     pmin = Vector{Float64}(undef, n)
+        -     # pref is filled with 0 at build time; refresh_ieesgo_table! mirrors
+        -     # the post-init value from initialize_dynamics!.
+        0     pref = zeros(Float64, n)
+        - 
+        -     # 4. Control-coupling vector: global z-index of generator's w state.
+        0     w_idx = Vector{Int32}(undef, n)
+        - 
+        -     # 5. jac_pos has IEESGO_JAC_NENTRIES entries per IEESGO device. See
+        -     #    src/kernels/ieesgo.jl.
+        0     jac_pos = zeros(Int32, n, IEESGO_JAC_NENTRIES)
+        - 
+        -     # 6. Single pass over devices, fill row k for each IEESGO match.
+        0     uvec = psd.uvec_idx
+        -     k = 0
+        0     for device in psd.devices
+        0         device.dtype isa IEESGO || continue
+        0         k += 1
+        0         gov = device.dtype
+        - 
+        0         bus[k]      = Int32(gov.bus)
+        0         diff_ptr[k] = Int32(device.diff_ptr)
+        0         alg_ptr[k]  = Int32(device.alg_ptr)
+        0         ctrl_ptr[k] = Int32(device.ctrl_ptr)
+        0         par_ptr[k]  = Int32(device.par_ptr)
+        - 
+        0         T1[k]   = gov.T1
+        0         T2[k]   = gov.T2
+        0         T3[k]   = gov.T3
+        0         T4[k]   = gov.T4
+        0         T5[k]   = gov.T5
+        0         T6[k]   = gov.T6
+        0         K1[k]   = gov.K1
+        0         K2[k]   = gov.K2
+        0         K3[k]   = gov.K3
+        0         pmax[k] = gov.pmax
+        0         pmin[k] = gov.pmin
+        - 
+        -         # Control coupling: ctrl_ptr points at u[1] (w). uvec_idx[ctrl_ptr] == 0
+        -         # means the governor was not paired to a generator (orphan in .dyr).
+        0         w_routed = uvec[device.ctrl_ptr]
+        0         w_idx[k] = Int32(w_routed)
+        0     end
+        - 
+        0     return IEESGOTable(n, bus, diff_ptr, alg_ptr, ctrl_ptr, par_ptr,
+        -         T1, T2, T3, T4, T5, T6, K1, K2, K3, pmax, pmin, pref,
+        -         w_idx, jac_pos)
+        - end
+        - 
+        - """
+        -     refresh_ieesgo_table!(psd)
+        - 
+        - Re-snapshot the `pref` column from device structs after
+        - `initialize_dynamics!` has converged. Mirror of `refresh_zipload_table!`
+        - in src/tables/zipload.jl. Called from `initialize_dynamics!` after the
+        - controller-init loop.
+        - """
+        - function refresh_ieesgo_table!(psd)
+        0     table = psd.layout.ieesgo
+        0     table.n == 0 && return nothing
+        -     k = 0
+        0     for device in psd.devices
+        0         device.dtype isa IEESGO || continue
+        0         k += 1
+        0         table.pref[k] = device.dtype.pref
+        0     end
+        0     @assert k == table.n
+        0     return nothing
+        - end
+        - 
+        - # Register with the device registry.
+        - register_device!(:ieesgo;
+        -     table_type = IEESGOTable,
+        -     builder    = _build_ieesgo_table_impl,
+        -     class      = :governor)

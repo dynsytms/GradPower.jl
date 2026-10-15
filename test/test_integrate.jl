@@ -214,12 +214,12 @@ end
     @testset "restored after a failed run" begin
         tev = GradPower.create_trip_line_event(ps, 4, 5, 1.0/120.0)
         GradPower.add_trip_event!(ps, tev)
-        # Disconnecting a governor leaves its state rows empty, so the
-        # dt=0 re-solve after the step-1 events fails — after the trip and
-        # the disconnect have already mutated the system.
+        # A zero-resistance fault (infinite admittance) makes the dt=0
+        # re-solve fail after the trip and the disconnect have mutated the
+        # system.
         gidx = findfirst(d -> d.dtype isa GradPower.IEESGO, ps.dynamic.devices)
         GradPower.add_disconnect_event!(ps, GradPower.DisconnectDeviceEvent(gidx, 1.0/120.0))
-        GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 0.02, 1.0/120.0, 0.1))
+        GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 0.0, 1.0/120.0, 0.1))
         dp = GradPower.DynamicProblem(ps)
         GradPower.initialize_dynamics!(dp, ps)
         @test_throws Exception GradPower.integrate!(dp, ps, 0.1; dt=1.0/120.0)
@@ -263,4 +263,37 @@ end
     end
     # Unchanged values when tf is a multiple of dt.
     @test GradPower._time_grid(1.0, 1.0/120.0)[2] == collect(0:1.0/120.0:1.0)
+end
+
+# -----------------------------------------------------------------------
+# Disconnecting a device with states freezes them (nonsingular Jacobian)
+# -----------------------------------------------------------------------
+
+@testset "Disconnect device with states" begin
+    dt = 1.0/120.0
+    t_off = 0.05
+    k_off = Int(round(t_off/dt)) + 1  # traj column right after the disconnect
+    ps, _ = _build_and_init("ieee9_v33.raw", "ieee9bus_gov.dyr")
+    dd = ps.dynamic.diff_dim
+    for T in (GradPower.IEESGO, GradPower.Genrou)
+        @testset "$T" begin
+            idx = findfirst(d -> d.dtype isa T, ps.dynamic.devices)
+            dev = ps.dynamic.devices[idx]
+            rows = vcat(dev.diff_ptr:dev.diff_ptr+dev.dtype.diff_size-1,
+                        dd+dev.alg_ptr:dd+dev.alg_ptr+dev.dtype.alg_size-1)
+            GradPower.add_disconnect_event!(ps, GradPower.DisconnectDeviceEvent(idx, t_off))
+            GradPower.add_event!(ps, GradPower.ContingencyEvent(4, 0.02, 0.1, 0.15))
+            for solver in (:monolithic, :schur, :schur_gmres)
+                dp = GradPower.DynamicProblem(ps)
+                GradPower.initialize_dynamics!(dp, ps)
+                _, traj = GradPower.integrate!(dp, ps, 0.3; dt=dt, solver=solver)
+                # Frozen at their value when the device went offline,
+                # through the later fault.
+                @test all(traj[rows, end] .== traj[rows, k_off])
+                @test all(isfinite, traj)
+            end
+            empty!(ps.dynamic.disconnect_events)
+            _clear_events!(ps)
+        end
+    end
 end
