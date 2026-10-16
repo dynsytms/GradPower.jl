@@ -480,9 +480,9 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     p    = CuMatrix(bl_cpu.p)
     u    = CuMatrix(bl_cpu.u)
     f    = CUDA.zeros(Float64, M, bl_cpu.sys_dim)
-    zold = CuMatrix(bl_cpu.zold)
+    zold = CuMatrix(bl_cpu.z)
     inj  = CUDA.zeros(Float64, M, 2 * bl_cpu.inj_meta.n_total)
-    J_nzval = CuMatrix(bl_cpu.J_nzval)
+    J_nzval = CUDA.zeros(Float64, M, length(bl_cpu.J_rowval))
     J_colptr = CuVector(bl_cpu.J_colptr)
     J_rowval = CuVector(bl_cpu.J_rowval)
 
