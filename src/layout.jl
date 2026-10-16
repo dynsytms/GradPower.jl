@@ -197,24 +197,28 @@ struct SimulationLayout{T<:NamedTuple}
     # net_jac_pos[k]: index into J.nzval of Ybus stored entry k (shifted to
     # the network block). Filled by preallocate_jacobian.
     net_jac_pos::Vector{Int32}
+    # Backward-Euler scaling: J.nzval indices of every entry in a
+    # differential row (scaled by -dt) and of the diagonal of each
+    # differential row (+1). Filled by preallocate_jacobian.
+    diff_row_pos::Vector{Int32}
+    diff_diag_pos::Vector{Int32}
 end
 
-# Forward unknown property accesses to `tables`. `:tables` and `:net_jac_pos`
-# resolve to the underlying fields; anything else (e.g. `:genrou`) goes
+# Forward unknown property accesses to `tables`. The struct's own fields
+# resolve directly; anything else (e.g. `:genrou`) goes
 # through `getproperty(tables, name)` which is itself fully specialized
 # because `tables` is a concrete NamedTuple.
 @inline function Base.getproperty(L::SimulationLayout, name::Symbol)
-    if name === :tables
-        return getfield(L, :tables)
-    elseif name === :net_jac_pos
-        return getfield(L, :net_jac_pos)
+    if name === :tables || name === :net_jac_pos || name === :diff_row_pos ||
+       name === :diff_diag_pos
+        return getfield(L, name)
     else
         return getproperty(getfield(L, :tables), name)
     end
 end
 
 Base.propertynames(L::SimulationLayout) =
-    (:tables, :net_jac_pos, propertynames(getfield(L, :tables))...)
+    (fieldnames(SimulationLayout)..., propertynames(getfield(L, :tables))...)
 
 # ------------------------------------------------------------------------
 # build_layout! — driver
@@ -245,8 +249,8 @@ function build_layout!(psd)
         push!(pairs, name => entry.builder(psd))
     end
     tables = NamedTuple(pairs)
-    net_jac_pos = Int32[]  # populated by preallocate_jacobian
-    return SimulationLayout(tables, net_jac_pos)
+    # Jacobian position caches are populated by preallocate_jacobian.
+    return SimulationLayout(tables, Int32[], Int32[], Int32[])
 end
 
 # ------------------------------------------------------------------------

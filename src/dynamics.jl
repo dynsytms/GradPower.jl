@@ -463,12 +463,7 @@ function beuler_jac!(
     rhs_jac!(J, z, u, p, sys)
 
     # scale for backward Euler
-    isd = sys.dynamic.is_diff
-    if isd !== nothing
-        _jacobian_beuler_indices!(J, isd, dt)
-    else
-        _jacobian_beuler!(J, diff_dim, dt)
-    end
+    _jacobian_beuler_positions!(J, sys.dynamic.layout::SimulationLayout, dt)
     limits === nothing || apply_limit_jacobian!(J, z, zold, p, dt, limits)
 end
 
@@ -488,12 +483,7 @@ end
 )
     fill!(J.nzval, 0.0)
     _rhs_jac_batched!(J, z, u, p, dyn, ybus, L)
-    isd = dyn.is_diff
-    if isd !== nothing
-        _jacobian_beuler_indices!(J, isd, dt)
-    else
-        _jacobian_beuler!(J, diff_dim, dt)
-    end
+    _jacobian_beuler_positions!(J, L, dt)
     if limits !== nothing
         zold === nothing && error("limited backward-Euler Jacobian requires zold")
         apply_limit_jacobian!(J, z, zold, p, dt, limits)
@@ -501,65 +491,46 @@ end
     return nothing
 end
 
-function _jacobian_beuler!(J::SparseMatrixCSC, NDIFFEQ::Int, h::Float64)
-    # Iterating through each column
-    for col = 1:size(J, 2)
-        # Flag to check if diagonal element for the column is found
-        diagonal_found = false
+"""
+    beuler_jac_positions(J, is_diff) -> (row_pos, diag_pos)
 
-        # Iterating through the non-zero elements in each column
-        for row_index in nzrange(J, col)
-            row = rowvals(J)[row_index]
-
-            # Update values if the row index is less or equal to NDIFFEQ
-            if row <= NDIFFEQ
-                J.nzval[row_index] *= -h
-
-                # Update diagonal element
-                if row == col
-                    J.nzval[row_index] += 1.0
-                    diagonal_found = true
-                end
-           end
-        end
-
-        # If diagonal element was not found and col is within NDIFFEQ, then add it
-        if !diagonal_found && col <= NDIFFEQ
-            @warn "Diagonal element not found for column $col. Adding it."
-            J[col, col] += 1.0
+Indices into `nonzeros(J)` of every entry in a differential row
+(`is_diff[row]`) and of each differential row's diagonal. Errors if a
+differential row has no structural diagonal.
+"""
+function beuler_jac_positions(J::SparseMatrixCSC, is_diff::BitVector)
+    rv = rowvals(J)
+    row_pos = Int32[]
+    diag_pos = Int32[]
+    n_da = length(is_diff)
+    for col in 1:size(J, 2), k in nzrange(J, col)
+        row = rv[k]
+        if row <= n_da && is_diff[row]
+            push!(row_pos, k)
+            row == col && push!(diag_pos, k)
         end
     end
+    length(diag_pos) == count(is_diff) ||
+        error("Jacobian pattern is missing a differential-row diagonal")
+    return row_pos, diag_pos
 end
 
 """
-    _jacobian_beuler_indices!(J, is_diff, h)
+    _jacobian_beuler_positions!(J, L, h)
 
-Backward-Euler Jacobian scaling for cluster-contiguous layout.
-`is_diff` is a precomputed BitVector: `is_diff[i] == true` iff z[i] is
-a differential state. For each such position i, the row is scaled:
-J[i,:] *= -h and J[i,i] += 1.0.
-
-Allocation-free: `is_diff` is precomputed once during `reorder_state!`.
+Backward-Euler Jacobian of `dz/dt = f`: on differential rows,
+`J[i,:] *= -h` and `J[i,i] += 1`, through the positions cached by
+`preallocate_jacobian`.
 """
-function _jacobian_beuler_indices!(J::SparseMatrixCSC, is_diff::BitVector, h::Float64)
-    n_da = length(is_diff)
-    @inbounds for col = 1:size(J, 2)
-        diagonal_found = false
-        for row_index in nzrange(J, col)
-            row = rowvals(J)[row_index]
-            if row <= n_da && is_diff[row]
-                J.nzval[row_index] *= -h
-                if row == col
-                    J.nzval[row_index] += 1.0
-                    diagonal_found = true
-                end
-            end
-        end
-        if !diagonal_found && col <= n_da && is_diff[col]
-            @warn "Diagonal element not found for diff column $col. Adding it."
-            J[col, col] += 1.0
-        end
+function _jacobian_beuler_positions!(J::SparseMatrixCSC, L::SimulationLayout, h::Float64)
+    nz = nonzeros(J)
+    @inbounds for k in L.diff_row_pos
+        nz[k] *= -h
     end
+    @inbounds for k in L.diff_diag_pos
+        nz[k] += 1.0
+    end
+    return nothing
 end
 
 function integrate!(
@@ -897,6 +868,9 @@ function preallocate_jacobian(ps::PowerSystem)
     # search. Filled in once here per simulation setup.
     net_ptr = diff_dim + alg_dim
     copy!(L.net_jac_pos, ybus_jac_positions(ps.network.ybus_real, Jsp, net_ptr))
+    row_pos, diag_pos = beuler_jac_positions(Jsp, ps.dynamic.is_diff)
+    copy!(L.diff_row_pos, row_pos)
+    copy!(L.diff_diag_pos, diag_pos)
     genrou_jac_positions!(L.genrou, Jsp, diff_dim, net_ptr)
     ieesgo_jac_positions!(L.ieesgo, Jsp, diff_dim)
     tgov1_jac_positions!(L.tgov1, Jsp, diff_dim)

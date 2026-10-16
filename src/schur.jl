@@ -650,12 +650,7 @@ function _fill_y_preconditioner!(P::SparseMatrixCSC, sw::SchurWorkspace,
         L = dyn.layout::SimulationLayout
         current_injection_jacobian!(J_min, ybus, L.net_jac_pos)
         static_gen_jacobian_batch!(J_min, z0, p_vec, L.static_gen)
-        isd = dyn.is_diff
-        if isd !== nothing
-            _jacobian_beuler_indices!(J_min, isd, dt)
-        else
-            _jacobian_beuler!(J_min, diff_dim, dt)
-        end
+        _jacobian_beuler_positions!(J_min, L, dt)
 
         J_rows_min = rowvals(J_min)
         J_vals_min = nonzeros(J_min)

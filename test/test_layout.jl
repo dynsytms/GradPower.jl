@@ -282,3 +282,27 @@ end
     GradPower.current_injection_jacobian!(J, Y, L.net_jac_pos)
     @test Matrix(J[net_ptr+1:end, net_ptr+1:end]) == -Matrix(Y)
 end
+
+@testset "layout: backward-Euler Jacobian positions" begin
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    GradPower.build_network!(ps)
+    J = GradPower.preallocate_jacobian(ps)
+    L = ps.dynamic.layout
+    isd = ps.dynamic.is_diff
+    rv = rowvals(J)
+    @test length(L.diff_diag_pos) == count(isd) == ps.dynamic.diff_dim
+    @test all(isd[rv[k]] for k in L.diff_row_pos)
+    @test length(L.diff_row_pos) == count(k -> rv[k] <= length(isd) && isd[rv[k]], 1:nnz(J))
+    # Dense reference: rows i with is_diff[i] become e_i' - h*J[i,:].
+    nonzeros(J) .= rand(nnz(J))
+    A = Matrix(J)
+    h = 0.01
+    GradPower._jacobian_beuler_positions!(J, L, h)
+    for i in 1:length(isd)
+        isd[i] || continue
+        A[i, :] .*= -h
+        A[i, i] += 1.0
+    end
+    @test Matrix(J) ≈ A atol=0 rtol=1e-15
+end
