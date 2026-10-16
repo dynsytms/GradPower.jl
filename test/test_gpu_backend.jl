@@ -206,6 +206,52 @@ end
     end
 end
 
+# Devices on one bus write the same Jacobian / Schur entries; the GPU kernels
+# must accumulate them without a data race (ACTIVSg cases have hundreds of
+# such buses). testdata/ieee9_multiload adds loads 5/'2', 5/'3', 8/'2' to
+# ieee9_v33 and splits generator 2 into two machines (two clusters on bus 2).
+@testset "GPU with several devices per bus matches CPU ($(nameof(typeof(ls))))" for ls in GPU_SOLVERS
+    HAS_CUDA || return
+    ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
+
+    ps = from_psse(joinpath(@__DIR__, "testdata", "ieee9_multiload.raw"),
+                   joinpath(@__DIR__, "testdata", "ieee9_multiload_gov.dyr"))
+    GradPower.build_network!(ps); GradPower.runpf!(ps)
+    dp = GradPower.DynamicProblem(ps)
+    GradPower.initialize_dynamics!(dp, ps)
+    zt = ps.dynamic.layout.zipload
+    @test length(unique(zt.bus)) < zt.n
+    cl_bus = [c.bus for c in ps.dynamic.clusters.clusters]
+    @test length(unique(cl_bus)) < length(cl_bus)
+
+    # Jacobian at a perturbed state
+    dyn = ps.dynamic; L = dyn.layout; dt = 1/120
+    zp = dp.zvec .+ 1e-3 .* sin.(1:length(dp.zvec))
+    J = GradPower.preallocate_jacobian(ps)
+    GradPower.beuler_jac!(J, zp, dp.zvec, dp.uvec, dp.pvec, ps, dyn.diff_dim, dt)
+    M = 3
+    gbl = ext.GpuBatchedLayout(dp, ps, M; linear_solver = ls)
+    copyto!(gbl.zold, CuMatrix(repeat(permutedims(dp.zvec), M)))
+    copyto!(gbl.z, CuMatrix(repeat(permutedims(zp), M)))
+    ext._beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
+    Jg = Array(gbl.J_nzval)
+    for m in 1:M
+        @test maximum(abs.(Jg[m, :] .- nonzeros(J))) < 1e-12
+    end
+
+    # Trajectories of both exact GPU paths vs CPU full Newton
+    z0 = copy(dp.zvec)
+    add_event!(ps, GradPower.ContingencyEvent(4, 0.02, 0.1, 0.2))
+    _, tr_cpu = integrate!(dp, ps, 0.5; jacobian_reuse = false, predictor = false)
+    for f in (ext.integrate_gpu_cudss!, ext.integrate_gpu_schur_cudss!)
+        dp.zvec .= z0
+        g1 = ext.GpuBatchedLayout(dp, ps, 1; linear_solver = ls)
+        _, tr = f(g1, ps, 0.5)
+        @test maximum(abs.(tr[1] .- tr_cpu)) < 1e-6
+    end
+    empty!(ps.dynamic.events)
+end
+
 @testset "KA CUDA kernel dispatch — single-scenario residual" begin
     HAS_CUDA || return
 
