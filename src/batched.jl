@@ -288,32 +288,14 @@ end
 function _beuler_jac_all_scenarios!(bl::BatchedLayout, dyn::PowerSystemDynamics,
                                      L::SimulationLayout, dt::Float64)
     _rhs_jac_all_scenarios!(bl, dyn, L)
-    # Apply backward Euler scaling per scenario
-    is_diff = dyn.is_diff
-    n_da = is_diff !== nothing ? length(is_diff) : bl.diff_dim
-    @inbounds for m in 1:bl.M
-        nzv = @view bl.J_nzval[m, :]
-        # Scale diff rows: nz *= -dt, diagonal += 1
-        for col in 1:bl.sys_dim
-            for nz_idx in bl.J_colptr[col]:(bl.J_colptr[col+1]-1)
-                row = bl.J_rowval[nz_idx]
-                if is_diff !== nothing
-                    if row <= n_da && is_diff[row]
-                        nzv[nz_idx] *= -dt
-                        if row == col
-                            nzv[nz_idx] += 1.0
-                        end
-                    end
-                else
-                    if row <= bl.diff_dim
-                        nzv[nz_idx] *= -dt
-                        if row == col
-                            nzv[nz_idx] += 1.0
-                        end
-                    end
-                end
-            end
-        end
+    # Apply backward Euler scaling per scenario (positions cached by
+    # preallocate_jacobian; the pattern is shared by all scenarios).
+    nzv = bl.J_nzval
+    @inbounds for k in L.diff_row_pos, m in 1:bl.M
+        nzv[m, k] *= -dt
+    end
+    @inbounds for k in L.diff_diag_pos, m in 1:bl.M
+        nzv[m, k] += 1.0
     end
     return nothing
 end
