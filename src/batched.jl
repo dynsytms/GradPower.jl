@@ -1,13 +1,13 @@
-# 2D scenario-indexed memory layout and batched CPU integration.
+# Multi-scenario integration.
 #
-# BatchedLayout holds 2D arrays with scenario as the FIRST index for
-# GPU coalescing in column-major Julia:
-#   z[scenario, state], p[scenario, par], u[scenario, ctrl],
-#   f[scenario, sys_dim], inj[scenario, 2*n_injectors],
-#   J_nzval[scenario, nz_idx].
+# BatchedLayout holds the per-scenario inputs with scenario as the FIRST
+# index (z[scenario, state], p[scenario, par], u[scenario, ctrl]) — the
+# layout the GPU extension copies to the device for coalesced access — plus
+# the Jacobian sparsity pattern shared by all scenarios.
 #
-# The Jacobian sparsity pattern (rowval, colptr) is shared across all
-# scenarios — only nzval varies per scenario.
+# The CPU integrator (integrate_batched!) copies each scenario into its own
+# contiguous workspace and runs the single-scenario Newton solve on it,
+# threaded over scenarios.
 
 # -----------------------------------------------------------------------
 # BatchedLayout struct
@@ -19,152 +19,49 @@ struct BatchedLayout
     diff_dim::Int
     alg_dim::Int
     nbus::Int
-    z::Matrix{Float64}        # [M, sys_dim]
-    p::Matrix{Float64}        # [M, par_dim]
+    z::Matrix{Float64}        # [M, sys_dim] initial / final state per scenario
+    p::Matrix{Float64}        # [M, par_dim] parameters per scenario
     u::Matrix{Float64}        # [M, ctrl_dim]
-    f::Matrix{Float64}        # [M, sys_dim]
-    zold::Matrix{Float64}     # [M, sys_dim]
-    inj::Matrix{Float64}      # [M, 2*n_injectors]
-    J_nzval::Matrix{Float64}  # [M, nnz(J)]
-    # Shared sparsity pattern (from single-scenario Jacobian)
+    # Shared Jacobian sparsity pattern (CSC)
     J_colptr::Vector{Int}
     J_rowval::Vector{Int}
     # Shared admittance matrix
     ybus::SparseMatrixCSC{Float64,Int}
-    # Injection metadata
+    # Injection metadata and uvec_idx routing (used by the GPU layout)
     inj_meta::InjectionMeta
-    # uvec_idx routing (shared across scenarios)
     uvec_idx::Vector{Int64}
 end
 
 """
     BatchedLayout(dp, ps, M)
 
-Construct a BatchedLayout by replicating the single-scenario initial
-condition across M scenarios. The Jacobian sparsity pattern is computed
-once and shared.
+`M` scenarios, each starting from `dp.zvec` with parameters `dp.pvec`. Edit
+`bl.z[m, :]` / `bl.p[m, :]` to make the scenarios differ, then call
+[`integrate_batched!`](@ref) (CPU) or build a `GpuBatchedLayout` from it.
 """
 function BatchedLayout(dp::DynamicProblem, ps::PowerSystem, M::Int)
     dyn  = ps.dynamic::PowerSystemDynamics
     nbus = length(ps.buses)
-    diff_dim = dyn.diff_dim
-    alg_dim  = dyn.alg_dim
-    sys_dim  = diff_dim + alg_dim + 2*nbus
-    par_dim  = dyn.par_dim
-    ctrl_dim = dyn.ctrl_dim
+    sys_dim  = dyn.diff_dim + dyn.alg_dim + 2*nbus
     L = dyn.layout::SimulationLayout
 
     @assert length(dp.zvec) == sys_dim
-    @assert length(dp.pvec) == par_dim
-    @assert length(dp.uvec) == ctrl_dim
+    @assert length(dp.pvec) == dyn.par_dim
+    @assert length(dp.uvec) == dyn.ctrl_dim
 
-    # Replicate z, p, u across M scenarios
-    z    = zeros(Float64, M, sys_dim)
-    p    = zeros(Float64, M, par_dim)
-    u    = zeros(Float64, M, ctrl_dim)
-    f    = zeros(Float64, M, sys_dim)
-    zold = zeros(Float64, M, sys_dim)
+    z = repeat(permutedims(dp.zvec), M)
+    p = repeat(permutedims(dp.pvec), M)
+    u = repeat(permutedims(dp.uvec), M)
 
-    for m in 1:M
-        z[m, :] .= dp.zvec
-        p[m, :] .= dp.pvec
-        u[m, :] .= dp.uvec
-    end
-
-    # Injection buffer
-    inj_meta = InjectionMeta(L)
-    inj = zeros(Float64, M, 2 * inj_meta.n_total)
-
-    # Jacobian sparsity from single-scenario
     J_template = preallocate_jacobian(ps)
-    nnz_J = length(J_template.nzval)
-    J_nzval = zeros(Float64, M, nnz_J)
-    J_colptr = copy(J_template.colptr)
-    J_rowval = copy(J_template.rowval)
-
-    ybus = ps.network.ybus_real
-    uvec_idx = dyn.uvec_idx
-
-    return BatchedLayout(M, sys_dim, diff_dim, alg_dim, nbus,
-                         z, p, u, f, zold, inj,
-                         J_nzval, J_colptr, J_rowval,
-                         ybus, inj_meta, uvec_idx)
+    return BatchedLayout(M, sys_dim, dyn.diff_dim, dyn.alg_dim, nbus, z, p, u,
+                         copy(J_template.colptr), copy(J_template.rowval),
+                         ps.network.ybus_real, InjectionMeta(L), dyn.uvec_idx)
 end
 
 # -----------------------------------------------------------------------
-# Batched helper functions
+# Batched helper (GPU extension fallback path)
 # -----------------------------------------------------------------------
-
-"""
-    _apply_uvec_routing_batched!(u, z, uvec_idx, M)
-
-u[m, j] = z[m, uvec_idx[j]] for all scenarios m and all wired j.
-"""
-@inline function _apply_uvec_routing_batched!(u::Matrix{Float64}, z::Matrix{Float64},
-                                               uvec_idx::Vector{Int64}, M::Int)
-    @inbounds for j in eachindex(uvec_idx)
-        src = uvec_idx[j]
-        if src != 0
-            for m in 1:M
-                u[m, j] = z[m, src]
-            end
-        end
-    end
-    return nothing
-end
-
-"""
-    _apply_events_fun_batched!(f, z, events, net_ptr, M)
-
-Apply fault injection into f[m, :] for all scenarios m.
-"""
-@inline function _apply_events_fun_batched!(f::Matrix{Float64}, z::Matrix{Float64},
-                                             events::Vector{ContingencyEvent},
-                                             net_ptr::Int, M::Int)
-    @inbounds for event in events
-        if event.status
-            bus = event.bus
-            yfault = 1.0 / event.rfault
-            vr_col = net_ptr + 2*(bus-1) + 1
-            vi_col = vr_col + 1
-            for m in 1:M
-                f[m, vr_col] -= yfault * z[m, vr_col]
-                f[m, vi_col] -= yfault * z[m, vi_col]
-            end
-        end
-    end
-    return nothing
-end
-
-"""
-    _ybus_mul_batched!(f, z, ybus, net_ptr, M)
-
-For each scenario m, compute f[m, net_ptr+1:end] = -ybus * z[m, net_ptr+1:end].
-"""
-function _ybus_mul_batched!(f::Matrix{Float64}, z::Matrix{Float64},
-                             ybus::SparseMatrixCSC{Float64,Int},
-                             net_ptr::Int, M::Int)
-    nv = size(ybus, 1)
-    rows = rowvals(ybus)
-    vals = nonzeros(ybus)
-    # Zero network portion of f
-    @inbounds for m in 1:M
-        for i in 1:nv
-            f[m, net_ptr + i] = 0.0
-        end
-    end
-    # Sparse matrix-vector multiply per scenario
-    @inbounds for col in 1:nv
-        for nz_idx in nzrange(ybus, col)
-            row = rows[nz_idx]
-            val = -vals[nz_idx]
-            for m in 1:M
-                f[m, net_ptr + row] += val * z[m, net_ptr + col]
-            end
-        end
-    end
-    return nothing
-end
 
 """
     beuler_batched_2d!(f, z, zold, diff_dim, is_diff, dt, M)
@@ -194,188 +91,104 @@ for differential state positions.
 end
 
 # -----------------------------------------------------------------------
-# Per-scenario residual and Jacobian using KA CPU path (single scenario
-# from 2D layout, mapped to 1D views for the existing kernels)
-# -----------------------------------------------------------------------
-
-"""
-    _residual_scenario!(f_row, z_row, u_row, p_row, dyn, ybus, L)
-
-Evaluate the residual for a single scenario using the plain-loop path.
-"""
-function _residual_scenario!(f_row::AbstractVector, z_row::AbstractVector,
-                              u_row::AbstractVector, p_row::AbstractVector,
-                              dyn::PowerSystemDynamics,
-                              ybus::SparseMatrixCSC, L::SimulationLayout)
-    _rhs_fun_batched!(f_row, z_row, u_row, p_row, dyn, ybus, L)
-    return nothing
-end
-
-"""
-    _jacobian_scenario!(J_nzval_row, z_row, u_row, p_row, dyn, ybus, L, J_colptr, J_rowval, sys_dim)
-
-Evaluate the Jacobian nzval for a single scenario.
-"""
-function _jacobian_scenario!(J_nzval_row::AbstractVector, z_row::AbstractVector,
-                              u_row::AbstractVector, p_row::AbstractVector,
-                              dyn::PowerSystemDynamics,
-                              ybus::SparseMatrixCSC, L::SimulationLayout,
-                              J_colptr::Vector{Int}, J_rowval::Vector{Int},
-                              sys_dim::Int, J_buf::SparseMatrixCSC)
-    # Reuse pre-built J_buf: copy nzval pointer content, fill, evaluate,
-    # then copy results back to J_nzval_row.
-    fill!(J_buf.nzval, 0.0)
-    _rhs_jac_batched!(J_buf, z_row, u_row, p_row, dyn, ybus, L)
-    copyto!(J_nzval_row, J_buf.nzval)
-    return nothing
-end
-
-# -----------------------------------------------------------------------
-# Batched residual evaluation (all M scenarios)
-# -----------------------------------------------------------------------
-
-function _rhs_fun_all_scenarios!(bl::BatchedLayout, dyn::PowerSystemDynamics,
-                                  L::SimulationLayout)
-    M = bl.M
-    for m in 1:M
-        f_row   = @view bl.f[m, :]
-        z_row   = @view bl.z[m, :]
-        u_row   = @view bl.u[m, :]
-        p_row   = @view bl.p[m, :]
-        _residual_scenario!(f_row, z_row, u_row, p_row,
-                            dyn, bl.ybus, L)
-    end
-    return nothing
-end
-
-# -----------------------------------------------------------------------
-# Batched Jacobian evaluation (all M scenarios)
-# -----------------------------------------------------------------------
-
-function _rhs_jac_all_scenarios!(bl::BatchedLayout, dyn::PowerSystemDynamics,
-                                  L::SimulationLayout)
-    M = bl.M
-    # Build one reusable SparseMatrixCSC with its own nzval buffer
-    nnz_J = size(bl.J_nzval, 2)
-    J_buf = SparseMatrixCSC(bl.sys_dim, bl.sys_dim,
-                            bl.J_colptr, bl.J_rowval,
-                            zeros(Float64, nnz_J))
-    for m in 1:M
-        nzv     = @view bl.J_nzval[m, :]
-        z_row   = @view bl.z[m, :]
-        u_row   = @view bl.u[m, :]
-        p_row   = @view bl.p[m, :]
-        _jacobian_scenario!(nzv, z_row, u_row, p_row,
-                            dyn, bl.ybus, L,
-                            bl.J_colptr, bl.J_rowval, bl.sys_dim, J_buf)
-    end
-    return nothing
-end
-
-# -----------------------------------------------------------------------
-# Backward Euler for all scenarios
-# -----------------------------------------------------------------------
-
-function _beuler_all_scenarios!(bl::BatchedLayout, dyn::PowerSystemDynamics,
-                                 L::SimulationLayout, dt::Float64)
-    _rhs_fun_all_scenarios!(bl, dyn, L)
-    beuler_batched_2d!(bl.f, bl.z, bl.zold,
-                       dyn.is_diff, dyn.diff_indices,
-                       bl.diff_dim, dt, bl.M)
-    return nothing
-end
-
-function _beuler_jac_all_scenarios!(bl::BatchedLayout, dyn::PowerSystemDynamics,
-                                     L::SimulationLayout, dt::Float64)
-    _rhs_jac_all_scenarios!(bl, dyn, L)
-    # Apply backward Euler scaling per scenario (positions cached by
-    # preallocate_jacobian; the pattern is shared by all scenarios).
-    nzv = bl.J_nzval
-    @inbounds for k in L.diff_row_pos, m in 1:bl.M
-        nzv[m, k] *= -dt
-    end
-    @inbounds for k in L.diff_diag_pos, m in 1:bl.M
-        nzv[m, k] += 1.0
-    end
-    return nothing
-end
-
-# -----------------------------------------------------------------------
-# Batched Newton step (per-scenario sequential KLU)
-# -----------------------------------------------------------------------
-
-function _newton_step_batched!(bl::BatchedLayout, dyn::PowerSystemDynamics,
-                                L::SimulationLayout, dt::Float64,
-                                J_bufs::Vector{SparseMatrixCSC{Float64,Int}},
-                                facts::Vector{Any},
-                                dx_buf::Vector{Float64},
-                                f_buf::Vector{Float64};
-                                itermax::Int=30, tol::Float64=1e-10,
-                                linear_solver::AbstractDirectSolverBackend=KLUBackend())
-    M = bl.M
-    sys_dim = bl.sys_dim
-
-    for iter in 1:itermax
-        # Evaluate residual
-        _beuler_all_scenarios!(bl, dyn, L, dt)
-
-        # Check convergence (max over all scenarios)
-        max_norm = 0.0
-        @inbounds for m in 1:M
-            for i in 1:sys_dim
-                a = abs(bl.f[m, i])
-                if a > max_norm
-                    max_norm = a
-                end
-            end
-        end
-        max_norm < tol && return true
-
-        # Evaluate Jacobian
-        _beuler_jac_all_scenarios!(bl, dyn, L, dt)
-
-        # Solve per scenario — fresh factorization on iter 1, refactorization after
-        for m in 1:M
-            J_m = J_bufs[m]
-            copyto!(J_m.nzval, @view bl.J_nzval[m, :])
-            copyto!(f_buf, @view bl.f[m, :])
-            if iter == 1
-                facts[m] = ds_solver(linear_solver, J_m)
-            else
-                facts[m] = ds_factorize!(facts[m], J_m)
-            end
-            ldiv!(dx_buf, facts[m], f_buf)
-            @inbounds for k in 1:sys_dim
-                bl.z[m, k] -= dx_buf[k]
-            end
-        end
-    end
-    return false
-end
-
-# -----------------------------------------------------------------------
 # integrate_batched!
+#
+# Each scenario has its own contiguous workspace and runs the same Newton
+# solve as `integrate!` (factorization reuse + predictor). Scenarios are
+# independent, so the per-step work is spread over threads; events are
+# applied between steps, on the main task, to the shared system.
 # -----------------------------------------------------------------------
 
-"""
-    integrate_batched!(bl, ps, tf; dt=1/120, linear_solver=KLUBackend())
+mutable struct _ScenarioWorkspace
+    z::Vector{Float64}
+    zold::Vector{Float64}
+    zprev::Vector{Float64}
+    zpred::Vector{Float64}
+    u::Vector{Float64}
+    p::Vector{Float64}
+    f::Vector{Float64}
+    dx::Vector{Float64}
+    zwork::Vector{Float64}
+    J::SparseMatrixCSC{Float64,Int}
+    fact::Base.RefValue{Any}
+    reuse::JacobianReuse
+    have_prev::Bool
+end
 
-Batched CPU integration using the KA CPU backend with the 2D layout.
-`linear_solver` selects the sparse direct solver (`KLUBackend()` or
-`SparseDirectSolverBackend()`).
-Returns (tvec, traj) where traj[m] is the trajectory for scenario m.
+function _ScenarioWorkspace(bl::BatchedLayout, m::Int, J_template::SparseMatrixCSC,
+                            dyn::PowerSystemDynamics, ybus::SparseMatrixCSC,
+                            L::SimulationLayout, dt::Float64,
+                            linear_solver::AbstractDirectSolverBackend,
+                            jacobian_reuse::Bool)
+    n = bl.sys_dim
+    z = Vector{Float64}(bl.z[m, :])
+    u = Vector{Float64}(bl.u[m, :])
+    p = Vector{Float64}(bl.p[m, :])
+    J = copy(J_template)
+    beuler_jac_batched!(J, z, u, p, dyn, ybus, L, dyn.diff_dim, dt)
+    fact = Ref{Any}(ds_solver(linear_solver, J; tuned=true))
+    return _ScenarioWorkspace(z, copy(z), zeros(n), zeros(n), u, p, zeros(n), zeros(n),
+                              zeros(n), J, fact, JacobianReuse(jacobian_reuse), false)
+end
+
+# One implicit solve for scenario workspace `w`: a time step (dt > 0, with the
+# predictor) or the algebraic re-solve after an event (dt == 0).
+function _solve_scenario!(w::_ScenarioWorkspace, ps::PowerSystem, dt::Float64,
+                          tol::Float64, predictor::Bool)
+    copyto!(w.zold, w.z)
+    guess = w.z
+    if dt > 0.0 && predictor && w.have_prev
+        guess = w.zpred
+        @inbounds for i in eachindex(guess)
+            guess[i] = 2.0*w.zold[i] - w.zprev[i]
+        end
+    end
+    dt > 0.0 && copyto!(w.zprev, w.zold)
+    ok = newton_step!(guess, w.f, w.J, w.fact, w.zold, w.u, w.p, ps, dt;
+                      tol=tol, dx=w.dx, zwork=w.zwork, reuse=w.reuse)
+    guess === w.z || copyto!(w.z, guess)
+    w.have_prev = dt > 0.0
+    return ok
+end
+
+# Run `f(m)` for m = 1:M, threaded when more than one thread is available.
+function _foreach_scenario(f, M::Int, threaded::Bool)
+    if threaded && Threads.nthreads() > 1 && M > 1
+        Threads.@threads :dynamic for m in 1:M
+            f(m)
+        end
+    else
+        for m in 1:M
+            f(m)
+        end
+    end
+    return nothing
+end
+
+"""
+    integrate_batched!(bl, ps, tf; dt=1/120, newton_tol=1e-10, linear_solver=KLUBackend(),
+                       jacobian_reuse=true, predictor=true, threaded=true) -> (tvec, trajs)
+
+Integrate the `bl.M` scenarios of `bl` (each with its own initial state
+`bl.z[m, :]` and parameters `bl.p[m, :]`) through the events registered on
+`ps`. Every scenario runs the same Newton solve as [`integrate!`](@ref) with
+`solver=:monolithic`, so a scenario's trajectory equals `integrate!` with the
+same `z`, `p` and options. Scenarios run on `Threads.nthreads()` threads when
+`threaded=true`. Returns `trajs[m]`, the `(sys_dim, nsteps+1)` trajectory of
+scenario `m`; the final states are written back to `bl.z`.
 """
 function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                              dt::Float64=1.0/120.0, newton_tol::Float64=1e-10,
-                             linear_solver::AbstractDirectSolverBackend=KLUBackend())
+                             linear_solver::AbstractDirectSolverBackend=KLUBackend(),
+                             jacobian_reuse::Bool=true, predictor::Bool=true,
+                             threaded::Bool=true)
     dyn = ps.dynamic::PowerSystemDynamics
     L = dyn.layout::SimulationLayout
+    ybus = (ps.network::Network).ybus_real
     M = bl.M
-    sys_dim = bl.sys_dim
 
     nsteps, tvec = _time_grid(tf, dt)
 
-    # Build event schedule
     events = dyn.events
     event_schedule = Tuple{Int,Int,Symbol}[]
     for (ei, ev) in enumerate(events)
@@ -384,39 +197,31 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
     end
     sort!(event_schedule, by = x -> x[1])
 
-    # Allocate per-scenario trajectories
-    trajs = [zeros(Float64, sys_dim, nsteps + 1) for _ in 1:M]
-    for m in 1:M
-        trajs[m][:, 1] .= @view bl.z[m, :]
+    # preallocate_jacobian writes the layout's position caches, so it runs
+    # once here (not per thread); each scenario gets a copy of the pattern.
+    J_template = preallocate_jacobian(ps)
+    ws = Vector{_ScenarioWorkspace}(undef, M)
+    _foreach_scenario(M, threaded) do m
+        ws[m] = _ScenarioWorkspace(bl, m, J_template, dyn, ybus, L, dt,
+                                   linear_solver, jacobian_reuse)
     end
 
-    # Copy initial z to zold
-    copyto!(bl.zold, bl.z)
-
-    # Pre-allocate per-scenario J buffers and scratch vectors
-    nnz_J = size(bl.J_nzval, 2)
-    J_bufs = [SparseMatrixCSC(sys_dim, sys_dim, copy(bl.J_colptr), copy(bl.J_rowval),
-                               zeros(Float64, nnz_J)) for _ in 1:M]
-    facts = Vector{Any}(undef, M)
-    dx_buf = zeros(Float64, sys_dim)
-    f_buf  = zeros(Float64, sys_dim)
+    trajs = [zeros(Float64, bl.sys_dim, nsteps + 1) for _ in 1:M]
+    for m in 1:M
+        trajs[m][:, 1] .= ws[m].z
+    end
+    ok = trues(M)
 
     try
     sched_idx = 1
     for k in 1:nsteps
-        # Copy current z to zold
-        copyto!(bl.zold, bl.z)
-
-        # Newton step
-        ok = _newton_step_batched!(bl, dyn, L, dt, J_bufs, facts, dx_buf, f_buf; tol=newton_tol, linear_solver)
-        check_newton(ok, tvec[k + 1], "batched time step")
-
-        # Store trajectory
-        for m in 1:M
-            trajs[m][:, k + 1] .= @view bl.z[m, :]
+        _foreach_scenario(M, threaded) do m
+            ok[m] = _solve_scenario!(ws[m], ps, dt, newton_tol, predictor)
+            trajs[m][:, k + 1] .= ws[m].z
         end
+        all(ok) || check_newton(false, tvec[k + 1],
+            "batched time step (scenarios $(findall(!, ok)))")
 
-        # Process events
         any_event = false
         while sched_idx <= length(event_schedule) && event_schedule[sched_idx][1] == k
             _, idx, action = event_schedule[sched_idx]
@@ -430,15 +235,20 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
         end
 
         if any_event
-            # Re-solve at dt=0 after event
-            copyto!(bl.zold, bl.z)
-            ok = _newton_step_batched!(bl, dyn, L, 0.0, J_bufs, facts, dx_buf, f_buf; tol=newton_tol, linear_solver)
-            check_newton(ok, tvec[k + 1], "batched dt=0 event re-solve")
+            _foreach_scenario(M, threaded) do m
+                ws[m].reuse.dt = NaN   # the equations changed
+                ok[m] = _solve_scenario!(ws[m], ps, 0.0, newton_tol, predictor)
+            end
+            all(ok) || check_newton(false, tvec[k + 1],
+                "batched dt=0 event re-solve (scenarios $(findall(!, ok)))")
         end
     end
     finally
         foreach(deactivate!, events)
     end
 
+    for m in 1:M
+        bl.z[m, :] .= ws[m].z
+    end
     return tvec, trajs
 end

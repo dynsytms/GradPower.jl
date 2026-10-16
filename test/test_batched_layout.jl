@@ -19,7 +19,7 @@
     @test size(bl.z) == (M, bl.sys_dim)
     @test size(bl.p) == (M, length(dp.pvec))
     @test size(bl.u) == (M, length(dp.uvec))
-    @test size(bl.f) == (M, bl.sys_dim)
+    @test bl.J_colptr[end] - 1 == length(bl.J_rowval)   # shared CSC pattern
 
     # Each scenario matches single-scenario IC
     for m in 1:M
@@ -29,7 +29,7 @@
     end
 end
 
-@testset "uvec_idx routing" begin
+@testset "integrate_batched! matches integrate! per scenario" begin
     ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
                    joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
     GradPower.build_network!(ps)
@@ -39,77 +39,40 @@ end
     end
     dp = GradPower.DynamicProblem(ps)
     GradPower.initialize_dynamics!(dp, ps)
+    z0 = copy(dp.zvec); p0 = copy(dp.pvec)
+    GradPower.add_event!(ps, GradPower.ContingencyEvent(4, 0.02, 0.1, 0.15))
 
+    # Scenarios differ in load: scale every ZIPLoad's constant-power P.
     M = 3
-    bl = GradPower.BatchedLayout(dp, ps, M)
-
-    # Apply uvec routing (same as done inside residual evaluation)
-    GradPower._apply_uvec_routing_batched!(bl.u, bl.z, bl.uvec_idx, M)
-
-    for j in eachindex(bl.uvec_idx)
-        if bl.uvec_idx[j] != 0
-            for m in 1:M
-                @test bl.u[m, j] == bl.z[m, bl.uvec_idx[j]]
-            end
+    zl = ps.dynamic.layout.zipload
+    function make_bl()
+        dp.zvec .= z0; dp.pvec .= p0   # integrate! overwrites dp.zvec
+        bl = GradPower.BatchedLayout(dp, ps, M)
+        for m in 1:M, k in 1:zl.n
+            bl.p[m, Int(zl.par_ptr[k])] *= 1 + 0.05*(m - 1)
         end
+        return bl
     end
-end
-
-@testset "Batched residual matches single-scenario" begin
-    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
-                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
-    GradPower.build_network!(ps)
-    GradPower.runpf!(ps)
-    for d in ps.dynamic.devices
-        if d.dtype isa GradPower.ZIPLoad; d.dtype.α = 0.5; end
+    for (reuse, pred) in ((true, true), (false, false))
+        bl = make_bl()
+        tvec, trajs = GradPower.integrate_batched!(bl, ps, 0.5;
+            jacobian_reuse=reuse, predictor=pred)
+        for m in 1:M
+            dp.zvec .= z0; dp.pvec .= bl.p[m, :]
+            tv, ref = GradPower.integrate!(dp, ps, 0.5;
+                jacobian_reuse=reuse, predictor=pred)
+            @test tvec == tv
+            # Same algorithm, same inputs: identical trajectories.
+            @test trajs[m] == ref
+            @test bl.z[m, :] == ref[:, end]
+        end
+        @test trajs[1] != trajs[M]   # the scenarios really differ
+        # Threaded and serial runs agree bit for bit.
+        _, trajs_ser = GradPower.integrate_batched!(make_bl(), ps, 0.5;
+            jacobian_reuse=reuse, predictor=pred, threaded=false)
+        @test all(trajs[m] == trajs_ser[m] for m in 1:M)
     end
-    dp = GradPower.DynamicProblem(ps)
-    GradPower.initialize_dynamics!(dp, ps)
-
-    dyn = ps.dynamic::GradPower.PowerSystemDynamics
-    L = dyn.layout::GradPower.SimulationLayout
-
-    # Single-scenario reference
-    f_ref = zeros(length(dp.zvec))
-    GradPower._rhs_fun_batched!(f_ref, dp.zvec, dp.uvec, dp.pvec,
-                                 dyn, ps.network.ybus_real, L)
-
-    # Batched
-    M = 3
-    bl = GradPower.BatchedLayout(dp, ps, M)
-    GradPower._rhs_fun_all_scenarios!(bl, dyn, L)
-
-    for m in 1:M
-        @test maximum(abs, bl.f[m, :] - f_ref) <= 1e-14
-    end
-end
-
-@testset "Batched Jacobian nzval matches single-scenario" begin
-    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
-                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
-    GradPower.build_network!(ps)
-    GradPower.runpf!(ps)
-    for d in ps.dynamic.devices
-        if d.dtype isa GradPower.ZIPLoad; d.dtype.α = 0.5; end
-    end
-    dp = GradPower.DynamicProblem(ps)
-    GradPower.initialize_dynamics!(dp, ps)
-
-    dyn = ps.dynamic::GradPower.PowerSystemDynamics
-    L = dyn.layout::GradPower.SimulationLayout
-
-    # Single-scenario reference
-    J_ref = GradPower.preallocate_jacobian(ps)
-    fill!(J_ref.nzval, 0.0)
-    GradPower._rhs_jac_batched!(J_ref, dp.zvec, dp.uvec, dp.pvec,
-                                 dyn, ps.network.ybus_real, L)
-
-    # Batched
-    M = 3
-    bl = GradPower.BatchedLayout(dp, ps, M)
-    GradPower._rhs_jac_all_scenarios!(bl, dyn, L)
-
-    for m in 1:M
-        @test maximum(abs, bl.J_nzval[m, :] - J_ref.nzval) <= 1e-14
-    end
+    dp.zvec .= z0; dp.pvec .= p0
+    for ev in ps.dynamic.events; GradPower.deactivate!(ev); end
+    empty!(ps.dynamic.events)
 end

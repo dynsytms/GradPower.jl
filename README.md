@@ -107,9 +107,15 @@ add_event!(sys, ContingencyEvent(1, 0.02, 0.1, 0.2))
 
 M = 8
 bl = GradPower.BatchedLayout(dp, sys, M)
+# Make scenarios differ by editing bl.z[m, :] (initial state) or
+# bl.p[m, :] (parameters), e.g. scale a load's constant-power P per scenario.
 tvec, trajs = GradPower.integrate_batched!(bl, sys, 1.0; dt=1.0/120.0)
 # trajs[m] is the trajectory matrix for scenario m
 ```
+
+Scenarios run in parallel on `Threads.nthreads()` threads (start Julia with
+`-t auto`); each one gets exactly the trajectory `integrate!` gives for the
+same initial state and parameters.
 
 ### Choosing the sparse direct solver
 
