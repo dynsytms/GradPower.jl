@@ -85,6 +85,7 @@ struct GpuZIPLoadArrays
     par_ptr::CuVector{Int32}
     online::CuVector{Bool}
     jac_pos::CuMatrix{Int32}
+    jac_layers::Vector{CuVector{Int32}}  # see `_bus_layers`
 end
 
 struct GpuStaticGenArrays
@@ -96,6 +97,23 @@ struct GpuStaticGenArrays
     regulating::CuVector{Bool}
     online::CuVector{Bool}
     jac_pos::CuMatrix{Int32}
+    jac_layers::Vector{CuVector{Int32}}  # see `_bus_layers`
+end
+
+# Devices on the same bus add into the same Jacobian entries (the bus's
+# 2x2 network diagonal block). A GPU kernel with one thread per device would
+# race on those `+=`, so the Jacobian kernels run once per layer: layer r holds
+# the r-th device of every bus (in table order), hence distinct buses within
+# a launch, and each bus's entries accumulate in table order as on the CPU.
+function _bus_layers(bus::AbstractVector)
+    layers = Vector{Vector{Int32}}()
+    seen = Dict{Int,Int}()
+    for k in eachindex(bus)
+        r = seen[Int(bus[k])] = get(seen, Int(bus[k]), 0) + 1
+        r > length(layers) && push!(layers, Int32[])
+        push!(layers[r], Int32(k))
+    end
+    return [CuVector(l) for l in layers]
 end
 
 function GpuGenrouArrays(gt::GradPower.GenrouTable)
@@ -114,19 +132,20 @@ end
 function GpuZIPLoadArrays(zt::GradPower.ZIPLoadTable)
     zt.n == 0 && return GpuZIPLoadArrays(0, CuVector{Int32}(undef,0),
         CuVector{Int32}(undef,0), CuVector{Bool}(undef,0),
-        CuMatrix{Int32}(undef,0,0))
+        CuMatrix{Int32}(undef,0,0), CuVector{Int32}[])
     GpuZIPLoadArrays(zt.n, CuVector(zt.bus), CuVector(zt.par_ptr),
-                      CuVector(zt.online), CuMatrix(zt.jac_pos))
+                      CuVector(zt.online), CuMatrix(zt.jac_pos), _bus_layers(zt.bus))
 end
 
 function GpuStaticGenArrays(st::GradPower.StaticGenTable)
     st.n == 0 && return GpuStaticGenArrays(0, CuVector{Int32}(undef,0),
         CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
         CuVector{Int8}(undef,0), CuVector{Bool}(undef,0), CuVector{Bool}(undef,0),
-        CuMatrix{Int32}(undef,0,0))
+        CuMatrix{Int32}(undef,0,0), CuVector{Int32}[])
     GpuStaticGenArrays(st.n, CuVector(st.vr_idx), CuVector(st.alg_ptr),
                         CuVector(st.par_ptr), CuVector(st.bus_type),
-                        CuVector(st.regulating), CuVector(st.online), CuMatrix(st.jac_pos))
+                        CuVector(st.regulating), CuVector(st.online), CuMatrix(st.jac_pos),
+                        _bus_layers(st.vr_idx))
 end
 
 # -----------------------------------------------------------------------
@@ -257,16 +276,20 @@ struct GpuBatchedLU
     C_packed::CuArray{Float64, 3}    # 2 x w_k x (n_clusters * M)
     ipiv::CuMatrix{Int32}            # w_k x (n_clusters * M)
     info::CuVector{Int32}            # n_clusters * M
+    # Clusters on the same bus subtract into the same S / reduced-RHS
+    # entries; kernels that accumulate there run once per layer
+    # (see `_bus_layers`). `bus` = network bus of each cluster in the group.
+    layers::Vector{CuVector{Int32}}
 end
 
-function GpuBatchedLU(w_k::Int, n_clusters::Int, M::Int)
+function GpuBatchedLU(w_k::Int, n_clusters::Int, M::Int; bus = 1:n_clusters)
     batch = n_clusters * M
     A = CUDA.zeros(Float64, w_k, w_k, batch)
     B = CUDA.zeros(Float64, w_k, 2, batch)
     C = CUDA.zeros(Float64, 2, w_k, batch)
     ipiv = CUDA.zeros(Int32, w_k, batch)
     info = CUDA.zeros(Int32, batch)
-    return GpuBatchedLU(w_k, n_clusters, M, A, B, C, ipiv, info)
+    return GpuBatchedLU(w_k, n_clusters, M, A, B, C, ipiv, info, _bus_layers(bus))
 end
 
 """
@@ -748,7 +771,7 @@ function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSyste
     for (g, group) in enumerate(nt_groups)
         nc = length(group)
         wk = ct.clusters[group[1]].w_size
-        glu = GpuBatchedLU(wk, nc, M)
+        glu = GpuBatchedLU(wk, nc, M; bus = [ct.clusters[ci].bus for ci in group])
         push!(schur_batched_lus_v, glu)
         push!(schur_group_D_offsets_v, schur_group_D_offsets_v[end] + 4 * nc)
         bus_red = Tuple{Int,Int}[]
@@ -1232,8 +1255,9 @@ end
 
 @kernel function zipload_jacobian_batched_ka!(nzval, z, p, online,
         bus_arr, par_ptr, jac_pos,
-        @Const(net_ptr))
-    k, m = @index(Global, NTuple)
+        @Const(net_ptr), layer)
+    i, m = @index(Global, NTuple)
+    @inbounds k = Int(layer[i])
     @inbounds if online[k]
         GradPower._zipload_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
             bus_arr, par_ptr, jac_pos, k, net_ptr)
@@ -1241,8 +1265,9 @@ end
 end
 
 @kernel function static_gen_jacobian_batched_ka!(nzval, z, p, online,
-        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr, jac_pos)
-    k, m = @index(Global, NTuple)
+        vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr, jac_pos, layer)
+    i, m = @index(Global, NTuple)
+    @inbounds k = Int(layer[i])
     @inbounds if online[k]
         GradPower._static_gen_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
             vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr, jac_pos, k)
@@ -1481,15 +1506,18 @@ function _jacobian_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
                pss.par_ptr, pss.diff_ptr, pss.alg_ptr, pss.w_idx, pss.jac_pos,
                diff_dim; ndrange=(pss.n, M))
     end
-    if zt.n > 0
-        kernel = zipload_jacobian_batched_ka!(backend)
+    # Bus-sharing devices: one launch per layer (see `_bus_layers`).
+    # Launches on the same stream execute in order, so layers do not race.
+    kernel = zipload_jacobian_batched_ka!(backend)
+    for layer in zt.jac_layers
         kernel(gbl.J_nzval, gbl.z, gbl.p, zt.online,
-               zt.bus, zt.par_ptr, zt.jac_pos, net_ptr; ndrange=(zt.n, M))
+               zt.bus, zt.par_ptr, zt.jac_pos, net_ptr, layer; ndrange=(length(layer), M))
     end
-    if st.n > 0
-        kernel = static_gen_jacobian_batched_ka!(backend)
+    kernel = static_gen_jacobian_batched_ka!(backend)
+    for layer in st.jac_layers
         kernel(gbl.J_nzval, gbl.z, gbl.p, st.online,
-               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.regulating, st.jac_pos; ndrange=(st.n, M))
+               st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.regulating, st.jac_pos,
+               layer; ndrange=(length(layer), M))
     end
 
     # 4. Event Jacobian: add -1/rfault to bus diagonals for active faults
@@ -1776,8 +1804,9 @@ end
 # One thread per cluster per scenario.
 @kernel function schur_subtract_Dk_ka!(S_nzval, B_packed, C_packed, D_S_nzpos,
                                         @Const(wk), @Const(M), @Const(d_offset),
-                                        @Const(ki_offset), @Const(m))
-    ki_local = @index(Global)  # 1-based cluster within group
+                                        @Const(ki_offset), @Const(m), layer)
+    i = @index(Global)
+    @inbounds ki_local = Int(layer[i])  # 1-based cluster within group
     @inbounds begin
         b = (ki_local - 1 + ki_offset) * M + m  # batch index (ki_offset=0 if starting from 1)
         d_base = d_offset + (ki_local - 1) * 4  # 0-based offset into D_S_nzpos
@@ -1901,11 +1930,13 @@ function _schur_assemble_S_gpu!(gbl::GpuBatchedLayout, m::Int)
         nc = glu.n_clusters
         wk = glu.w_k
         kernel_d = schur_subtract_Dk_ka!(backend)
-        kernel_d(gbl.S_nzval_gpu, glu.B_packed, glu.C_packed,
-                 gbl.cluster_D_S_nzpos,
-                 Int32(wk), Int32(gbl.M), Int32(d_offset),
-                 Int32(0), Int32(m);
-                 ndrange=nc)
+        for layer in glu.layers
+            kernel_d(gbl.S_nzval_gpu, glu.B_packed, glu.C_packed,
+                     gbl.cluster_D_S_nzpos,
+                     Int32(wk), Int32(gbl.M), Int32(d_offset),
+                     Int32(0), Int32(m), layer;
+                     ndrange=length(layer))
+        end
         d_offset += 4 * nc
     end
     KernelAbstractions.synchronize(backend)
@@ -1938,11 +1969,13 @@ function _schur_assemble_S_batched_gpu!(gbl::GpuBatchedLayout)
         nc = glu.n_clusters
         wk = glu.w_k
         kernel_d = schur_subtract_Dk_batched_ka!(backend)
-        kernel_d(gbl.S_nzval_batched, glu.B_packed, glu.C_packed,
-                 gbl.cluster_D_S_nzpos,
-                 Int32(wk), Int32(M), Int32(d_offset),
-                 Int32(0);
-                 ndrange=(nc, M))
+        for layer in glu.layers
+            kernel_d(gbl.S_nzval_batched, glu.B_packed, glu.C_packed,
+                     gbl.cluster_D_S_nzpos,
+                     Int32(wk), Int32(M), Int32(d_offset),
+                     Int32(0), layer;
+                     ndrange=(length(layer), M))
+        end
         d_offset += 4 * nc
     end
     KernelAbstractions.synchronize(backend)
@@ -2035,8 +2068,9 @@ end
 # 2D ndrange: (nc, M)
 @kernel function schur_subtract_Dk_batched_ka!(S_nzval_b, B_packed, C_packed, D_S_nzpos,
                                                 @Const(wk), @Const(M), @Const(d_offset),
-                                                @Const(ki_offset))
-    ki_local, m = @index(Global, NTuple)
+                                                @Const(ki_offset), layer)
+    i, m = @index(Global, NTuple)
+    @inbounds ki_local = Int(layer[i])
     @inbounds begin
         b = (ki_local - 1 + ki_offset) * M + m
         d_base = d_offset + (ki_local - 1) * 4
@@ -2064,8 +2098,9 @@ end
 # 2D ndrange: (nc, M)
 @kernel function schur_accum_Ck_fwk_batched_ka!(rhs_b, C_packed, fwk_solved,
                                                   vr_l_arr, vi_l_arr,
-                                                  @Const(wk), @Const(M))
-    ki, m = @index(Global, NTuple)
+                                                  @Const(wk), @Const(M), layer)
+    i, m = @index(Global, NTuple)
+    @inbounds ki = Int(layer[i])
     @inbounds begin
         batch = (ki - 1) * M + m
         vr_l = vr_l_arr[ki]
@@ -2250,9 +2285,11 @@ function _newton_step_shared_gpu!(
         for (g, glu) in enumerate(gbl.schur_batched_lus)
             nc = glu.n_clusters; wk = glu.w_k
             kernel_acc = schur_accum_Ck_fwk_batched_ka!(backend)
-            kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
-                       gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
-                       wk, M; ndrange=(nc, M))
+            for layer in glu.layers
+                kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
+                           gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
+                           wk, M, layer; ndrange=(length(layer), M))
+            end
         end
         KernelAbstractions.synchronize(backend)
 
@@ -2611,9 +2648,11 @@ function _newton_step_shared_multi_gpu!(
         for (g, glu) in enumerate(gbl.schur_batched_lus)
             nc = glu.n_clusters; wk = glu.w_k
             kernel_acc = schur_accum_Ck_fwk_batched_ka!(backend)
-            kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
-                       gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
-                       wk, M; ndrange=(nc, M))
+            for layer in glu.layers
+                kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
+                           gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
+                           wk, M, layer; ndrange=(length(layer), M))
+            end
         end
         KernelAbstractions.synchronize(backend)
 
@@ -2817,9 +2856,11 @@ function _newton_step_schur_cudss_gpu!(
         for (g, glu) in enumerate(gbl.schur_batched_lus)
             nc = glu.n_clusters; wk = glu.w_k
             kernel_acc = schur_accum_Ck_fwk_batched_ka!(backend)
-            kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
-                       gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
-                       wk, M; ndrange=(nc, M))
+            for layer in glu.layers
+                kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
+                           gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
+                           wk, M, layer; ndrange=(length(layer), M))
+            end
         end
         KernelAbstractions.synchronize(backend)
 
