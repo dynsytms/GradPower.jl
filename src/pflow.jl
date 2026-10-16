@@ -494,16 +494,15 @@ function _bus_to_gen(psys::PowerSystem)
 end
 
 """
-    runpf!(psys; verbose=false, fdiff=false, enforce_q_limits=false,
+    runpf!(psys; verbose=false, fdiff=false, enforce_q_limits=true,
            max_q_outer=50, q_tol=1e-6)
 
 Same as `runpf` but writes the solution back into the `PowerSystem` in place.
 
 ## Generator reactive limits (`enforce_q_limits`)
 
-With `enforce_q_limits=false` (the default, and the behaviour before this
-option existed) a PV bus holds its scheduled voltage no matter how much
-reactive power that takes. The solution is then a fixed point of the power-flow
+With `enforce_q_limits=false` (the default before v0.3) a PV bus holds its
+scheduled voltage no matter how much reactive power that takes. The solution is then a fixed point of the power-flow
 equations but not necessarily a physical operating point: machines can be left
 absorbing or producing far outside their nameplate `QT`/`QB`.
 
@@ -512,9 +511,13 @@ outside their limits (one bus absorbs 279 MVAr against an 8 MVAr floor). The
 excess reactive flow drags 20 machines past their pull-out angle -- internal
 angle `delta - angle(V)` above 90 degrees, where `dP/ddelta < 0` -- which puts
 18 non-oscillatory unstable eigenvalues into the linearised dynamics. Any
-transient run from that point diverges regardless of the disturbance.
+transient run from that point diverges regardless of the disturbance. On
+ACTIVSg70k, 470 machines start above 150 degrees and one at 179.5 degrees slips
+a pole after a fault; its unstable mode amplifies solver round-off by about 2x
+per step, so trajectories depend on the Newton tolerance.
 
-With `enforce_q_limits=true` we run the standard outer loop:
+With `enforce_q_limits=true` (the default, and uqgrid's default)
+ we run the standard outer loop:
 
  1. Solve the power flow with the current PV/PQ assignment.
  2. For each bus that started as PV, compare the reactive dispatch against the
@@ -561,7 +564,7 @@ solution. (It used to write the diverged voltages back as if solved.)
 Returns the number of buses left pinned at a limit.
 """
 function runpf!(psys::PowerSystem; verbose=false, fdiff=false,
-                enforce_q_limits::Bool=false, max_q_outer::Int=50,
+                enforce_q_limits::Bool=true, max_q_outer::Int=50,
                 q_tol::Float64=1e-6)
     bus_to_gen = _bus_to_gen(psys)
 

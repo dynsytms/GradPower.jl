@@ -56,6 +56,11 @@ class ReferenceCase:
     zipload_alpha: float = 0.5
     include_power_flow_data: bool = False
     dyr_limit_initialization_policy: str = "adjust"
+    # Power-flow generator Q limits (uqgrid's default). Without them, small
+    # machines on PV buses can be dispatched far beyond their rating and
+    # initialize near a 180 deg load angle (ACTIVSg70k), which makes the
+    # post-fault trajectory hypersensitive to solver round-off.
+    enforce_q_limits: bool = True
 
 
 def _sha256(path: Path) -> str:
@@ -101,6 +106,10 @@ def build_state_manifest(psys: Any, history_rows: int) -> list[dict[str, Any]]:
 
     for device in psys.devices:
         names = list(getattr(device, "state_list", ()))
+        if not names and type(device).__name__ == "StaticGenerator":
+            # uqgrid's StaticGenerator has no state_list; its alg states are
+            # q (PV) or p, q (slack), matching GradPower's naming.
+            names = ["q"] if int(device.alg_dim) == 1 else ["p", "q"][: int(device.alg_dim)]
         expected = int(device.dif_dim) + int(device.alg_dim)
         if expected and len(names) != expected:
             raise ValueError(
@@ -263,7 +272,11 @@ def _metadata(
         },
         "limits": {
             "dynamic": "disabled",
-            "reactive_power": "disabled during initial power flow",
+            "reactive_power": (
+                "enforced during initial power flow"
+                if case.enforce_q_limits
+                else "disabled during initial power flow"
+            ),
         },
         "event_sampling": {
             "grid": "nominal dt grid with exact ton/toff inserted",
@@ -332,7 +345,7 @@ def _integration_config(case: ReferenceCase) -> IntegrationConfig:
         comp_sens=False,
         petsc=False,
         enforce_dynamic_limits=False,
-        enforce_q_limits=False,
+        enforce_q_limits=case.enforce_q_limits,
     )
 
 
@@ -356,7 +369,7 @@ def generate_reference(case: ReferenceCase) -> None:
 
     legacy_data: dict[str, Any] = {}
     if case.include_power_flow_data:
-        pf = runpf(psys, verbose=False, enforce_q_limits=False)
+        pf = runpf(psys, verbose=False, enforce_q_limits=case.enforce_q_limits)
         legacy_z0, _ = initialize_system(psys, pf)
         legacy_data = _power_flow_data(psys, pf, legacy_z0)
         psys.add_busfault(fault_bus_internal, case.rfault)
