@@ -2137,6 +2137,10 @@ end
     @inbounds sol[i, m] -= W[i, 1] * s_buf[1, m] + W[i, 2] * s_buf[2, m]
 end
 
+# Refactor the shared P when a Newton iteration contracts the residual by
+# less than this factor (same test as the CPU `JacobianReuse`).
+const SHARED_P_RHO = 0.1
+
 function _factor_shared_P_gpu!(
     gbl::GpuBatchedLayout,
     dyn::GradPower.PowerSystemDynamics,
@@ -2203,7 +2207,8 @@ function _newton_step_shared_gpu!(
     L::GradPower.SimulationLayout,
     dt::Float64,
     sf_vr_l::Int,
-    sf_vi_l::Int;
+    sf_vi_l::Int,
+    refresh_P!;
     itermax::Int = 30,
     tol::Float64 = 1e-10,
 )
@@ -2214,12 +2219,16 @@ function _newton_step_shared_gpu!(
 
     f_flat = reshape(gbl.f, :)
     tol_l2 = tol * sqrt(Float64(sys_dim * M))
+    norm_prev = Inf
+    refresh_P!(dt)
 
     for iter in 1:itermax
         _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
 
         norm_f = CUDA.CUBLAS.nrm2(f_flat)
         norm_f < tol_l2 && return true
+        norm_f > SHARED_P_RHO * norm_prev && refresh_P!(dt; force = true)
+        norm_prev = norm_f
 
         _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
         _schur_extract_and_factor_gpu!(gbl)
@@ -2323,12 +2332,31 @@ function integrate_gpu_shared!(
         sf_vr_l, sf_vi_l = _precompute_woodbury_gpu!(gbl, ev.bus, ev.rfault)
     end
 
+    # Refactor P at the current state of scenario 1 when the step's dt
+    # differs from P's (dt=0 event re-solves) or when forced. P stays the
+    # fault-free Jacobian (the fault enters via Woodbury), so events are
+    # masked while factoring, and W/H⁻¹ are recomputed for the new P.
+    P_dt = Ref(dt)
+    refresh_P! = function (dt_step::Float64; force::Bool = false)
+        (force || dt_step != P_dt[]) || return nothing
+        status = Bool[ev.status for ev in events]
+        foreach(GradPower.deactivate!, events)
+        try
+            _factor_shared_P_gpu!(gbl, dyn, L, dt_step)
+        finally
+            for (ev, st) in zip(events, status); ev.status = st; end
+        end
+        isempty(events) || _precompute_woodbury_gpu!(gbl, events[1].bus, events[1].rfault)
+        P_dt[] = dt_step
+        return nothing
+    end
+
     try
     sched_idx = 1
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
 
-        ok = _newton_step_shared_gpu!(gbl, dyn, L, dt, sf_vr_l, sf_vi_l; tol = newton_tol)
+        ok = _newton_step_shared_gpu!(gbl, dyn, L, dt, sf_vr_l, sf_vi_l, refresh_P!; tol = newton_tol)
         GradPower.check_newton(ok, tvec[k + 1], "GPU shared time step")
 
         snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
@@ -2353,7 +2381,7 @@ function integrate_gpu_shared!(
                 CUDA.@allowscalar gbl.event_status[ei] = ev.status
             end
             copyto!(gbl.zold, gbl.z)
-            ok = _newton_step_shared_gpu!(gbl, dyn, L, 0.0, sf_vr_l, sf_vi_l; tol = newton_tol)
+            ok = _newton_step_shared_gpu!(gbl, dyn, L, 0.0, sf_vr_l, sf_vi_l, refresh_P!; tol = newton_tol)
             GradPower.check_newton(ok, tvec[k + 1], "GPU shared dt=0 event re-solve")
         end
     end
@@ -2518,7 +2546,8 @@ function _newton_step_shared_multi_gpu!(
     L::GradPower.SimulationLayout,
     dt::Float64,
     fault_jac_vr_pos::CuVector{Int32},
-    fault_jac_vi_pos::CuVector{Int32};
+    fault_jac_vi_pos::CuVector{Int32},
+    S_factored::Base.RefValue{Bool};
     itermax::Int = 30,
     tol::Float64 = 1e-10,
 )
@@ -2530,6 +2559,11 @@ function _newton_step_shared_multi_gpu!(
 
     f_flat = reshape(gbl.f, :)
     tol_l2 = tol * sqrt(Float64(sys_dim * M))
+    # One shared P cannot match scenarios whose faults differ, so the chord
+    # iteration can stall. On poor contraction the rest of the step uses the
+    # exact per-scenario reduced S (batched cuDSS) instead of P + Woodbury.
+    exact = false
+    norm_prev = Inf
 
     for iter in 1:itermax
         # 1. Residual + backward Euler
@@ -2543,6 +2577,8 @@ function _newton_step_shared_multi_gpu!(
         # 2. Convergence
         norm_f = CUDA.CUBLAS.nrm2(f_flat)
         norm_f < tol_l2 && return true
+        exact |= norm_f > SHARED_P_RHO * norm_prev
+        norm_prev = norm_f
 
         # 3. Jacobian + backward Euler
         _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
@@ -2584,31 +2620,48 @@ function _newton_step_shared_multi_gpu!(
         # 5d. Negate
         CUDA.CUBLAS.scal!(n_red * M, -1.0, gbl.schur_rhs_batched)
 
-        # 5e. Multi-RHS solve with frozen P
-        copyto!(gbl.sf_P_rhs, gbl.schur_rhs_batched)
-        GradPower.ds_execute!("solve", gbl.sf_P_solver, gbl.sf_P_sol, gbl.sf_P_rhs; asynchronous=false)
+        if exact
+            # 5e'. Exact per-scenario S (fault terms are already in J_nzval)
+            _schur_assemble_S_batched_gpu!(gbl)
+            kernel_csr = schur_csc_to_csr_batched_ka!(backend)
+            kernel_csr(gbl.S_csr_nzval_batched, gbl.S_nzval_batched, gbl.csc_to_csr_perm_S;
+                       ndrange=(gbl.S_nnz, M))
+            KernelAbstractions.synchronize(backend)
+            GradPower.ds_execute!(S_factored[] ? "refactorization" : "factorization",
+                  gbl.cudss_S_solver_batched,
+                  gbl.cudss_S_sol_batched_wrap, gbl.cudss_S_rhs_batched_wrap; asynchronous=false)
+            S_factored[] = true
+            GradPower.ds_execute!("solve", gbl.cudss_S_solver_batched,
+                  gbl.cudss_S_sol_batched_wrap, gbl.cudss_S_rhs_batched_wrap; asynchronous=false)
+            dv = gbl.S_sol_buf
+        else
+            # 5e. Multi-RHS solve with frozen P
+            copyto!(gbl.sf_P_rhs, gbl.schur_rhs_batched)
+            GradPower.ds_execute!("solve", gbl.sf_P_solver, gbl.sf_P_sol, gbl.sf_P_rhs; asynchronous=false)
 
-        # Per-scenario Woodbury correction
-        k1 = woodbury_dots_multi_ka!(backend)
-        k1(gbl.sf_woodbury_s, gbl.sf_P_sol, gbl.sf_H_inv_multi,
-           gbl.sf_fault_vr_l_gpu, gbl.sf_fault_vi_l_gpu,
-           gbl.sf_fault_active_gpu; ndrange=M)
-        KernelAbstractions.synchronize(backend)
-        k2 = woodbury_update_multi_ka!(backend)
-        k2(gbl.sf_P_sol, gbl.sf_W_multi, gbl.sf_woodbury_s, M;
-           ndrange=(n_red, M))
-        KernelAbstractions.synchronize(backend)
+            # Per-scenario Woodbury correction
+            k1 = woodbury_dots_multi_ka!(backend)
+            k1(gbl.sf_woodbury_s, gbl.sf_P_sol, gbl.sf_H_inv_multi,
+               gbl.sf_fault_vr_l_gpu, gbl.sf_fault_vi_l_gpu,
+               gbl.sf_fault_active_gpu; ndrange=M)
+            KernelAbstractions.synchronize(backend)
+            k2 = woodbury_update_multi_ka!(backend)
+            k2(gbl.sf_P_sol, gbl.sf_W_multi, gbl.sf_woodbury_s, M;
+               ndrange=(n_red, M))
+            KernelAbstractions.synchronize(backend)
+            dv = gbl.sf_P_sol
+        end
 
         # 5f. Scatter dv
         kernel_dv = schur_scatter_dv_batched_ka!(backend)
-        kernel_dv(gbl.z, gbl.sf_P_sol, gbl.reduced_idx_gpu; ndrange=(n_red, M))
+        kernel_dv(gbl.z, dv, gbl.reduced_idx_gpu; ndrange=(n_red, M))
         KernelAbstractions.synchronize(backend)
 
         # 5g. Back-sub
         for (g, glu) in enumerate(gbl.schur_batched_lus)
             nc = glu.n_clusters; wk = glu.w_k
             kernel_bs = schur_backsub_batched_ka!(backend)
-            kernel_bs(gbl.z, gbl.schur_fwk_packed[g], glu.B_packed, gbl.sf_P_sol,
+            kernel_bs(gbl.z, gbl.schur_fwk_packed[g], glu.B_packed, dv,
                       gbl.schur_w_start_gpu[g], gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
                       wk, M; ndrange=(nc, M))
         end
@@ -2668,12 +2721,13 @@ function integrate_gpu_shared_multi!(
 
     # All faults start inactive
     fill!(gbl.sf_fault_active_gpu, false)
+    S_factored = Ref(false)  # batched exact-S solver numerically factored yet
 
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
 
         ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, dt,
-            fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
+            fault_jac_vr_pos, fault_jac_vi_pos, S_factored; tol=newton_tol)
         GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi time step")
 
         snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
@@ -2684,13 +2738,13 @@ function integrate_gpu_shared_multi!(
             fill!(gbl.sf_fault_active_gpu, true)
             copyto!(gbl.zold, gbl.z)
             ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
-                fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
+                fault_jac_vr_pos, fault_jac_vi_pos, S_factored; tol=newton_tol)
             GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi dt=0 event re-solve")
         elseif k == step_off
             fill!(gbl.sf_fault_active_gpu, false)
             copyto!(gbl.zold, gbl.z)
             ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
-                fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
+                fault_jac_vr_pos, fault_jac_vi_pos, S_factored; tol=newton_tol)
             GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi dt=0 event re-solve")
         end
     end
