@@ -25,13 +25,10 @@ artifacts/
 /*.dyr
 /*.npz
 
-# Root-level regression / verification scratch dirs. The tracked runners live
-# under test/regression/ and scripts/; generated uqgrid references are local.
-/regression/
-/verify/
-/refs/
-examples/refs/*.npz
-!examples/refs/2bus_esdc1a.npz
+# Regression / verification runners (tracked under test/regression/ and scripts/)
+regression/
+verify/
+refs/
 
 # Generated docs (slides, reports)
 docs/batched_gpu_slides.md

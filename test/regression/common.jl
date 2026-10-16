@@ -186,9 +186,7 @@ function build_state_manifest(ps::GradPower.PowerSystem)
         dtype = device.dtype
         bus_internal = dyn.map.bus[device_index]
         bus_external = ps.buses[bus_internal].i
-        # StaticGenerator has no id; uqgrid names it static@<internal bus, 0-based>.
-        id = dtype isa GradPower.StaticGenerator ? "static@$(bus_internal - 1)" :
-             hasproperty(dtype, :id) ? GradPower._normalize_id(getproperty(dtype, :id)) : ""
+        id = hasproperty(dtype, :id) ? GradPower._normalize_id(getproperty(dtype, :id)) : ""
         model = lowercase(get_device_name(dtype))
         for (offset, name) in enumerate(get_diff_names(dtype))
             push!(manifest, Dict("index" => device.diff_ptr + offset - 1,
@@ -314,11 +312,10 @@ function comparison_rows(ps, reference; legacy_rows=nothing)
                                reference_index_base=index_base)
 end
 
-function setup_regression_case(raw, dyr; zipload_alpha=1.0, add_static_gen_stubs=true,
-                               enforce_q_limits=true)
+function setup_regression_case(raw, dyr; zipload_alpha=1.0, add_static_gen_stubs=true)
     ps = GradPower.from_psse(raw, dyr; add_static_gen_stubs=add_static_gen_stubs)
     GradPower.build_network!(ps)
-    GradPower.runpf!(ps; enforce_q_limits=enforce_q_limits)
+    GradPower.runpf!(ps)
     for device in ps.dynamic.devices
         device.dtype isa GradPower.ZIPLoad && (device.dtype.α = zipload_alpha)
     end
@@ -333,8 +330,7 @@ function run_reference_regression(case, raw, dyr, reference_name;
                                   tend::Float64, zipload_alpha::Float64,
                                   tolerance::Float64, legacy_rows=nothing,
                                   event_mask_steps::Int=0,
-                                  add_static_gen_stubs::Bool=true,
-                                  enforce_q_limits::Bool=true)
+                                  add_static_gen_stubs::Bool=true)
     reference_path = frozen_ref(reference_name)
     reference = load_reference(reference_path)
     history = reference.arrays["history"]
@@ -344,7 +340,6 @@ function run_reference_regression(case, raw, dyr, reference_name;
         raw, dyr;
         zipload_alpha=zipload_alpha,
         add_static_gen_stubs=add_static_gen_stubs,
-        enforce_q_limits=enforce_q_limits,
     )
     initial = copy(dp_flat.zvec)
     _, flat = GradPower.integrate!(dp_flat, ps_flat, min(1.0, tend); dt=dt, verbose=false)
@@ -354,7 +349,6 @@ function run_reference_regression(case, raw, dyr, reference_name;
         raw, dyr;
         zipload_alpha=zipload_alpha,
         add_static_gen_stubs=add_static_gen_stubs,
-        enforce_q_limits=enforce_q_limits,
     )
     fault_bus = get(ps.busmap, fault_bus_external, 0)
     fault_bus == 0 && error("fault bus $fault_bus_external is not present")
