@@ -1,7 +1,7 @@
 # Julia
 Manifest.toml
 *.jl.cov
-*.jl.mem
+*.mem
 
 # OS
 .DS_Store

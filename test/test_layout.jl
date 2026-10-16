@@ -259,5 +259,26 @@ end
     @test size(L.zipload.jac_pos, 2) == GradPower.ZIPLOAD_JAC_NENTRIES
     @test size(L.zipload.jac_pos, 1) == L.zipload.n
     @test size(L.esdc1a.jac_pos, 2)  == GradPower.ESDC1A_JAC_NENTRIES
-    @test length(L.net_jac_pos)      == 0
+    @test length(L.net_jac_pos)      == 0   # filled by preallocate_jacobian
+end
+
+@testset "layout: Ybus -> Jacobian positions" begin
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    GradPower.build_network!(ps)
+    J = GradPower.preallocate_jacobian(ps)
+    L = ps.dynamic.layout
+    Y = ps.network.ybus_real
+    net_ptr = ps.dynamic.diff_dim + ps.dynamic.alg_dim
+    @test length(L.net_jac_pos) == nnz(Y)
+    ok = true
+    for col in 1:size(Y, 2), k in nzrange(Y, col)
+        j = L.net_jac_pos[k]
+        ok &= j in nzrange(J, col + net_ptr) && rowvals(J)[j] == rowvals(Y)[k] + net_ptr
+    end
+    @test ok
+    # Writing -Y through the cache matches the dense network block.
+    fill!(nonzeros(J), 0.0)
+    GradPower.current_injection_jacobian!(J, Y, L.net_jac_pos)
+    @test Matrix(J[net_ptr+1:end, net_ptr+1:end]) == -Matrix(Y)
 end
