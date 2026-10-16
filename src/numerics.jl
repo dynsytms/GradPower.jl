@@ -77,11 +77,43 @@ function newton(
 end
 
 
+"""
+    JacobianReuse(enabled; rho=0.1, max_stale=6)
+
+Modified-Newton state shared by the Newton solves of one integration.
+
+When `enabled`, a Newton iteration reuses the factorization of the last
+Jacobian, across iterations and time steps, and refactors only if
+
+- there is no factorization for the current `dt` (first step; event
+  re-solves at `dt = 0` and the step after them),
+- the residual norm fell by less than `1/rho` since the previous iteration,
+- `max_stale` iterations of the current solve have used one factorization.
+
+A solve that fails with reuse is retried from its initial guess with a fresh
+Jacobian every iteration (full Newton), so reuse cannot make a step fail that
+full Newton solves. `dt` is the step size of the current factorization (`NaN`
+when there is none).
+"""
+mutable struct JacobianReuse
+    enabled::Bool
+    rho::Float64
+    max_stale::Int
+    dt::Float64
+end
+JacobianReuse(enabled::Bool; rho::Float64=0.1, max_stale::Int=6) =
+    JacobianReuse(enabled, rho, max_stale, NaN)
+
+# Decide whether iteration `iter` of a solve with step `dt` refactors.
+@inline _needs_refactor(r::JacobianReuse, use_reuse::Bool, dt::Float64, stale::Int,
+                        norm_f::Float64, norm_prev::Float64) =
+    !use_reuse || r.dt != dt || stale >= r.max_stale || norm_f > r.rho * norm_prev
+
 function newton_step!(
     z0::AbstractVector,
     f0::AbstractVector,
     J0::AbstractMatrix,
-    fact,
+    fact::Base.RefValue,
     zold::AbstractVector,
     u::AbstractVector,
     p::AbstractVector,
@@ -96,17 +128,32 @@ function newton_step!(
     log::Union{Nothing,SolverLog}=nothing,
     newton_norm::Symbol=:inf,
     limits::Union{Nothing,LimitWorkspace}=nothing,
+    reuse::JacobianReuse=JacobianReuse(false),
 )
+    z_buf = zwork === nothing ? similar(z0) : zwork
+    dx_buf = dx === nothing ? zeros(length(z0)) : dx
+    success = _newton_loop!(z_buf, z0, f0, J0, fact, zold, u, p, sys, dt, reuse,
+                            reuse.enabled, itermax, tol, verbose, jac_verify,
+                            dx_buf, log, newton_norm, limits)
+    if !success && reuse.enabled
+        # Retry from the same initial guess with full Newton.
+        success = _newton_loop!(z_buf, z0, f0, J0, fact, zold, u, p, sys, dt, reuse,
+                                false, itermax, tol, verbose, jac_verify,
+                                dx_buf, log, newton_norm, limits)
+    end
+    z0 .= z_buf
+    return success
+end
 
-    # Initialize
+function _newton_loop!(z_buf, z0, f0, J0, fact, zold, u, p, sys::PowerSystem, dt::Float64,
+                       reuse::JacobianReuse, use_reuse::Bool, itermax::Int, tol::Float64,
+                       verbose::Bool, jac_verify::Bool, dx_buf, log, newton_norm::Symbol,
+                       limits)
     success = false
     verbose && @printf("   Iter     Residual norm\n")
-    # Reuse caller-provided scratch when supplied; otherwise allocate
-    # once per Newton call (legacy path for callers that do not pass
-    # scratch).
-    dx_buf = dx === nothing ? zeros(length(z0)) : dx
-    z_buf  = zwork === nothing ? similar(z0) : zwork
     copyto!(z_buf, z0)
+    stale = 0
+    norm_prev = Inf
     # Pre-extract Union-typed handles once — see comment on
     # `beuler_batched!` / `beuler_jac_batched!` for the rationale.
     dyn  = sys.dynamic::PowerSystemDynamics
@@ -136,6 +183,7 @@ function newton_step!(
             break
         end
 
+        if _needs_refactor(reuse, use_reuse, dt, stale, norm_f, norm_prev)
         # Evaluate the Jacobian
         if log !== nothing
             _t0 = time_ns()
@@ -161,30 +209,37 @@ function newton_step!(
             @assert false "Jacobian verification passed"
         end
 
-        # Numeric re-factorization: reuse the symbolic analysis from the
+        # Numeric re-factorization: reuse the symbolic analysis of the
         # caller-provided `fact` (created once in `integrate!` by
-        # `ds_solver`). Only the numeric values are updated each iteration.
-        # The KLU backend falls back to a fresh klu() on a zero pivot.
+        # `ds_solver`). `ds_factorize!` may return a new handle (KLU's
+        # fresh-factorization fallback), so it is stored back into `fact`.
         if log !== nothing
             _t0 = time_ns()
-            fact = ds_factorize!(fact, J0)
+            fact[] = ds_factorize!(fact[], J0)
             log.lsolve_factor_ns += time_ns() - _t0
             log.lsolve_factor_count += 1
+        else
+            fact[] = ds_factorize!(fact[], J0)
+        end
+        reuse.dt = dt
+        stale = 0
+        end
 
+        if log !== nothing
             _t0 = time_ns()
-            ldiv!(dx_buf, fact, f0)
+            ldiv!(dx_buf, fact[], f0)
             log.lsolve_solve_ns += time_ns() - _t0
             log.lsolve_solve_count += 1
         else
-            fact = ds_factorize!(fact, J0)
-            ldiv!(dx_buf, fact, f0)
+            ldiv!(dx_buf, fact[], f0)
         end
+        stale += 1
+        norm_prev = norm_f
 
         # Update the state in place (no temporary).
         @inbounds for k in eachindex(z_buf)
             z_buf[k] -= dx_buf[k]
         end
     end
-    z0 .= z_buf
     return success
 end

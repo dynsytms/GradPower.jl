@@ -533,6 +533,21 @@ function _jacobian_beuler_positions!(J::SparseMatrixCSC, L::SimulationLayout, h:
     return nothing
 end
 
+"""
+    integrate!(dp, ps, tf; dt=1/120, solver=:monolithic, linear_solver=KLUBackend(),
+               newton_tol=1e-10, jacobian_reuse=true, predictor=true, ...) -> (tvec, traj)
+
+Backward-Euler integration of the DAE from `dp.zvec` to `tf`.
+
+`jacobian_reuse=true` keeps the Jacobian factorization across Newton
+iterations and time steps (modified Newton) and refactors only when
+convergence slows down, at events, or after a failed solve; see
+[`JacobianReuse`](@ref). `predictor=true` starts each step from the linear
+extrapolation `2 z_k - z_{k-1}` (not across events). Both converge to the same
+`newton_tol`; set both to `false` for full Newton from the previous state.
+They apply to `solver=:monolithic` and `:schur`; `:schur_gmres` and
+`limit_method != :none` always use full Newton.
+"""
 function integrate!(
     dp::DynamicProblem,
     ps::PowerSystem,
@@ -548,6 +563,8 @@ function integrate!(
     limit_mu::Float64=0.0,
     limit_tolerance::Float64=1e-10,
     limit_events::Union{Nothing,Vector{LimitEvent}}=nothing,
+    jacobian_reuse::Bool=true,
+    predictor::Bool=true,
 )
     # NOTE: Assumes initialize_dynamics!(dp, ps) has been called.
 
@@ -617,7 +634,17 @@ function integrate!(
                 limit_workspace)
 
     # pre-factorization (symbolic analysis reused by every Newton iteration)
-    fact = ds_solver(linear_solver, J0; tuned=true)
+    fact = Ref{Any}(ds_solver(linear_solver, J0; tuned=true))
+
+    # Modified-Newton state shared by time steps and dt = 0 event re-solves
+    # (both use J0/fact; a change of dt forces a refactorization). Limits
+    # change Jacobian rows with the active set and GMRES has its own
+    # preconditioner reuse, so both keep full Newton.
+    reuse = JacobianReuse(jacobian_reuse && limit_method === :none && solver !== :schur_gmres)
+    use_predictor = predictor && limit_method === :none
+    zprev = similar(zold)   # z_{k-1}, for the predictor
+    zpred = similar(zold)   # predicted initial guess for step k
+    have_prev = false
 
     # Schur workspace (preallocated once, reused every step)
     use_schur = solver === :schur
@@ -635,14 +662,26 @@ function integrate!(
     sched_idx = 1  # pointer into sorted event_schedule
     for k in 1:nsteps
         verbose && println("Time-stepping. t = $(tvec[k]) s.")
+        # Initial guess: linear extrapolation from the last two states.
+        # `zold` stays the backward-Euler anchor z_k.
+        zguess = zold
+        if use_predictor && have_prev
+            zguess = zpred
+            @inbounds for i in eachindex(zguess)
+                zguess[i] = 2.0*zold[i] - zprev[i]
+            end
+        end
+        use_predictor && copyto!(zprev, zold)
         if use_schur
-            success = newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
+            success = newton_step_schur!(zguess, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm, reuse=reuse)
         elseif use_schur_gmres
-            success = newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
+            success = newton_step_schur_gmres!(zguess, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
         else
-            success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace)
+            success = newton_step!(zguess, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace, reuse=reuse)
         end
         check_newton(success, tvec[k+1], "time step (solver=$solver, limit_method=$limit_method)")
+        zguess === zold || copyto!(zold, zguess)
+        have_prev = true
         record_limit_events!(limit_workspace, zold, @view(traj[:, k]), dp.pvec,
                              dt, tvec[k+1])
         traj[:,k+1] .= zold
@@ -684,12 +723,16 @@ function integrate!(
 
         # re-solve at dt=0 after any event state change
         if any_event
+            # The event changed the equations: the cached factorization is
+            # stale, and the trajectory is not smooth across the event.
+            reuse.dt = NaN
+            have_prev = false
             if use_schur
-                success = newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
+                success = newton_step_schur!(zold, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm, reuse=reuse)
             elseif use_schur_gmres
                 success = newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
             else
-                success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace)
+                success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace, reuse=reuse)
             end
             check_newton(success, tvec[k+1], "dt=0 event re-solve (solver=$solver, limit_method=$limit_method)")
         end
