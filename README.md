@@ -60,7 +60,9 @@ using GradPower
 # 1. Parse PSS/E network + dynamic data.
 sys = from_psse("examples/2bus.raw", "examples/2bus_IEESGO.dyr")
 
-# 2. Build the admittance matrix and solve the power flow.
+# 2. Build the admittance matrix and solve the power flow. Generator reactive
+#    limits are enforced (PV -> PQ switching); pass `enforce_q_limits=false`
+#    to hold every PV voltage regardless of the reactive power it takes.
 build_network!(sys)
 runpf!(sys)
 

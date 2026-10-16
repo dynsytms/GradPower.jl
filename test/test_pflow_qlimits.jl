@@ -25,11 +25,12 @@ _ql_violations(ps; tol=1e-6) =
         @test g.qmax == Inf && g.qmin == -Inf
     end
 
-    @testset "default is off and unchanged" begin
+    @testset "default enforces limits" begin
         a = _ql_system("IEEE39.raw", "IEEE39_gov.dyr")
         b = _ql_system("IEEE39.raw", "IEEE39_gov.dyr")
-        GradPower.runpf!(a)
-        @test GradPower.runpf!(b; enforce_q_limits=false) == 0
+        npin = GradPower.runpf!(a)
+        @test npin > 0
+        @test GradPower.runpf!(b; enforce_q_limits=true) == npin
         for (x, y) in zip(a.buses, b.buses)
             @test x.v0m == y.v0m
             @test x.v0a == y.v0a
@@ -40,7 +41,7 @@ _ql_violations(ps; tol=1e-6) =
     @testset "IEEE9 has no binding limits, so enforcement is a no-op" begin
         off = _ql_system("ieee9_v33.raw", "ieee9bus_gov.dyr")
         on  = _ql_system("ieee9_v33.raw", "ieee9bus_gov.dyr")
-        GradPower.runpf!(off)
+        GradPower.runpf!(off; enforce_q_limits=false)
         @test GradPower.runpf!(on; enforce_q_limits=true) == 0
         for (x, y) in zip(off.buses, on.buses)
             @test isapprox(x.v0m, y.v0m; atol=1e-12)
@@ -50,7 +51,7 @@ _ql_violations(ps; tol=1e-6) =
 
     @testset "IEEE39 violates without enforcement and does not with it" begin
         off = _ql_system("IEEE39.raw", "IEEE39_gov.dyr")
-        GradPower.runpf!(off)
+        GradPower.runpf!(off; enforce_q_limits=false)
         @test _ql_violations(off) > 0
 
         on = _ql_system("IEEE39.raw", "IEEE39_gov.dyr")

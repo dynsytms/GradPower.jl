@@ -99,13 +99,17 @@ def test_parameter_manifest_records_device_slices():
     }]
 
 
-def test_phase_zero_config_explicitly_disables_limits():
+def test_reference_config_enforces_pf_q_limits_only():
     config = _integration_config(
         ReferenceCase("test", "raw", "dyr", "out", "generator")
     )
     assert config.enforce_dynamic_limits is False
-    assert config.enforce_q_limits is False
+    assert config.enforce_q_limits is True
     assert config.method == "beuler"
+    unlimited = _integration_config(
+        ReferenceCase("test", "raw", "dyr", "out", "generator", enforce_q_limits=False)
+    )
+    assert unlimited.enforce_q_limits is False
 
 
 def test_external_fault_bus_resolves_internal_index():
