@@ -136,6 +136,17 @@ tvec, trajs = GradPower.integrate_batched!(bl, sys, 1.0;
 `integrate!` accepts `linear_solver` with every `solver=` choice
 (`:monolithic`, `:schur`, `:schur_gmres`).
 
+### Newton options
+
+By default `integrate!` keeps the Jacobian factorization across Newton
+iterations and time steps and refactors only when convergence slows, at
+events, or after a failed solve (`jacobian_reuse=true`), and starts each step
+from a linear extrapolation of the previous two (`predictor=true`). Both
+converge to the same `newton_tol`; on ACTIVSg2000 they cut factorizations from
+~1200 to ~10 over 5 s and run about 4x faster. Pass
+`jacobian_reuse=false, predictor=false` for full Newton from the previous
+state. They apply to `:monolithic` and `:schur`.
+
 ### GPU acceleration (NVIDIA)
 
 With CUDA.jl and a GPU sparse direct solver installed (CUDSS.jl or

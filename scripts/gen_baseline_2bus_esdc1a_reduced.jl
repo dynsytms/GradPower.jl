@@ -12,7 +12,8 @@ const OUTPUT = joinpath(REPO_ROOT, "examples", "refs", "2bus_esdc1a_reduced.npz"
 ps, dp = setup_regression_case(RAW, DYR; zipload_alpha=0.5)
 z0 = copy(dp.zvec)
 GradPower.add_event!(ps, GradPower.ContingencyEvent(ps.busmap[1], 0.02, 0.2, 0.3))
-tvec, history = GradPower.integrate!(dp, ps, 5.0; dt=1/120, verbose=false)
+tvec, history = GradPower.integrate!(dp, ps, 5.0; dt=1/120, verbose=false,
+                                    jacobian_reuse=false, predictor=false)
 
 metadata = Dict{String,Any}(
     "schema_version" => 1,

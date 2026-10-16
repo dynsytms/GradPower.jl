@@ -297,3 +297,62 @@ end
         end
     end
 end
+
+# -----------------------------------------------------------------------
+# Jacobian reuse (modified Newton) and predictor
+# -----------------------------------------------------------------------
+
+@testset "Jacobian reuse and predictor" begin
+    ps, dp = _build_and_init("ieee9_v33.raw", "ieee9bus_gov.dyr")
+    z0 = copy(dp.zvec)
+    GradPower.add_event!(ps, GradPower.ContingencyEvent(4, 0.02, 0.1, 0.15))
+    function run(; kw...)
+        dp.zvec .= z0
+        log = GradPower.SolverLog()
+        _, traj = GradPower.integrate!(dp, ps, 1.0; log=log, kw...)
+        return traj, log
+    end
+    for solver in (:monolithic, :schur)
+        full, lf = run(; solver, jacobian_reuse=false, predictor=false)
+        for (reuse, pred) in ((true, false), (false, true), (true, true))
+            traj, lg = run(; solver, jacobian_reuse=reuse, predictor=pred)
+            # Same Newton tolerance -> same trajectory to ~tolerance.
+            @test maximum(abs, traj .- full) < 1e-8
+            reuse && @test lg.lsolve_factor_count < lf.lsolve_factor_count / 4
+        end
+    end
+    # Default is reuse + predictor.
+    traj_def, lg_def = run()
+    traj_on, lg_on = run(; jacobian_reuse=true, predictor=true)
+    @test traj_def == traj_on
+    @test lg_def.lsolve_factor_count == lg_on.lsolve_factor_count
+    _clear_events!(ps)
+
+    # A solve that fails with a stale factorization is retried with full
+    # Newton. The pre-fault Jacobian, never refreshed (rho and max_stale
+    # huge), cannot solve the faulted step in 3 iterations; with the retry,
+    # newton_step! succeeds.
+    ps2, dp2 = _build_and_init("ieee9_v33.raw", "ieee9bus_gov.dyr")
+    dyn = ps2.dynamic; L = dyn.layout; ybus = ps2.network.ybus_real
+    n = length(dp2.zvec)
+    J = GradPower.preallocate_jacobian(ps2)
+    GradPower.beuler_jac_batched!(J, dp2.zvec, dp2.uvec, dp2.pvec, dyn, ybus, L, dyn.diff_dim, 1/120)
+    fact = Ref{Any}(GradPower.ds_solver(GradPower.KLUBackend(), J; tuned=true))
+    r = GradPower.JacobianReuse(true; rho=1e300, max_stale=10^6)
+    r.dt = 1/120
+    GradPower.add_event!(ps2, GradPower.ContingencyEvent(4, 0.02, 0.0, 1.0))
+    GradPower.activate!(ps2.dynamic.events[1])
+    zold = copy(dp2.zvec)
+    z_stale = copy(zold)
+    ok_stale = GradPower._newton_loop!(zeros(n), z_stale, zeros(n), J, fact, zold, dp2.uvec,
+        dp2.pvec, ps2, 1/120, r, true, 3, 1e-10, false, false, zeros(n), nothing, :inf, nothing)
+    @test !ok_stale
+    log = GradPower.SolverLog()
+    z = copy(zold)
+    r.dt = 1/120
+    ok = GradPower.newton_step!(z, zeros(n), J, fact, zold, dp2.uvec, dp2.pvec, ps2, 1/120;
+                                itermax=6, log=log, reuse=r, dx=zeros(n), zwork=zeros(n))
+    @test ok
+    @test log.lsolve_factor_count >= 1   # the full-Newton retry refactored
+    _clear_events!(ps2)
+end

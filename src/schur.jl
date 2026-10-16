@@ -268,9 +268,31 @@ function newton_step_schur!(
     zwork::Union{Nothing,AbstractVector}=nothing,
     log::Union{Nothing,SolverLog}=nothing,
     newton_norm::Symbol=:inf,
+    reuse::JacobianReuse=JacobianReuse(false),
 )
     z_buf = zwork === nothing ? similar(z0) : zwork
+    success = _newton_schur_loop!(z_buf, z0, f0, J0, sw, zold, u, p, ps, dt, reuse,
+                                  reuse.enabled, itermax, tol, verbose, log, newton_norm)
+    if !success && reuse.enabled
+        # Retry from the same initial guess with full Newton.
+        success = _newton_schur_loop!(z_buf, z0, f0, J0, sw, zold, u, p, ps, dt, reuse,
+                                      false, itermax, tol, verbose, log, newton_norm)
+    end
+    z0 .= z_buf
+    return success
+end
+
+# One Newton solve on the Schur-reduced system. With `use_reuse`, the cluster
+# LU factors, the assembled S and its factorization are kept from the last
+# refactorization (see `JacobianReuse`); only the reduced RHS and the
+# back-substitution are redone each iteration.
+function _newton_schur_loop!(z_buf, z0, f0, J0::SparseMatrixCSC, sw::SchurWorkspace,
+                             zold, u, p, ps::PowerSystem, dt::Float64,
+                             reuse::JacobianReuse, use_reuse::Bool, itermax::Int,
+                             tol::Float64, verbose::Bool, log, newton_norm::Symbol)
     copyto!(z_buf, z0)
+    stale = 0
+    norm_prev = Inf
 
     dyn  = ps.dynamic::PowerSystemDynamics
     net  = ps.network::Network
@@ -307,6 +329,8 @@ function newton_step_schur!(
             break
         end
 
+        refactor = _needs_refactor(reuse, use_reuse, dt, stale, norm_f, norm_prev)
+        if refactor
         # 2. Evaluate backward-Euler Jacobian
         if log !== nothing
             _t0 = time_ns()
@@ -319,6 +343,7 @@ function newton_step_schur!(
 
         # 3. Assemble Schur complement
         assemble_schur!(sw, J0, ct, net_ptr)
+        end
 
         # 4. Build reduced RHS: rhs_red[i] = f_red[i] - sum_k C_k A_k^{-1} f_wk
         # Start with the residual at reduced positions
@@ -358,28 +383,34 @@ function newton_step_schur!(
         # 5. Solve S * d_red = -rhs_red
         @inbounds for i in 1:n_red; sw.rhs_red[i] = -sw.rhs_red[i]; end
 
-        if log !== nothing
-            _t0 = time_ns()
-            if iter == 1
-                sw.S_fact[] = ds_solver(sw.linear_solver, sw.S)
+        # Without reuse, each solve starts with a fresh analysis of S (the
+        # historical behaviour). With reuse, only the first factorization of
+        # the integration is fresh; later ones keep its pivot sequence.
+        if refactor
+            fresh = use_reuse ? isnan(reuse.dt) : iter == 1
+            if log !== nothing
+                _t0 = time_ns()
+                sw.S_fact[] = fresh ? ds_solver(sw.linear_solver, sw.S) :
+                                      ds_factorize!(sw.S_fact[], sw.S)
+                log.lsolve_factor_ns += time_ns() - _t0
+                log.lsolve_factor_count += 1
             else
-                sw.S_fact[] = ds_factorize!(sw.S_fact[], sw.S)
+                sw.S_fact[] = fresh ? ds_solver(sw.linear_solver, sw.S) :
+                                      ds_factorize!(sw.S_fact[], sw.S)
             end
-            log.lsolve_factor_ns += time_ns() - _t0
-            log.lsolve_factor_count += 1
-
+            reuse.dt = dt
+            stale = 0
+        end
+        if log !== nothing
             _t0 = time_ns()
             ldiv!(sw.S_fact[], sw.rhs_red)
             log.lsolve_solve_ns += time_ns() - _t0
             log.lsolve_solve_count += 1
         else
-            if iter == 1
-                sw.S_fact[] = ds_solver(sw.linear_solver, sw.S)
-            else
-                sw.S_fact[] = ds_factorize!(sw.S_fact[], sw.S)
-            end
             ldiv!(sw.S_fact[], sw.rhs_red)
         end
+        stale += 1
+        norm_prev = norm_f
         # sw.rhs_red now holds d_red (Newton correction for reduced vars)
 
         # 6. Copy d_red into dz at reduced positions
@@ -422,8 +453,6 @@ function newton_step_schur!(
             z_buf[k] += sw.dz[k]
         end
     end
-
-    z0 .= z_buf
     return success
 end
 
