@@ -316,6 +316,50 @@ end
     end
 end
 
+# Batches larger than MAX_UBATCH are split over several direct solvers (cuDSS
+# 0.8 uniform batches of >= 16 are an order of magnitude slower). Scenarios
+# differ (scaled loads) so a mix-up of chunk columns would show.
+@testset "Chunked batch solver: M > MAX_UBATCH matches single runs ($(nameof(typeof(ls))))" for ls in GPU_SOLVERS
+    HAS_CUDA || return
+    ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
+
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    GradPower.build_network!(ps); GradPower.runpf!(ps)
+    dp = GradPower.DynamicProblem(ps)
+    GradPower.initialize_dynamics!(dp, ps)
+    GradPower.add_event!(ps, GradPower.ContingencyEvent(4, 0.02, 0.1, 0.2))
+    z0 = copy(dp.zvec); p0 = copy(dp.pvec)
+    zl = ps.dynamic.layout.zipload
+    function scaled_p(m)
+        p = copy(p0)
+        for k in 1:zl.n, o in (0, 1, 7, 8)   # pl, ql, yreal, yimag
+            p[Int(zl.par_ptr[k]) + o] *= 1 + 0.02 * (m - 1)
+        end
+        p
+    end
+
+    M = ext.MAX_UBATCH + 5
+    nchunks = cld(M, ext._ubatch_chunk(ls, M))   # 2 for CUDSS, 1 otherwise
+    gbl = ext.GpuBatchedLayout(dp, ps, M; linear_solver = ls)
+    @test length(gbl.cudss_solver_batched.solvers) == nchunks
+    @test length(gbl.cudss_S_solver_batched.solvers) == nchunks
+    for f in (ext.integrate_gpu_cudss!, ext.integrate_gpu_schur_cudss!)
+        dp.zvec .= z0
+        gb = ext.GpuBatchedLayout(dp, ps, M; linear_solver = ls)
+        copyto!(gb.p, CuMatrix(permutedims(reduce(hcat, scaled_p(m) for m in 1:M))))
+        _, trb = f(gb, ps, 0.5)
+        @test maximum(abs.(trb[M] .- trb[1])) > 1e-3     # scenarios really differ
+        for m in (1, ext.MAX_UBATCH, ext.MAX_UBATCH + 1, M)  # both sides of the chunk edge
+            g1 = ext.GpuBatchedLayout(dp, ps, 1; linear_solver = ls)
+            copyto!(g1.p, CuMatrix(permutedims(scaled_p(m))))
+            _, tr1 = f(g1, ps, 0.5)
+            @test maximum(abs.(trb[m] .- tr1[1])) < 1e-8
+        end
+    end
+    empty!(ps.dynamic.events)
+end
+
 @testset "integrate_gpu_schur_cudss! accuracy ($(nameof(typeof(ls))))" for ls in GPU_SOLVERS
     HAS_CUDA || return
     ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
