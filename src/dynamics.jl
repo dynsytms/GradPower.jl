@@ -547,6 +547,25 @@ extrapolation `2 z_k - z_{k-1}` (not across events). Both converge to the same
 `newton_tol`; set both to `false` for full Newton from the previous state.
 They apply to `solver=:monolithic` and `:schur`; `:schur_gmres` and
 `limit_method != :none` always use full Newton.
+
+# Output
+
+By default the full trajectory is returned: `traj[:, j]` is the state at
+`tvec[j]`, for every step. To store less:
+
+  * `save_every = s` stores the steps `1:s:nsteps+1` (step 1 = initial state);
+    the final step is not added when it is not on that grid. `tvec` holds the
+    stored times.
+  * `save_idxs` stores only those rows of the state (`traj[r, j] =
+    z[save_idxs[r]]`); default `:` (all rows).
+  * `save_eltype = Float32` stores in that element type.
+  * `step_callback(k, t, z)` is called after the initial state (`k = 1`) and
+    after every accepted step `k = 2, …, nsteps+1`, with the full state `z` at
+    time `t`, whether or not it is stored. `z` must not be modified.
+
+At an event step the stored (and passed) state is the one before the event's
+algebraic re-solve. These options do not change the computed solution;
+`dp.zvec` is always set to the final state.
 """
 function integrate!(
     dp::DynamicProblem,
@@ -565,6 +584,10 @@ function integrate!(
     limit_events::Union{Nothing,Vector{LimitEvent}}=nothing,
     jacobian_reuse::Bool=true,
     predictor::Bool=true,
+    save_every::Integer=1,
+    save_idxs=Colon(),
+    save_eltype::Type{<:AbstractFloat}=Float64,
+    step_callback=nothing,
 )
     # NOTE: Assumes initialize_dynamics!(dp, ps) has been called.
 
@@ -601,8 +624,10 @@ function integrate!(
     system_size = ps.dynamic.diff_dim + ps.dynamic.alg_dim + 2*nbus
     @assert system_size == length(dp.zvec)
 
-    # allocate solution trajectory.
-    traj = zeros(Float64, system_size, nsteps+1)
+    # Stored output (see "Output" in the docstring); `zlast` is the previous
+    # accepted state, needed by the limit-event bookkeeping.
+    rec = _Recorder(system_size, nsteps, save_idxs, save_every, save_eltype)
+    zlast = limit_method === :none ? nothing : similar(dp.zvec, Float64)
 
     # allocate temporary vectors
     zold = zeros(Float64, system_size)
@@ -620,7 +645,10 @@ function integrate!(
 
     # initial condition
     zold .= dp.zvec
-    traj[:,1] .= dp.zvec
+    _record!(rec, 1, zold)
+    step_callback === nothing || step_callback(1, tvec[1], zold)
+    zlast === nothing || copyto!(zlast, zold)
+    zfinal = copy(zold)   # state at the last grid step (see end of function)
     limit_method !== :none && solver !== :monolithic &&
         throw(ArgumentError("dynamic limits currently support solver=:monolithic only"))
 
@@ -682,9 +710,13 @@ function integrate!(
         check_newton(success, tvec[k+1], "time step (solver=$solver, limit_method=$limit_method)")
         zguess === zold || copyto!(zold, zguess)
         have_prev = true
-        record_limit_events!(limit_workspace, zold, @view(traj[:, k]), dp.pvec,
-                             dt, tvec[k+1])
-        traj[:,k+1] .= zold
+        if zlast !== nothing
+            record_limit_events!(limit_workspace, zold, zlast, dp.pvec, dt, tvec[k+1])
+            copyto!(zlast, zold)
+        end
+        _record!(rec, k + 1, zold)
+        step_callback === nothing || step_callback(k + 1, tvec[k+1], zold)
+        k == nsteps && copyto!(zfinal, zold)
 
         # process all events scheduled at this step
         any_event = false
@@ -742,8 +774,10 @@ function integrate!(
         _restore_event_state!(ps, saved)
     end
 
-    dp.zvec = traj[:,end]
-    return tvec, traj
+    # Final state: the last grid step, before any event re-solve at that step
+    # (the convention of the stored trajectory, and the previous behavior).
+    dp.zvec = zfinal
+    return _saved_times(tvec, rec.every), rec.traj
 end
 
 function _snapshot_event_state(ps::PowerSystem)

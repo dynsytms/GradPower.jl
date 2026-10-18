@@ -52,6 +52,14 @@ Cost reference: ~3.3 s per 5 s ACTIVSg2000 simulation on one core, ≈35k
 simulations per Polaris node-hour. Output ≈1.2 MB per ACTIVSg2000 sample at
 `downsample = 2`.
 
+**Memory.** Each simulation stores only what the sample needs: the bus
+`(vr, vi)` and machine `omega`/`delta` rows, every `downsample`-th step
+(`integrate!(...; save_idxs, save_every)`). The labels are accumulated over
+every step through `step_callback` (`DynstabRecorder`), so they are computed at
+full resolution exactly as before. See `simulate_sample` in `dynstab_io.jl`;
+`julia --project=scripts scripts/test_dynstab_recorder.jl` checks it is
+bit-identical to the full-trajectory path.
+
 ## Output
 
 `/grid` holds static topology once per file (`bus_id`, `bus_type`,

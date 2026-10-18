@@ -163,12 +163,11 @@ function main()
                 dprob.zvec .= z0            # every fault starts from this operating point
                 GradPower.add_event!(sys,
                     GradPower.ContingencyEvent(sc.fault_bus_internal, sc.r_fault, sc.t_on, sc.t_off))
-                tvec, traj = GradPower.integrate!(dprob, sys, t_final; dt=dt)
-
-                ch = dynamics_channels(sys, traj; downsample=downsample)
-                metrics = stability_metrics(sys, traj;
-                    angle_sep_threshold=angle_thr, tail_fraction=tail_fraction,
-                    decay_ratio=decay_ratio)
+                # Stores only the downsampled channel rows; labels are
+                # accumulated over every step (see simulate_sample).
+                ch, metrics = simulate_sample(dprob, sys, t_final; dt=dt,
+                    downsample=downsample, angle_sep_threshold=angle_thr,
+                    tail_fraction=tail_fraction, decay_ratio=decay_ratio)
                 write_sample!(fid, k, sc, ch, metrics)
                 nwritten += 1
             end

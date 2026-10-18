@@ -22,6 +22,7 @@ end
 @testset "dynamic" begin
     include("test_integrate.jl")
     include("test_tgov1_limits.jl")
+    include("test_recorder.jl")
 end
 @testset "layout" begin
     include("test_layout.jl")
