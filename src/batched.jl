@@ -176,12 +176,21 @@ Integrate the `bl.M` scenarios of `bl` (each with its own initial state
 same `z`, `p` and options. Scenarios run on `Threads.nthreads()` threads when
 `threaded=true`. Returns `trajs[m]`, the `(sys_dim, nsteps+1)` trajectory of
 scenario `m`; the final states are written back to `bl.z`.
+
+`save_every`, `save_idxs` and `save_eltype` select the stored output as in
+[`integrate!`](@ref) (same for every scenario). `step_callback(m, k, t, z)` is
+called for scenario `m` with its state after the initial state (`k = 1`) and
+after every accepted step; with `threaded=true` it runs on worker threads,
+concurrently for different `m`, so it must only touch per-scenario data.
 """
 function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                              dt::Float64=1.0/120.0, newton_tol::Float64=1e-10,
                              linear_solver::AbstractDirectSolverBackend=KLUBackend(),
                              jacobian_reuse::Bool=true, predictor::Bool=true,
-                             threaded::Bool=true)
+                             threaded::Bool=true, save_every::Integer=1,
+                             save_idxs=Colon(),
+                             save_eltype::Type{<:AbstractFloat}=Float64,
+                             step_callback=nothing)
     dyn = ps.dynamic::PowerSystemDynamics
     L = dyn.layout::SimulationLayout
     ybus = (ps.network::Network).ybus_real
@@ -206,9 +215,11 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                                    linear_solver, jacobian_reuse)
     end
 
-    trajs = [zeros(Float64, bl.sys_dim, nsteps + 1) for _ in 1:M]
+    # One recorder (own output buffer) per scenario: threads never share one.
+    recs = [_Recorder(bl.sys_dim, nsteps, save_idxs, save_every, save_eltype) for _ in 1:M]
     for m in 1:M
-        trajs[m][:, 1] .= ws[m].z
+        _record!(recs[m], 1, ws[m].z)
+        step_callback === nothing || step_callback(m, 1, tvec[1], ws[m].z)
     end
     ok = trues(M)
 
@@ -217,7 +228,8 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
     for k in 1:nsteps
         _foreach_scenario(M, threaded) do m
             ok[m] = _solve_scenario!(ws[m], ps, dt, newton_tol, predictor)
-            trajs[m][:, k + 1] .= ws[m].z
+            _record!(recs[m], k + 1, ws[m].z)
+            step_callback === nothing || step_callback(m, k + 1, tvec[k + 1], ws[m].z)
         end
         all(ok) || check_newton(false, tvec[k + 1],
             "batched time step (scenarios $(findall(!, ok)))")
@@ -250,5 +262,5 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
     for m in 1:M
         bl.z[m, :] .= ws[m].z
     end
-    return tvec, trajs
+    return _saved_times(tvec, recs[1].every), [r.traj for r in recs]
 end

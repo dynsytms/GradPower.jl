@@ -182,8 +182,11 @@ function check_self_stability(sys, dprob, z0::Vector{Float64};
     empty!(sys.dynamic.events)
     dprob.zvec .= z0
     dprob.zvec[gptr[1] + 4] += eps          # nudge one machine's speed
-    _, traj = GradPower.integrate!(dprob, sys, t_final; dt=dt)
-    sep = stability_metrics(sys, traj)["max_angle_sep_deg"]
+    nsteps, _ = GradPower._time_grid(t_final, dt)
+    rec = DynstabRecorder(sys, nsteps)
+    GradPower.integrate!(dprob, sys, t_final; dt=dt, step_callback=rec,
+                         save_idxs=Int[], save_every=nsteps + 1)   # labels only
+    sep = metrics(rec)["max_angle_sep_deg"]
     dprob.zvec .= z0
     return (ok = isfinite(sep) && sep <= tol_deg, sep_deg = sep)
 end
@@ -369,6 +372,122 @@ function dynamics_channels(sys, traj::AbstractMatrix; downsample::Int=1)
 end
 
 """
+    channel_rows(sys) -> (rows, nbus, ng)
+
+z-rows needed by [`dynamics_channels`](@ref): the interleaved `(vr, vi)` of
+every bus, then `omega` and `delta` of every dynamic machine. Stored with
+`integrate!(...; save_idxs = rows)` these are all the channels need.
+"""
+function channel_rows(sys)
+    nbus = length(sys.buses)
+    net = sys.dynamic.diff_dim + sys.dynamic.alg_dim
+    gptr, _ = generator_pointers(sys)
+    rows = vcat(collect(net + 1:net + 2 * nbus), [p + 4 for p in gptr], [p + 5 for p in gptr])
+    return rows, nbus, length(gptr)
+end
+
+"""
+    channels_from_rows(sub, nbus, ng) -> Dict
+
+Same output as [`dynamics_channels`](@ref), computed from the `[rows, T]`
+matrix stored with `save_idxs = channel_rows(sys)[1]` (already downsampled).
+"""
+function channels_from_rows(sub::AbstractMatrix{Float64}, nbus::Int, ng::Int)
+    T = size(sub, 2)
+    vm = Array{Float32}(undef, nbus, T)
+    va = Array{Float32}(undef, nbus, T)
+    delta = Array{Float32}(undef, ng, T)
+    omega = Array{Float32}(undef, ng, T)
+    ob = 2 * nbus; od = ob + ng
+    @inbounds for tj in 1:T
+        for b in 1:nbus
+            vr = sub[2 * (b - 1) + 1, tj]
+            vi = sub[2 * (b - 1) + 2, tj]
+            vm[b, tj] = hypot(vr, vi)
+            va[b, tj] = atan(vi, vr)
+        end
+        for g in 1:ng
+            omega[g, tj] = sub[ob + g, tj]
+            delta[g, tj] = sub[od + g, tj]
+        end
+    end
+    return Dict("bus_vm" => vm, "bus_va" => va,
+                "gen_delta" => delta, "gen_omega" => omega, "T" => T)
+end
+
+"""
+    DynstabRecorder(sys, nsteps)
+
+Streaming label state for one simulation: pass `rec` as
+`integrate!(...; step_callback = rec)` and call [`metrics`](@ref)`(rec; ...)`
+afterwards. It sees every step, so the labels equal `stability_metrics` of the
+full trajectory, while only the downsampled channel rows are stored.
+"""
+mutable struct DynstabRecorder
+    gptr::Vector{Int}
+    d0::Vector{Float64}
+    spread::Vector{Float64}
+    maxw::Float64
+    nseen::Int
+end
+
+function DynstabRecorder(sys, nsteps::Int)
+    gptr, _ = generator_pointers(sys)
+    DynstabRecorder(gptr, zeros(length(gptr)), Vector{Float64}(undef, nsteps + 1), 0.0, 0)
+end
+
+function (r::DynstabRecorder)(k::Int, t::Float64, z::AbstractVector)
+    if k == 1
+        @inbounds for (i, p) in enumerate(r.gptr); r.d0[i] = z[p + 5]; end
+        r.maxw = 0.0
+    end
+    if !isempty(r.gptr)
+        lo, hi, r.maxw = _spread_step(z, r.gptr, r.d0, r.maxw)
+        r.spread[k] = hi - lo
+    end
+    r.nseen = k
+    return nothing
+end
+
+function metrics(r::DynstabRecorder; angle_sep_threshold::Float64=deg2rad(180.0),
+                 tail_fraction::Float64=0.2, decay_ratio::Float64=0.5)
+    0.0 < tail_fraction < 1.0 || error("tail_fraction must be in (0, 1)")
+    0.0 < decay_ratio  <= 1.0 || error("decay_ratio must be in (0, 1]")
+    r.nseen == length(r.spread) || error("recorder saw $(r.nseen) of $(length(r.spread)) steps")
+    if isempty(r.gptr)
+        return Dict("stable" => true, "settled" => true,
+                    "max_angle_sep_deg" => 0.0, "max_freq_dev" => 0.0,
+                    "final_angle_sep_deg" => 0.0, "initial_sep_deg" => 0.0,
+                    "tail_peak_ratio" => 0.0, "diverged" => false)
+    end
+    return _metrics_from_spread(r.spread, r.maxw, r.d0; angle_sep_threshold=angle_sep_threshold,
+                                tail_fraction=tail_fraction, decay_ratio=decay_ratio)
+end
+
+"""
+    simulate_sample(dprob, sys, t_final; dt, downsample, label_kw...) -> (channels, metrics)
+
+Integrate one scenario and return its channels and labels, storing only the
+downsampled channel rows (not the full trajectory). Equal to
+`dynamics_channels(sys, traj; downsample)` and `stability_metrics(sys, traj)`
+of the full `traj`.
+"""
+function simulate_sample(dprob, sys, t_final::Float64; dt::Float64, downsample::Int=1,
+                         angle_sep_threshold::Float64=deg2rad(180.0),
+                         tail_fraction::Float64=0.2, decay_ratio::Float64=0.5)
+    downsample >= 1 || error("downsample must be >= 1")
+    rows, nbus, ng = channel_rows(sys)
+    nsteps, _ = GradPower._time_grid(t_final, dt)
+    rec = DynstabRecorder(sys, nsteps)
+    _, sub = GradPower.integrate!(dprob, sys, t_final; dt=dt, save_idxs=rows,
+                                  save_every=downsample, step_callback=rec)
+    ch = channels_from_rows(sub, nbus, ng)
+    m = metrics(rec; angle_sep_threshold=angle_sep_threshold,
+                tail_fraction=tail_fraction, decay_ratio=decay_ratio)
+    return ch, m
+end
+
+"""
     dynamics_graph(sys) -> Dict
 
 Static topology, written once per output file. Arrays become datasets and
@@ -503,20 +622,38 @@ function stability_metrics(sys, traj::AbstractMatrix;
     end
 
     d0 = [traj[p + 5, 1] for p in gptr]
-    initial_sep = maximum(d0) - minimum(d0)
 
     spread = Vector{Float64}(undef, nT)
     maxw = 0.0
     @inbounds for c in 1:nT
-        lo = Inf; hi = -Inf
-        for (i, p) in enumerate(gptr)
-            dv = traj[p + 5, c] - d0[i]          # deviation from pre-fault
-            dv < lo && (lo = dv); dv > hi && (hi = dv)
-            w = abs(traj[p + 4, c]); w > maxw && (maxw = w)
-        end
+        lo, hi, maxw = _spread_step(view(traj, :, c), gptr, d0, maxw)
         spread[c] = hi - lo
     end
+    return _metrics_from_spread(spread, maxw, d0; angle_sep_threshold=angle_sep_threshold,
+                                tail_fraction=tail_fraction, decay_ratio=decay_ratio)
+end
 
+# Per-step part of `stability_metrics`: min/max deviation from the pre-fault
+# angles `d0` over all machines, and the running max |omega|. Shared by the
+# full-trajectory and the streaming (`DynstabRecorder`) paths so both compute
+# bit-identical labels.
+@inline function _spread_step(z::AbstractVector, gptr::Vector{Int}, d0::Vector{Float64},
+                              maxw::Float64)
+    lo = Inf; hi = -Inf
+    @inbounds for (i, p) in enumerate(gptr)
+        dv = z[p + 5] - d0[i]          # deviation from pre-fault
+        dv < lo && (lo = dv); dv > hi && (hi = dv)
+        w = abs(z[p + 4]); w > maxw && (maxw = w)
+    end
+    return lo, hi, maxw
+end
+
+# Labels from the separation series `spread[c]` (one entry per time step).
+function _metrics_from_spread(spread::Vector{Float64}, maxw::Float64, d0::Vector{Float64};
+                              angle_sep_threshold::Float64, tail_fraction::Float64,
+                              decay_ratio::Float64)
+    nT = length(spread)
+    initial_sep = maximum(d0) - minimum(d0)
     diverged = !all(isfinite, spread) || !isfinite(maxw)
     peak = diverged ? Inf : maximum(spread)
 
