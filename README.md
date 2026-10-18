@@ -195,8 +195,14 @@ gbl = ext.GpuBatchedLayout(dp, sys, M; linear_solver=SparseDirectSolverBackend()
 tvec, trajs = ext.integrate_gpu_cudss!(gbl, sys, 1.0; dt=1.0/120.0)
 ```
 
-On a Quadro GV100, the GPU path achieves ~11x speedup over CPU KLU for
-a 70,000-bus system (216k unknowns).
+Measured on a Quadro GV100 vs a 4× Xeon Gold 6140 (one core per scenario),
+ACTIVSg70k (216k unknowns), 1 s with a bus fault, both with Jacobian reuse:
+one scenario takes 0.9 s on the GPU (`integrate_gpu_schur_cudss!`) vs 9.3 s
+with CPU `integrate!` (KLU); 16 scenarios take 18 s vs 54 s with
+`integrate_batched!` on 16 threads. For smaller systems run in batches the
+threaded CPU path is usually faster (ACTIVSg2000, 64 scenarios: 3.8 s GPU vs
+2.6 s CPU on 64 threads). GPU batch memory grows with M (ACTIVSg70k: about
+0.33 GiB per scenario).
 
 ## Repository layout
 

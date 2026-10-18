@@ -2821,11 +2821,32 @@ function integrate_gpu_shared_multi!(
     return tvec, trajs
 end
 
+# Modified Newton on the GPU (see `GradPower.JacobianReuse`): the batched
+# factorization is kept across Newton iterations and time steps and is
+# refreshed when an iteration contracts the residual by less than `reuse.rho`,
+# after `reuse.max_stale` solves, or when `dt` differs from the factorization's
+# (dt = 0 event re-solves, and the step after them). The decision is global for
+# the batch: one norm over all scenarios, and the uniform batched factorization
+# is refreshed for all of them. On failure the step is retried from its initial
+# guess with full Newton. `reuse.enabled = false` is full Newton.
+function _newton_with_retry!(loop!, gbl::GpuBatchedLayout, reuse::GradPower.JacobianReuse,
+                             zstart::Union{Nothing,CuMatrix{Float64}})
+    reuse.enabled || return loop!(false)
+    zstart === nothing && (zstart = similar(gbl.z))
+    copyto!(zstart, gbl.z)
+    loop!(true) && return true
+    copyto!(gbl.z, zstart)
+    return loop!(false)
+end
+
 """
-    _newton_step_schur_cudss_gpu!(gbl, dyn, L, dt; ...)
+    _newton_step_schur_cudss_gpu!(gbl, dyn, L, dt; reuse, zstart, ...)
 
 GPU Schur Newton step. All computation on GPU except per-scenario cuDSS
-factorization of the small reduced system S.
+factorization of the small reduced system S. With `reuse` (modified Newton),
+the cluster LU factors, A⁻¹B, C and the factored S are kept between
+refactorizations; the reduced RHS and back-substitution are redone each
+iteration. `zstart` is a scratch copy of `gbl.z` for the full-Newton retry.
 """
 function _newton_step_schur_cudss_gpu!(
     gbl::GpuBatchedLayout,
@@ -2834,7 +2855,18 @@ function _newton_step_schur_cudss_gpu!(
     dt::Float64;
     itermax::Int = 30,
     tol::Float64 = 1e-10,
+    reuse::GradPower.JacobianReuse = GradPower.JacobianReuse(false),
+    zstart::Union{Nothing,CuMatrix{Float64}} = nothing,
 )
+    return _newton_with_retry!(gbl, reuse, zstart) do use_reuse
+        _newton_loop_schur_cudss_gpu!(gbl, dyn, L, dt, reuse, use_reuse, itermax, tol)
+    end
+end
+
+function _newton_loop_schur_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSystemDynamics,
+                                       L::GradPower.SimulationLayout, dt::Float64,
+                                       reuse::GradPower.JacobianReuse, use_reuse::Bool,
+                                       itermax::Int, tol::Float64)
     M       = gbl.M
     sys_dim = gbl.sys_dim
     n_red   = gbl.S_n
@@ -2845,6 +2877,8 @@ function _newton_step_schur_cudss_gpu!(
     tol_l2 = tol * sqrt(Float64(sys_dim * M))
 
     first_factor = true
+    stale = 0
+    norm_prev = Inf
 
     for iter in 1:itermax
         # 1. Residual + backward Euler
@@ -2854,11 +2888,28 @@ function _newton_step_schur_cudss_gpu!(
         norm_f = CUDA.CUBLAS.nrm2(f_flat)
         norm_f < tol_l2 && return true
 
-        # 3. Jacobian + backward Euler scaling
-        _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
+        if GradPower._needs_refactor(reuse, use_reuse, dt, stale, norm_f, norm_prev)
+            # 3. Jacobian + backward Euler scaling
+            _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
 
-        # 4. Extract A/B/C, factor A, solve A⁻¹B (all clusters × all scenarios)
-        _schur_extract_and_factor_gpu!(gbl)
+            # 4. Extract A/B/C, factor A, solve A⁻¹B (all clusters × all scenarios)
+            _schur_extract_and_factor_gpu!(gbl)
+
+            # 4a. Assemble S for ALL scenarios (batched), CSC→CSR, factor
+            _schur_assemble_S_batched_gpu!(gbl)
+            kernel_csr = schur_csc_to_csr_batched_ka!(backend)
+            kernel_csr(gbl.S_csr_nzval_batched, gbl.S_nzval_batched, gbl.csc_to_csr_perm_S;
+                       ndrange=(S_nnz, M))
+            KernelAbstractions.synchronize(backend)
+            if first_factor
+                _execute_chunks!("factorization", gbl.cudss_S_solver_batched)
+                first_factor = false
+            else
+                _execute_chunks!("refactorization", gbl.cudss_S_solver_batched)
+            end
+            reuse.dt = dt
+            stale = 0
+        end
 
         # 4b. Gather f_wk and solve A⁻¹ f_wk — one fused launch per group
         for (g, glu) in enumerate(gbl.schur_batched_lus)
@@ -2869,9 +2920,6 @@ function _newton_step_schur_cudss_gpu!(
             KernelAbstractions.synchronize(backend)
             CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, fwk, glu.ipiv)
         end
-
-        # 5a. Assemble S for ALL scenarios (batched)
-        _schur_assemble_S_batched_gpu!(gbl)
 
         # 5b. Gather reduced RHS for ALL scenarios (batched)
         kernel_rhs = schur_gather_rhs_batched_ka!(backend)
@@ -2894,21 +2942,7 @@ function _newton_step_schur_cudss_gpu!(
         # 5d. Negate RHS for all scenarios at once
         CUDA.CUBLAS.scal!(n_red * M, -1.0, gbl.schur_rhs_batched)
 
-        # 5e. Batched CSC→CSR for S (all M scenarios at once)
-        kernel_csr = schur_csc_to_csr_batched_ka!(backend)
-        kernel_csr(gbl.S_csr_nzval_batched, gbl.S_nzval_batched, gbl.csc_to_csr_perm_S;
-                   ndrange=(S_nnz, M))
-        KernelAbstractions.synchronize(backend)
-
-        # Batched cuDSS factorization of S
-        if first_factor
-            _execute_chunks!("factorization", gbl.cudss_S_solver_batched)
-            first_factor = false
-        else
-            _execute_chunks!("refactorization", gbl.cudss_S_solver_batched)
-        end
-
-        # Batched cuDSS solve
+        # 5e. Batched cuDSS solve with the (possibly reused) factored S
         _execute_chunks!("solve", gbl.cudss_S_solver_batched)
 
         # 5f. Scatter dv into z for all M scenarios
@@ -2925,6 +2959,8 @@ function _newton_step_schur_cudss_gpu!(
                       wk, M; ndrange=(nc, M))
         end
         KernelAbstractions.synchronize(backend)
+        stale += 1
+        norm_prev = norm_f
     end
 
     return false
@@ -2951,7 +2987,18 @@ function _newton_step_cudss_gpu!(
     dt::Float64;
     itermax::Int = 30,
     tol::Float64 = 1e-10,
+    reuse::GradPower.JacobianReuse = GradPower.JacobianReuse(false),
+    zstart::Union{Nothing,CuMatrix{Float64}} = nothing,
 )
+    return _newton_with_retry!(gbl, reuse, zstart) do use_reuse
+        _newton_loop_cudss_gpu!(gbl, dyn, L, dt, reuse, use_reuse, itermax, tol)
+    end
+end
+
+function _newton_loop_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSystemDynamics,
+                                 L::GradPower.SimulationLayout, dt::Float64,
+                                 reuse::GradPower.JacobianReuse, use_reuse::Bool,
+                                 itermax::Int, tol::Float64)
     M       = gbl.M
     sys_dim = gbl.sys_dim
     nnz_J   = size(gbl.J_nzval, 2)
@@ -2961,6 +3008,8 @@ function _newton_step_cudss_gpu!(
     tol_l2 = tol * sqrt(Float64(sys_dim * M))
 
     first_factor = true
+    stale = 0
+    norm_prev = Inf
     for iter in 1:itermax
         # 1. Residual + backward Euler on GPU
         _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
@@ -2969,23 +3018,27 @@ function _newton_step_cudss_gpu!(
         norm_f = CUDA.CUBLAS.nrm2(f_flat)
         norm_f < tol_l2 && return true
 
-        # 3. Jacobian + backward Euler scaling on GPU
-        _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
+        if GradPower._needs_refactor(reuse, use_reuse, dt, stale, norm_f, norm_prev)
+            # 3. Jacobian + backward Euler scaling on GPU
+            _beuler_jac_all_scenarios_gpu!(gbl, dyn, L, dt)
 
-        # 4. Batched CSC→CSR permutation (all M scenarios at once)
-        kernel = csc_to_csr_batched_ka!(backend)
-        kernel(gbl.csr_nzval_batched, gbl.J_nzval, gbl.csc_to_csr_perm;
-               ndrange=(nnz_J, M))
-        KernelAbstractions.synchronize(backend)
+            # 4. Batched CSC→CSR permutation (all M scenarios at once)
+            kernel = csc_to_csr_batched_ka!(backend)
+            kernel(gbl.csr_nzval_batched, gbl.J_nzval, gbl.csc_to_csr_perm;
+                   ndrange=(nnz_J, M))
+            KernelAbstractions.synchronize(backend)
 
-        # 5. Batched factorization (all M scenarios at once)
-        # No ds_update! needed — solver already holds a pointer to
-        # csr_nzval_batched, which the kernel updated in-place above.
-        if first_factor
-            _execute_chunks!("factorization", gbl.cudss_solver_batched)
-            first_factor = false
-        else
-            _execute_chunks!("refactorization", gbl.cudss_solver_batched)
+            # 5. Batched factorization (all M scenarios at once)
+            # No ds_update! needed — solver already holds a pointer to
+            # csr_nzval_batched, which the kernel updated in-place above.
+            if first_factor
+                _execute_chunks!("factorization", gbl.cudss_solver_batched)
+                first_factor = false
+            else
+                _execute_chunks!("refactorization", gbl.cudss_solver_batched)
+            end
+            reuse.dt = dt
+            stale = 0
         end
 
         # 6. Build batched RHS = -f^T  (f is (M, sys_dim), rhs_buf is (sys_dim, M))
@@ -3002,6 +3055,8 @@ function _newton_step_cudss_gpu!(
         kernel = _add_sol_to_z_ka!(backend)
         kernel(gbl.z, gbl.sol_buf; ndrange=(sys_dim, M))
         KernelAbstractions.synchronize(backend)
+        stale += 1
+        norm_prev = norm_f
     end
 
     return false
@@ -3025,11 +3080,16 @@ end
 # -----------------------------------------------------------------------
 
 """
-    integrate_gpu_cudss!(gbl, ps, tf; dt=1/120, newton_tol=1e-10)
+    integrate_gpu_cudss!(gbl, ps, tf; dt=1/120, newton_tol=1e-10,
+                         jacobian_reuse=true, predictor=true)
 
 GPU-resident batched integration with cuDSS monolithic direct solve.
 Zero CPU↔GPU transfers in the Newton loop. Trajectory snapshots
 downloaded once per time step.
+
+`jacobian_reuse` and `predictor` have the meaning of `GradPower.integrate!`
+(modified Newton, linear predictor). The refactorization decision is shared by
+all scenarios of the batch. Set both to `false` for full Newton.
 """
 function integrate_gpu_cudss!(
     gbl::GpuBatchedLayout,
@@ -3037,6 +3097,8 @@ function integrate_gpu_cudss!(
     tf::Float64;
     dt::Float64 = 1.0 / 120.0,
     newton_tol::Float64 = 1e-10,
+    jacobian_reuse::Bool = true,
+    predictor::Bool = true,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
     L       = dyn.layout::GradPower.SimulationLayout
@@ -3062,13 +3124,26 @@ function integrate_gpu_cudss!(
 
     copyto!(gbl.zold, gbl.z)
 
+    # Modified Newton + linear predictor, as in `GradPower.integrate!`.
+    reuse = GradPower.JacobianReuse(jacobian_reuse)
+    zstart = jacobian_reuse ? similar(gbl.z) : nothing  # full-Newton retry start
+    zprev = predictor ? similar(gbl.z) : nothing        # z_{k-1}
+    have_prev = false
+
     try
     sched_idx = 1
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
+        # Initial guess 2 z_k - z_{k-1} (not across events); zold stays z_k.
+        if predictor
+            have_prev && (gbl.z .= 2.0 .* gbl.zold .- zprev)
+            copyto!(zprev, gbl.zold)
+        end
 
-        ok = _newton_step_cudss_gpu!(gbl, dyn, L, dt; tol = newton_tol)
+        ok = _newton_step_cudss_gpu!(gbl, dyn, L, dt; tol = newton_tol,
+                                     reuse = reuse, zstart = zstart)
         GradPower.check_newton(ok, tvec[k + 1], "GPU cuDSS time step")
+        have_prev = true
 
         # Trajectory snapshot — GPU to GPU, no download
         snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
@@ -3087,11 +3162,16 @@ function integrate_gpu_cudss!(
         end
 
         if any_event
+            # The equations changed: the factorization is stale and the
+            # trajectory is not smooth across the event.
+            reuse.dt = NaN
+            have_prev = false
             for (ei, ev) in enumerate(events)
                 CUDA.@allowscalar gbl.event_status[ei] = ev.status
             end
             copyto!(gbl.zold, gbl.z)
-            ok = _newton_step_cudss_gpu!(gbl, dyn, L, 0.0; tol = newton_tol)
+            ok = _newton_step_cudss_gpu!(gbl, dyn, L, 0.0; tol = newton_tol,
+                                         reuse = reuse, zstart = zstart)
             GradPower.check_newton(ok, tvec[k + 1], "GPU cuDSS dt=0 event re-solve")
         end
     end
@@ -3111,10 +3191,12 @@ end
 # -----------------------------------------------------------------------
 
 """
-    integrate_gpu_schur_cudss!(gbl, ps, tf; dt=1/120, newton_tol=1e-10)
+    integrate_gpu_schur_cudss!(gbl, ps, tf; dt=1/120, newton_tol=1e-10,
+                               jacobian_reuse=true, predictor=true)
 
 GPU-resident batched integration using Schur-complement reduction.
-A_k factored via cuBLAS batched, S solved via cuDSS.
+A_k factored via cuBLAS batched, S solved via cuDSS. `jacobian_reuse` and
+`predictor` as in [`integrate_gpu_cudss!`](@ref).
 """
 function integrate_gpu_schur_cudss!(
     gbl::GpuBatchedLayout,
@@ -3122,6 +3204,8 @@ function integrate_gpu_schur_cudss!(
     tf::Float64;
     dt::Float64 = 1.0 / 120.0,
     newton_tol::Float64 = 1e-10,
+    jacobian_reuse::Bool = true,
+    predictor::Bool = true,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
     L       = dyn.layout::GradPower.SimulationLayout
@@ -3147,13 +3231,26 @@ function integrate_gpu_schur_cudss!(
 
     copyto!(gbl.zold, gbl.z)
 
+    # Modified Newton + linear predictor, as in `GradPower.integrate!`.
+    reuse = GradPower.JacobianReuse(jacobian_reuse)
+    zstart = jacobian_reuse ? similar(gbl.z) : nothing  # full-Newton retry start
+    zprev = predictor ? similar(gbl.z) : nothing        # z_{k-1}
+    have_prev = false
+
     try
     sched_idx = 1
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
+        # Initial guess 2 z_k - z_{k-1} (not across events); zold stays z_k.
+        if predictor
+            have_prev && (gbl.z .= 2.0 .* gbl.zold .- zprev)
+            copyto!(zprev, gbl.zold)
+        end
 
-        ok = _newton_step_schur_cudss_gpu!(gbl, dyn, L, dt; tol=newton_tol)
+        ok = _newton_step_schur_cudss_gpu!(gbl, dyn, L, dt; tol = newton_tol,
+                                           reuse = reuse, zstart = zstart)
         GradPower.check_newton(ok, tvec[k + 1], "GPU Schur time step")
+        have_prev = true
 
         # Trajectory snapshot — GPU to GPU, no download
         snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
@@ -3172,11 +3269,16 @@ function integrate_gpu_schur_cudss!(
         end
 
         if any_event
+            # The equations changed: the factorization is stale and the
+            # trajectory is not smooth across the event.
+            reuse.dt = NaN
+            have_prev = false
             for (ei, ev) in enumerate(events)
                 CUDA.@allowscalar gbl.event_status[ei] = ev.status
             end
             copyto!(gbl.zold, gbl.z)
-            ok = _newton_step_schur_cudss_gpu!(gbl, dyn, L, 0.0; tol=newton_tol)
+            ok = _newton_step_schur_cudss_gpu!(gbl, dyn, L, 0.0; tol = newton_tol,
+                                               reuse = reuse, zstart = zstart)
             GradPower.check_newton(ok, tvec[k + 1], "GPU Schur dt=0 event re-solve")
         end
     end

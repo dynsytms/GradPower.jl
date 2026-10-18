@@ -453,6 +453,71 @@ end
     end
 end
 
+# Modified Newton + predictor on the exact GPU paths (item 1.6). Every
+# combination of `jacobian_reuse`/`predictor` must match CPU full Newton per
+# scenario; scenarios differ (scaled loads) so the global refactorization
+# decision is exercised with unequal convergence. Integrating the same layout
+# twice checks the persistent solver/descriptor state.
+@testset "GPU Jacobian reuse and predictor ($(nameof(typeof(ls))))" for ls in GPU_SOLVERS
+    HAS_CUDA || return
+    ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
+
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    GradPower.build_network!(ps); GradPower.runpf!(ps)
+    dp = GradPower.DynamicProblem(ps)
+    GradPower.initialize_dynamics!(dp, ps)
+    GradPower.add_event!(ps, GradPower.ContingencyEvent(4, 0.02, 0.1, 0.2))
+    z0 = copy(dp.zvec); p0 = copy(dp.pvec)
+    zl = ps.dynamic.layout.zipload
+    function scaled_p(m)
+        p = copy(p0)
+        for k in 1:zl.n, o in (0, 1, 7, 8)   # pl, ql, yreal, yimag
+            p[Int(zl.par_ptr[k]) + o] *= 1 + 0.05 * (m - 1)
+        end
+        p
+    end
+    M = 3
+    refs = map(1:M) do m
+        dp.zvec .= z0; dp.pvec .= scaled_p(m)
+        integrate!(dp, ps, 0.5; jacobian_reuse = false, predictor = false, newton_tol = 1e-11)[2]
+    end
+    dp.zvec .= z0; dp.pvec .= p0
+
+    for integ in (ext.integrate_gpu_cudss!, ext.integrate_gpu_schur_cudss!),
+        jr in (false, true), pr in (false, true)
+        gbl = ext.GpuBatchedLayout(dp, ps, M; linear_solver = ls)
+        pm = CuMatrix(permutedims(reduce(hcat, scaled_p(m) for m in 1:M)))
+        z0m = copy(gbl.z)
+        for rep in 1:2                      # second call reuses the layout
+            copyto!(gbl.z, z0m); copyto!(gbl.p, pm)
+            _, tr = integ(gbl, ps, 0.5; jacobian_reuse = jr, predictor = pr)
+            for m in 1:M
+                @test maximum(abs.(tr[m] .- refs[m])) < 1e-6
+            end
+        end
+    end
+
+    # Fallback: a reused factorization that cannot converge in the allowed
+    # iterations must be retried with full Newton (from the same start).
+    dyn = ps.dynamic; L = dyn.layout
+    empty!(dyn.events)
+    GradPower.add_event!(ps, GradPower.ContingencyEvent(4, 1e-3, 0.1, 0.2))
+    gbl = ext.GpuBatchedLayout(dp, ps, 1; linear_solver = ls)
+    gbl.z .+= 1e-3
+    reuse = GradPower.JacobianReuse(true)
+    @test ext._newton_step_cudss_gpu!(gbl, dyn, L, 0.0; reuse = reuse, zstart = similar(gbl.z))
+    GradPower.activate!(dyn.events[1])           # stiff fault: factorization is stale
+    CUDA.@allowscalar gbl.event_status[1] = true
+    z1 = copy(gbl.z)
+    @test !ext._newton_loop_cudss_gpu!(gbl, dyn, L, 0.0, reuse, true, 2, 1e-10)  # stale J alone fails
+    copyto!(gbl.z, z1)
+    @test ext._newton_step_cudss_gpu!(gbl, dyn, L, 0.0; itermax = 2, reuse = reuse,
+                                      zstart = similar(gbl.z))                   # retry succeeds
+    GradPower.deactivate!(dyn.events[1])
+    empty!(ps.dynamic.events)
+end
+
 @testset "CUDSSBackend and SparseDirectSolverBackend agree" begin
     (HAS_CUDA && length(GPU_SOLVERS) == 2) || return
     ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
