@@ -23,6 +23,7 @@ end
     include("test_integrate.jl")
     include("test_tgov1_limits.jl")
     include("test_recorder.jl")
+    include("test_crank_nicolson.jl")
 end
 @testset "layout" begin
     include("test_layout.jl")

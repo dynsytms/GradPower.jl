@@ -533,11 +533,58 @@ function _jacobian_beuler_positions!(J::SparseMatrixCSC, L::SimulationLayout, h:
     return nothing
 end
 
+# Implicit step methods. Both are solved as a backward-Euler-shaped system
+#     z - a - c f(z) = 0   (differential rows),   g(z) = 0   (algebraic rows)
+# with anchor `a` and coefficient `c`:
+#   :backward_euler   a = z_k,                c = h
+#   :crank_nicolson   a = z_k + h/2 f(z_k),   c = h/2
+# so the CN residual is z - z_k - h/2 (f(z) + f(z_k)) and its Jacobian
+# I - h/2 f_z on differential rows; algebraic rows are unchanged. Every Newton
+# loop (monolithic, Schur, GMRES; CPU) is reused as is with (a, c).
+_check_integrator(m::Symbol) = m === :backward_euler || m === :crank_nicolson ||
+    throw(ArgumentError("integrator must be :backward_euler or :crank_nicolson, got :$m"))
+
+_step_coefficient(m::Symbol, h::Float64) = m === :crank_nicolson ? 0.5 * h : h
+
+"""
+    _cn_anchor!(a, fk, zk, u, p, dyn, ybus, L, h)
+
+Crank–Nicolson anchor `a = z_k + h/2 f(z_k)` on differential rows (`a = z_k`
+elsewhere; algebraic rows do not use it). `f(z_k)` is evaluated with the
+current equations, i.e. after any event at `t_k` and its algebraic re-solve,
+so `z_k` is the accepted (consistent) state. Overwrites `u` (routing) and `fk`.
+"""
+function _cn_anchor!(a::AbstractVector, fk::AbstractVector, zk::AbstractVector,
+                     u::AbstractVector, p::AbstractVector, dyn::PowerSystemDynamics,
+                     ybus::SparseMatrixCSC, L::SimulationLayout, h::Float64)
+    _rhs_fun_batched!(fk, zk, u, p, dyn, ybus, L)
+    copyto!(a, zk)
+    c = 0.5 * h
+    di = dyn.diff_indices
+    if di !== nothing
+        @inbounds for i in di
+            a[i] += c * fk[i]
+        end
+    else
+        @inbounds for i in 1:dyn.diff_dim
+            a[i] += c * fk[i]
+        end
+    end
+    return a
+end
+
 """
     integrate!(dp, ps, tf; dt=1/120, solver=:monolithic, linear_solver=KLUBackend(),
                newton_tol=1e-10, jacobian_reuse=true, predictor=true, ...) -> (tvec, traj)
 
-Backward-Euler integration of the DAE from `dp.zvec` to `tf`.
+Integration of the DAE from `dp.zvec` to `tf` with fixed step `dt`.
+
+`integrator = :backward_euler` (default) or `:crank_nicolson` (trapezoidal
+rule on the differential equations, `z_{k+1} = z_k + dt/2 (f(z_{k+1}) +
+f(z_k))`, algebraic equations enforced at `t_{k+1}`; second order away from
+events). Events and their `dt = 0` algebraic re-solves are the same for both;
+a CN step after an event starts from the re-solved state. CN is not available
+with `limit_method != :none` (the limit equations are backward-Euler).
 
 `jacobian_reuse=true` keeps the Jacobian factorization across Newton
 iterations and time steps (modified Newton) and refactors only when
@@ -588,8 +635,15 @@ function integrate!(
     save_idxs=Colon(),
     save_eltype::Type{<:AbstractFloat}=Float64,
     step_callback=nothing,
+    integrator::Symbol=:backward_euler,
 )
     # NOTE: Assumes initialize_dynamics!(dp, ps) has been called.
+    _check_integrator(integrator)
+    integrator === :crank_nicolson && limit_method !== :none &&
+        throw(ArgumentError("integrator=:crank_nicolson does not support limit_method=:$limit_method " *
+                            "(the limit equations are backward-Euler)"))
+    use_cn = integrator === :crank_nicolson
+    hstep = _step_coefficient(integrator, dt)   # coefficient c of the implicit system
 
     # calculate number of steps
     nsteps, tvec = _time_grid(tf, dt)
@@ -658,7 +712,7 @@ function integrate!(
     limit_workspace = build_limit_workspace(ps, J0, zold, dp.pvec;
         method=limit_method, mu=limit_mu, tolerance=limit_tolerance,
         events=limit_events === nothing ? LimitEvent[] : limit_events)
-    beuler_jac!(J0, zold, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, dt,
+    beuler_jac!(J0, zold, zold, dp.uvec, dp.pvec, ps, ps.dynamic.diff_dim, hstep,
                 limit_workspace)
 
     # pre-factorization (symbolic analysis reused by every Newton iteration)
@@ -678,7 +732,13 @@ function integrate!(
     use_schur = solver === :schur
     use_schur_gmres = solver === :schur_gmres
     sw = use_schur ? SchurWorkspace(ps; linear_solver) : nothing
-    gsw = use_schur_gmres ? GmresSchurWorkspace(ps, zold, dp.pvec, dt; linear_solver) : nothing
+    gsw = use_schur_gmres ? GmresSchurWorkspace(ps, zold, dp.pvec, hstep; linear_solver) : nothing
+
+    # Crank–Nicolson: `zanchor = z_k + dt/2 f(z_k)` replaces z_k as the anchor.
+    zanchor = use_cn ? similar(zold) : zold
+    fk = use_cn ? similar(zold) : f0
+    dyn_ = ps.dynamic::PowerSystemDynamics
+    L_ = dyn_.layout::SimulationLayout
 
     # Events mutate the system (Ybus for trips, online flags for
     # disconnects). Snapshot both and restore them on exit, including on
@@ -700,12 +760,14 @@ function integrate!(
             end
         end
         use_predictor && copyto!(zprev, zold)
+        use_cn && _cn_anchor!(zanchor, fk, zold, dp.uvec, dp.pvec, dyn_,
+                              (ps.network::Network).ybus_real, L_, dt)
         if use_schur
-            success = newton_step_schur!(zguess, f0, J0, sw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm, reuse=reuse)
+            success = newton_step_schur!(zguess, f0, J0, sw, zanchor, dp.uvec, dp.pvec, ps, hstep, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm, reuse=reuse)
         elseif use_schur_gmres
-            success = newton_step_schur_gmres!(zguess, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
+            success = newton_step_schur_gmres!(zguess, f0, J0, gsw, zanchor, dp.uvec, dp.pvec, ps, hstep, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
         else
-            success = newton_step!(zguess, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, dt, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace, reuse=reuse)
+            success = newton_step!(zguess, f0, J0, fact, zanchor, dp.uvec, dp.pvec, ps, hstep, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace, reuse=reuse)
         end
         check_newton(success, tvec[k+1], "time step (solver=$solver, limit_method=$limit_method)")
         zguess === zold || copyto!(zold, zguess)
@@ -750,7 +812,7 @@ function integrate!(
 
         # Refresh Y-preconditioner after topology change
         if any_topology_change && use_schur_gmres
-            refresh_y_preconditioner!(gsw.prec, gsw.sw, ps, zold, dp.pvec, dt)
+            refresh_y_preconditioner!(gsw.prec, gsw.sw, ps, zold, dp.pvec, hstep)
         end
 
         # re-solve at dt=0 after any event state change

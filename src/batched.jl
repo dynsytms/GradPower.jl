@@ -104,6 +104,8 @@ mutable struct _ScenarioWorkspace
     zold::Vector{Float64}
     zprev::Vector{Float64}
     zpred::Vector{Float64}
+    zanchor::Vector{Float64}   # Crank–Nicolson anchor z_k + h/2 f(z_k)
+    fk::Vector{Float64}        # f(z_k) scratch for the anchor
     u::Vector{Float64}
     p::Vector{Float64}
     f::Vector{Float64}
@@ -127,15 +129,27 @@ function _ScenarioWorkspace(bl::BatchedLayout, m::Int, J_template::SparseMatrixC
     J = copy(J_template)
     beuler_jac_batched!(J, z, u, p, dyn, ybus, L, dyn.diff_dim, dt)
     fact = Ref{Any}(ds_solver(linear_solver, J; tuned=true))
-    return _ScenarioWorkspace(z, copy(z), zeros(n), zeros(n), u, p, zeros(n), zeros(n),
+    return _ScenarioWorkspace(z, copy(z), zeros(n), zeros(n), zeros(n), zeros(n),
+                              u, p, zeros(n), zeros(n),
                               zeros(n), J, fact, JacobianReuse(jacobian_reuse), false)
 end
 
 # One implicit solve for scenario workspace `w`: a time step (dt > 0, with the
-# predictor) or the algebraic re-solve after an event (dt == 0).
+# predictor) or the algebraic re-solve after an event (dt == 0). `integrator`
+# selects the step method (see `_cn_anchor!`).
 function _solve_scenario!(w::_ScenarioWorkspace, ps::PowerSystem, dt::Float64,
-                          tol::Float64, predictor::Bool)
+                          tol::Float64, predictor::Bool,
+                          integrator::Symbol=:backward_euler)
     copyto!(w.zold, w.z)
+    anchor = w.zold
+    h = dt
+    if dt > 0.0 && integrator === :crank_nicolson
+        dyn = ps.dynamic::PowerSystemDynamics
+        _cn_anchor!(w.zanchor, w.fk, w.zold, w.u, w.p, dyn, (ps.network::Network).ybus_real,
+                    dyn.layout::SimulationLayout, dt)
+        anchor = w.zanchor
+        h = 0.5 * dt
+    end
     guess = w.z
     if dt > 0.0 && predictor && w.have_prev
         guess = w.zpred
@@ -144,7 +158,7 @@ function _solve_scenario!(w::_ScenarioWorkspace, ps::PowerSystem, dt::Float64,
         end
     end
     dt > 0.0 && copyto!(w.zprev, w.zold)
-    ok = newton_step!(guess, w.f, w.J, w.fact, w.zold, w.u, w.p, ps, dt;
+    ok = newton_step!(guess, w.f, w.J, w.fact, anchor, w.u, w.p, ps, h;
                       tol=tol, dx=w.dx, zwork=w.zwork, reuse=w.reuse)
     guess === w.z || copyto!(w.z, guess)
     w.have_prev = dt > 0.0
@@ -174,7 +188,8 @@ Integrate the `bl.M` scenarios of `bl` (each with its own initial state
 `ps`. Every scenario runs the same Newton solve as [`integrate!`](@ref) with
 `solver=:monolithic`, so a scenario's trajectory equals `integrate!` with the
 same `z`, `p` and options. Scenarios run on `Threads.nthreads()` threads when
-`threaded=true`. Returns `trajs[m]`, the `(sys_dim, nsteps+1)` trajectory of
+`threaded=true`. `integrator` is `:backward_euler` (default) or
+`:crank_nicolson`, as in `integrate!`. Returns `trajs[m]`, the `(sys_dim, nsteps+1)` trajectory of
 scenario `m`; the final states are written back to `bl.z`.
 
 `save_every`, `save_idxs` and `save_eltype` select the stored output as in
@@ -190,7 +205,9 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                              threaded::Bool=true, save_every::Integer=1,
                              save_idxs=Colon(),
                              save_eltype::Type{<:AbstractFloat}=Float64,
-                             step_callback=nothing)
+                             step_callback=nothing,
+                             integrator::Symbol=:backward_euler)
+    _check_integrator(integrator)
     dyn = ps.dynamic::PowerSystemDynamics
     L = dyn.layout::SimulationLayout
     ybus = (ps.network::Network).ybus_real
@@ -211,7 +228,8 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
     J_template = preallocate_jacobian(ps)
     ws = Vector{_ScenarioWorkspace}(undef, M)
     _foreach_scenario(M, threaded) do m
-        ws[m] = _ScenarioWorkspace(bl, m, J_template, dyn, ybus, L, dt,
+        ws[m] = _ScenarioWorkspace(bl, m, J_template, dyn, ybus, L,
+                                   _step_coefficient(integrator, dt),
                                    linear_solver, jacobian_reuse)
     end
 
@@ -227,7 +245,7 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
     sched_idx = 1
     for k in 1:nsteps
         _foreach_scenario(M, threaded) do m
-            ok[m] = _solve_scenario!(ws[m], ps, dt, newton_tol, predictor)
+            ok[m] = _solve_scenario!(ws[m], ps, dt, newton_tol, predictor, integrator)
             _record!(recs[m], k + 1, ws[m].z)
             step_callback === nothing || step_callback(m, k + 1, tvec[k + 1], ws[m].z)
         end
