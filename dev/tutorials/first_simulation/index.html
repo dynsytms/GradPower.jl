@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>First simulation · GradPower.jl</title><meta name="title" content="First simulation · GradPower.jl"/><meta property="og:title" content="First simulation · GradPower.jl"/><meta property="twitter:title" content="First simulation · GradPower.jl"/><meta name="description" content="Documentation for GradPower.jl."/><meta property="og:description" content="Documentation for GradPower.jl."/><meta property="twitter:description" content="Documentation for GradPower.jl."/><meta property="og:url" content="https://dynsytms.github.io/GradPower.jl/tutorials/first_simulation/"/><meta property="twitter:url" content="https://dynsytms.github.io/GradPower.jl/tutorials/first_simulation/"/><link rel="canonical" href="https://dynsytms.github.io/GradPower.jl/tutorials/first_simulation/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">GradPower.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Tutorials</span><ul><li class="is-active"><a class="tocitem" href>First simulation</a><ul class="internal"><li><a class="tocitem" href="#1.-Read-the-case"><span>1. Read the case</span></a></li><li><a class="tocitem" href="#2.-Build-the-network-and-solve-the-power-flow"><span>2. Build the network and solve the power flow</span></a></li><li><a class="tocitem" href="#3.-Initialize-the-dynamics"><span>3. Initialize the dynamics</span></a></li><li><a class="tocitem" href="#4.-Schedule-a-fault"><span>4. Schedule a fault</span></a></li><li><a class="tocitem" href="#5.-Integrate"><span>5. Integrate</span></a></li><li><a class="tocitem" href="#Variations-to-try"><span>Variations to try</span></a></li></ul></li><li><a class="tocitem" href="../state_vector/">Reading the results</a></li><li><a class="tocitem" href="../events/">Contingencies and events</a></li><li><a class="tocitem" href="../batched/">Many scenarios at once</a></li></ul></li><li><span class="tocitem">Guides</span><ul><li><a class="tocitem" href="../../guides/integrators/">Integrators and Newton options</a></li><li><a class="tocitem" href="../../guides/recording/">Recording and early stop</a></li><li><a class="tocitem" href="../../guides/solvers_gpu/">Linear solvers and GPU</a></li><li><a class="tocitem" href="../../guides/datasets/">Generating training data</a></li><li><a class="tocitem" href="../../guides/models/">Supported models and input files</a></li></ul></li><li><a class="tocitem" href="../../theory/">How it works</a></li><li><a class="tocitem" href="../../api/">API reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Tutorials</a></li><li class="is-active"><a href>First simulation</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>First simulation</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/dynsytms/GradPower.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/dynsytms/GradPower.jl/blob/main/docs/src/tutorials/first_simulation.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="First-simulation"><a class="docs-heading-anchor" href="#First-simulation">First simulation</a><a id="First-simulation-1"></a><a class="docs-heading-anchor-permalink" href="#First-simulation" title="Permalink"></a></h1><p>Every GradPower study follows the same five steps:</p><pre><code class="nohighlight hljs"> .raw + .dyr ──► from_psse ──► build_network! ──► runpf! ──► DynamicProblem
+                                                              initialize_dynamics!
+                                                                     │
+                       add_event! (faults, trips, ...) ──────────────┤
+                                                                     ▼
+                                                     integrate!  ──►  (t, traj)</code></pre><p>We go through them on the WSCC 9-bus system: three GENROU machines, each with an IEESGO steam governor, and three loads.</p><h2 id="1.-Read-the-case"><a class="docs-heading-anchor" href="#1.-Read-the-case">1. Read the case</a><a id="1.-Read-the-case-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Read-the-case" title="Permalink"></a></h2><pre><code class="language-julia hljs">using GradPower, CairoMakie
+ex = joinpath(pkgdir(GradPower), &quot;examples&quot;)
+
+sys = from_psse(joinpath(ex, &quot;ieee9_v33.raw&quot;), joinpath(ex, &quot;ieee9bus_gov.dyr&quot;))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">PowerSystem:
+  baseMVA: 100.0
+
+Buses:
+================================================================
+i	id			type	baseKV	v0m	v0a
+----------------------------------------------------------------
+1	&#39;BUS1        &#39;		3	16.5	1.04	0.000e+00
+2	&#39;BUS2        &#39;		2	18.0	1.025	1.620e-01
+3	&#39;BUS3        &#39;		2	13.8	1.025	8.142e-02
+4	&#39;BUS4        &#39;		1	230.0	1.02579	-3.869e-02
+5	&#39;BUS5        &#39;		1	230.0	0.99563	-6.962e-02
+6	&#39;BUS6        &#39;		1	230.0	1.01265	-6.436e-02
+7	&#39;BUS7        &#39;		1	230.0	1.02577	6.492e-02
+8	&#39;BUS8        &#39;		1	230.0	1.01588	1.270e-02
+9	&#39;BUS9        &#39;		1	230.0	1.03235	3.433e-02
+
+Gens:
+===============================================================
+bus	id		psch		qsch		mbase
+---------------------------------------------------------------
+1	&#39;1 &#39;		7.164e-01	2.705e-01	260.0
+2	&#39;1 &#39;		1.630e+00	6.654e-02	310.0
+3	&#39;1 &#39;		8.500e-01	-1.086e-01	280.0
+
+Loads:
+===================================
+bus	id		pd	qd
+-----------------------------------
+5	1 		1.25	-0.5
+6	1 		0.9	-0.3
+8	1 		1.0	-0.35
+
+Branches:
+=============================================================================================
+fr	to	id		r	x	sh	tap	shift
+---------------------------------------------------------------------------------------------
+4	5	&#39;1 &#39;		0.01	0.085	0.176	0.0	0.0
+4	6	&#39;1 &#39;		0.017	0.092	0.158	0.0	0.0
+5	7	&#39;1 &#39;		0.032	0.161	0.306	0.0	0.0
+6	9	&#39;1 &#39;		0.039	0.17	0.358	0.0	0.0
+7	8	&#39;1 &#39;		0.0085	0.072	0.149	0.0	0.0
+8	9	&#39;1 &#39;		0.0119	0.1008	0.209	0.0	0.0
+1	4	&#39;T1&#39;		0.0	0.0576	0.0	1.0	0.0
+2	7	&#39;T2&#39;		0.0	0.0625	0.0	1.0	0.0
+9	3	&#39;T3&#39;		0.0	0.0586	0.0	1.0	0.0
+
+Shunts:
+==============================
+bus	id		gsh	bsh
+------------------------------
+</code></pre><p><code>from_psse</code> parses the network (buses, lines, transformers, generators, loads) and attaches a dynamic model to each device. Generators found in the <code>.dyr</code> get their machine and controller models. Loads become ZIP loads, constant impedance by default. Generators without a dynamic record become <code>StaticGenerator</code> stand-ins that hold their bus voltage.</p><h2 id="2.-Build-the-network-and-solve-the-power-flow"><a class="docs-heading-anchor" href="#2.-Build-the-network-and-solve-the-power-flow">2. Build the network and solve the power flow</a><a id="2.-Build-the-network-and-solve-the-power-flow-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Build-the-network-and-solve-the-power-flow" title="Permalink"></a></h2><pre><code class="language-julia hljs">build_network!(sys)          # admittance matrix Y
+runpf!(sys)                  # Newton power flow (with generator Q limits)
+[(b.i, round(b.v0m, digits = 4), round(rad2deg(b.v0a), digits = 2)) for b in sys.buses]</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">9-element Vector{Tuple{Int64, Float64, Float64}}:
+ (1, 1.04, 0.0)
+ (2, 1.025, 9.28)
+ (3, 1.025, 4.66)
+ (4, 1.0258, -2.22)
+ (5, 0.9956, -3.99)
+ (6, 1.0127, -3.69)
+ (7, 1.0258, 3.72)
+ (8, 1.0159, 0.73)
+ (9, 1.0324, 1.97)</code></pre><p>The table lists the PSS/E bus number, the voltage magnitude (pu) and the angle (degrees) of the operating point.</p><h2 id="3.-Initialize-the-dynamics"><a class="docs-heading-anchor" href="#3.-Initialize-the-dynamics">3. Initialize the dynamics</a><a id="3.-Initialize-the-dynamics-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Initialize-the-dynamics" title="Permalink"></a></h2><pre><code class="language-julia hljs">dp = DynamicProblem(sys)
+initialize_dynamics!(dp, sys)
+length(dp.zvec)              # number of unknowns of the DAE</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">66</code></pre><p><code>initialize_dynamics!</code> computes every machine&#39;s internal state, every controller&#39;s setpoint and every load&#39;s admittance so that the system sits <strong>exactly</strong> at the power-flow equilibrium. A simulation without any event stays flat:</p><pre><code class="language-julia hljs">t, traj = integrate!(dp, sys, 2.0)
+maximum(abs.(traj .- traj[:, 1]))     # drift over 2 s</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">3.261058978409892e-9</code></pre><h2 id="4.-Schedule-a-fault"><a class="docs-heading-anchor" href="#4.-Schedule-a-fault">4. Schedule a fault</a><a id="4.-Schedule-a-fault-1"></a><a class="docs-heading-anchor-permalink" href="#4.-Schedule-a-fault" title="Permalink"></a></h2><p><a href="../../api/#GradPower.ContingencyEvent"><code>ContingencyEvent</code></a> is a shunt fault at an (internal) bus index. <code>sys.busmap</code> converts PSS/E bus numbers to internal indices.</p><pre><code class="language-julia hljs">add_event!(sys, ContingencyEvent(sys.busmap[7], 0.02, 0.1, 0.2))  # r = 0.02 pu, 0.1 s → 0.2 s</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">1-element Vector{ContingencyEvent}:
+ ContingencyEvent(7, false, 0.02, 0.1, 0.2, 0.0)</code></pre><h2 id="5.-Integrate"><a class="docs-heading-anchor" href="#5.-Integrate">5. Integrate</a><a id="5.-Integrate-1"></a><a class="docs-heading-anchor-permalink" href="#5.-Integrate" title="Permalink"></a></h2><pre><code class="language-julia hljs">dp.zvec .= traj[:, 1]                 # restart from the equilibrium
+t, traj = integrate!(dp, sys, 5.0)    # dt = 1/120 s by default
+size(traj)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(66, 601)</code></pre><p><code>traj[:, j]</code> is the full state at time <code>t[j]</code>. Plot the machine speeds and every bus voltage:</p><pre><code class="language-julia hljs">net = sys.dynamic.diff_dim + sys.dynamic.alg_dim       # voltages come last
+vm(b) = hypot.(traj[net + 2b - 1, :], traj[net + 2b, :])
+
+fig = Figure(size = (800, 520))
+ax1 = Axis(fig[1, 1], ylabel = &quot;speed deviation (pu)&quot;)
+for (k, i) in enumerate(GradPower.gen_speeds(sys))
+    lines!(ax1, t, traj[i, :], label = &quot;gen $k&quot;)
+end
+axislegend(ax1)
+ax2 = Axis(fig[2, 1], xlabel = &quot;time (s)&quot;, ylabel = &quot;|V| (pu)&quot;)
+for b in eachindex(sys.buses)
+    lines!(ax2, t, vm(b), label = &quot;bus $(sys.buses[b].i)&quot;)
+end
+fig[2, 2] = Legend(fig, ax2, framevisible = false)
+fig</code></pre><img src="6262fcba.png" alt="Example block output"/><p>During the fault, voltages collapse near bus 7. The machines accelerate, swing against each other after the fault is cleared, and the governors bring the frequency back.</p><div class="admonition is-success" id="Running-it-again-c680463a948272e2"><header class="admonition-header">Running it again<a class="admonition-anchor" href="#Running-it-again-c680463a948272e2" title="Permalink"></a></header><div class="admonition-body"><p><code>integrate!</code> leaves <code>sys</code> as it found it: faults are switched off, tripped lines restored, parameters reset. To repeat a study, reset <code>dp.zvec</code> to the initial state (or call <code>initialize_dynamics!</code> again), and clear or replace the events in <code>sys.dynamic.events</code>.</p></div></div><h2 id="Variations-to-try"><a class="docs-heading-anchor" href="#Variations-to-try">Variations to try</a><a id="Variations-to-try-1"></a><a class="docs-heading-anchor-permalink" href="#Variations-to-try" title="Permalink"></a></h2><pre><code class="language-julia hljs">integrate!(dp, sys, 5.0; dt = 1/240)                     # smaller step
+integrate!(dp, sys, 5.0; integrator = :crank_nicolson)   # 2nd-order method
+integrate!(dp, sys, 5.0; solver = :schur)                # Schur-reduced Newton
+integrate!(dp, sys, 5.0; save_every = 4)                 # store every 4th step</code></pre><p>Each option is explained in the guides.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../../">« Home</a><a class="docs-footer-nextpage" href="../state_vector/">Reading the results »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Monday 19 October 2026 22:18">Monday 19 October 2026</span>. Using Julia version 1.13.2.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
