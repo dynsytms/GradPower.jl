@@ -174,6 +174,23 @@ struct TripLineEvent
     ytt::ComplexF64
 end
 
+"""
+    LoadStepEvent(device_idx, t, scale)
+
+At time `t`, set the ZIPLoad `psd.devices[device_idx]` to `scale` times its
+INITIAL value (the `p` it had when the integration started): constant-power
+`P`, `Q` and the constant-impedance `G`, `B` all scale, so the total load at
+nominal voltage scales by `scale`. Steps do not compound: a later step on the
+same load with `scale = 1.0` restores it. `t` must be at least one step
+(`t >= dt`); the parameters are restored when the integration returns. Build
+with [`create_load_step_event`](@ref) (external bus number + load id).
+"""
+struct LoadStepEvent
+    device_idx::Int64
+    t::Float64
+    scale::Float64
+end
+
 mutable struct DynamicProblem
     zvec::AbstractArray
     uvec::AbstractArray
@@ -231,6 +248,7 @@ mutable struct PowerSystemDynamics
     events::Vector{ContingencyEvent}
     disconnect_events::Vector{DisconnectDeviceEvent}
     trip_events::Vector{TripLineEvent}
+    load_step_events::Vector{LoadStepEvent}
     layout::Union{Nothing,SimulationLayout}
     clusters::Any  # Union{Nothing,ClusterTable} — can't use ClusterTable here (defined later in clusters.jl)
     diff_indices::Union{Nothing,Vector{Int}}  # z-positions of differential states after cluster reordering
@@ -295,7 +313,7 @@ function SolverLog()
 end
 
 function PowerSystemDynamics()
-    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, nothing, Vector{ContingencyEvent}(), Vector{DisconnectDeviceEvent}(), Vector{TripLineEvent}(), nothing, nothing, nothing, nothing, Int[], Int[])
+    psd = PowerSystemDynamics(Vector{DynamicDevice}(), 0, 0, 0, 0, 0, nothing, nothing, Vector{ContingencyEvent}(), Vector{DisconnectDeviceEvent}(), Vector{TripLineEvent}(), LoadStepEvent[], nothing, nothing, nothing, nothing, Int[], Int[])
     return psd
 end
 
@@ -549,6 +567,43 @@ function add_trip_event!(ps::PowerSystem, event::TripLineEvent)
     add_trip_event!(ps.dynamic, event)
 end
 
+function add_load_step_event!(ps::PowerSystem, event::LoadStepEvent)
+    ps.dynamic === nothing && throw(ArgumentError("no dynamics data: cannot register a load step"))
+    dev = ps.dynamic.devices[event.device_idx]
+    dev.dtype isa ZIPLoad ||
+        throw(ArgumentError("LoadStepEvent device $(event.device_idx) is a $(typeof(dev.dtype)), not a ZIPLoad"))
+    isfinite(event.scale) && event.scale >= 0.0 ||
+        throw(ArgumentError("LoadStepEvent scale must be finite and >= 0, got $(event.scale)"))
+    push!(ps.dynamic.load_step_events, event)
+end
+
+"""
+    find_load_device(ps, bus_ext, id) -> device index
+
+Index in `ps.dynamic.devices` of the ZIPLoad with PSS/E bus number `bus_ext`
+and load id `id` (compared after stripping quotes/blanks, as for machine ids).
+Errors if there is none or more than one.
+"""
+function find_load_device(ps::PowerSystem, bus_ext::Int, id::AbstractString)
+    haskey(ps.busmap, bus_ext) || throw(ArgumentError("bus $bus_ext not in the case"))
+    b = ps.busmap[bus_ext]
+    key = _normalize_id(id)
+    hits = findall(d -> d.dtype isa ZIPLoad && d.dtype.bus == b && _normalize_id(d.dtype.id) == key,
+                   ps.dynamic.devices)
+    isempty(hits) && throw(ArgumentError("no load with id \"$key\" at bus $bus_ext"))
+    length(hits) == 1 || throw(ArgumentError("load id \"$key\" at bus $bus_ext is ambiguous ($(length(hits)) matches)"))
+    return hits[1]
+end
+
+"""
+    create_load_step_event(ps, bus_ext, id, t, scale) -> LoadStepEvent
+
+Load step on the load `id` at PSS/E bus `bus_ext`: at time `t` it becomes
+`scale` times its initial value (e.g. `1.1` = +10 %, `0.0` = shed).
+"""
+create_load_step_event(ps::PowerSystem, bus_ext::Int, id::AbstractString, t::Real, scale::Real) =
+    LoadStepEvent(find_load_device(ps, bus_ext, id), Float64(t), Float64(scale))
+
 """
     create_trip_line_event(ps, from_bus_ext, to_bus_ext, ton; toff=Inf) -> TripLineEvent
 
@@ -790,7 +845,8 @@ export Bus, Gen, Load, Branch, Shunt, PowerSystem
 export build_network!
 export runpf, runpf!
 export DynamicDevice, PowerSystemDynamics
-export DynamicProblem, ContingencyEvent, DisconnectDeviceEvent, TripLineEvent
+export DynamicProblem, ContingencyEvent, DisconnectDeviceEvent, TripLineEvent, LoadStepEvent
+export add_load_step_event!, create_load_step_event, find_load_device
 export add_device!
 export add_event!, add_disconnect_event!, add_trip_event!, create_trip_line_event
 export initialize_dynamics!, integrate!

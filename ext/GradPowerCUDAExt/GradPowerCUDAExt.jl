@@ -2368,6 +2368,7 @@ function integrate_gpu_shared!(
     newton_tol::Float64 = 1e-10,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
+    GradPower._check_gpu_events(ps, "integrate_gpu_shared")
     L       = dyn.layout::GradPower.SimulationLayout
     M       = gbl.M
     sys_dim = gbl.sys_dim
@@ -2760,6 +2761,7 @@ function integrate_gpu_shared_multi!(
     newton_tol::Float64 = 1e-10,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
+    GradPower._check_gpu_events(ps, "integrate_gpu_shared_multi")
     L       = dyn.layout::GradPower.SimulationLayout
     M       = gbl.M
     sys_dim = gbl.sys_dim
@@ -3101,6 +3103,7 @@ function integrate_gpu_cudss!(
     predictor::Bool = true,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
+    GradPower._check_gpu_events(ps, "integrate_gpu_cudss")
     L       = dyn.layout::GradPower.SimulationLayout
     M       = gbl.M
     sys_dim = gbl.sys_dim
@@ -3208,6 +3211,7 @@ function integrate_gpu_schur_cudss!(
     predictor::Bool = true,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
+    GradPower._check_gpu_events(ps, "integrate_gpu_schur_cudss")
     L       = dyn.layout::GradPower.SimulationLayout
     M       = gbl.M
     sys_dim = gbl.sys_dim

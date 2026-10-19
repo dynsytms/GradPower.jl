@@ -221,6 +221,11 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
         push!(event_schedule, (Int(round(ev.ton / dt)), ei, :on))
         push!(event_schedule, (Int(round(ev.toff / dt)), ei, :off))
     end
+    load_steps = dyn.load_step_events
+    for (li, lev) in enumerate(load_steps)
+        _check_event_time(lev.t, dt, "LoadStepEvent")
+        push!(event_schedule, (Int(round(lev.t / dt)), li, :load_step))
+    end
     sort!(event_schedule, by = x -> x[1])
 
     # preallocate_jacobian writes the layout's position caches, so it runs
@@ -240,6 +245,9 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
         step_callback === nothing || step_callback(m, 1, tvec[1], ws[m].z)
     end
     ok = trues(M)
+    # Load steps scale each scenario's own initial parameters (bl.p is not
+    # modified: the workspaces hold copies).
+    p0s = isempty(load_steps) ? nothing : [copy(w.p) for w in ws]
 
     try
     sched_idx = 1
@@ -259,6 +267,10 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                 activate!(events[idx])
             elseif action === :off
                 deactivate!(events[idx])
+            elseif action === :load_step
+                for m in 1:M
+                    _apply_load_step!(ws[m].p, p0s[m], dyn, load_steps[idx])
+                end
             end
             any_event = true
             sched_idx += 1
