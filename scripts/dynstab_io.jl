@@ -429,12 +429,22 @@ mutable struct DynstabRecorder
     spread::Vector{Float64}
     maxw::Float64
     nseen::Int
+    stop_sep::Float64      # early-stop separation (rad, relative to t = 0); Inf = off
 end
 
-function DynstabRecorder(sys, nsteps::Int)
+function DynstabRecorder(sys, nsteps::Int; stop_sep::Float64=Inf)
     gptr, _ = generator_pointers(sys)
-    DynstabRecorder(gptr, zeros(length(gptr)), Vector{Float64}(undef, nsteps + 1), 0.0, 0)
+    DynstabRecorder(gptr, zeros(length(gptr)), Vector{Float64}(undef, nsteps + 1), 0.0, 0,
+                    stop_sep)
 end
+
+# `stop_condition` for integrate!: the rotor-angle separation, relative to
+# the initial operating point (as in the labels), exceeded `stop_sep`.
+# Called after the recorder has seen step k.
+should_stop(r::DynstabRecorder, k::Int) =
+    !isempty(r.gptr) && r.nseen == k && !(r.spread[k] <= r.stop_sep)
+
+stopped_early(r::DynstabRecorder) = r.nseen < length(r.spread)
 
 function (r::DynstabRecorder)(k::Int, t::Float64, z::AbstractVector)
     if k == 1
@@ -453,6 +463,23 @@ function metrics(r::DynstabRecorder; angle_sep_threshold::Float64=deg2rad(180.0)
                  tail_fraction::Float64=0.2, decay_ratio::Float64=0.5)
     0.0 < tail_fraction < 1.0 || error("tail_fraction must be in (0, 1)")
     0.0 < decay_ratio  <= 1.0 || error("decay_ratio must be in (0, 1]")
+    if stopped_early(r)
+        # Truncated at loss of synchronism: the run is unstable by
+        # construction (stop_sep >= angle_sep_threshold, see simulate_sample).
+        # Peak/final values are those of the stored prefix; the tail-decay
+        # test does not apply (settled = false, tail_peak_ratio = NaN).
+        sp = view(r.spread, 1:r.nseen)
+        return Dict(
+            "stable"              => false,
+            "settled"             => false,
+            "diverged"            => !all(isfinite, sp) || !isfinite(r.maxw),
+            "max_angle_sep_deg"   => rad2deg(maximum(sp)),
+            "final_angle_sep_deg" => rad2deg(sp[end]),
+            "initial_sep_deg"     => rad2deg(maximum(r.d0) - minimum(r.d0)),
+            "tail_peak_ratio"     => NaN,
+            "max_freq_dev"        => r.maxw,
+        )
+    end
     r.nseen == length(r.spread) || error("recorder saw $(r.nseen) of $(length(r.spread)) steps")
     if isempty(r.gptr)
         return Dict("stable" => true, "settled" => true,
@@ -465,25 +492,46 @@ function metrics(r::DynstabRecorder; angle_sep_threshold::Float64=deg2rad(180.0)
 end
 
 """
-    simulate_sample(dprob, sys, t_final; dt, downsample, label_kw...) -> (channels, metrics)
+    simulate_sample(dprob, sys, t_final; dt, downsample, early_stop_sep=nothing, label_kw...)
+        -> (channels, metrics)
 
 Integrate one scenario and return its channels and labels, storing only the
 downsampled channel rows (not the full trajectory). Equal to
 `dynamics_channels(sys, traj; downsample)` and `stability_metrics(sys, traj)`
 of the full `traj`.
+
+`early_stop_sep` (rad, `>= angle_sep_threshold`) ends the simulation at the
+first step whose rotor-angle separation relative to the initial operating
+point exceeds it. The `stable` label is then the same as for the full run
+(always `false`); the channels are the stored prefix of the full run's.
+`metrics` gains `terminated_early`, `t_stop` and `stop_reason`
+(`"angle_separation"` or `"none"`) whenever `early_stop_sep` is given.
 """
 function simulate_sample(dprob, sys, t_final::Float64; dt::Float64, downsample::Int=1,
                          angle_sep_threshold::Float64=deg2rad(180.0),
-                         tail_fraction::Float64=0.2, decay_ratio::Float64=0.5)
+                         tail_fraction::Float64=0.2, decay_ratio::Float64=0.5,
+                         early_stop_sep::Union{Nothing,Float64}=nothing)
     downsample >= 1 || error("downsample must be >= 1")
+    early_stop_sep === nothing || early_stop_sep >= angle_sep_threshold ||
+        error("early_stop_sep must be >= angle_sep_threshold, or the stable label could change")
     rows, nbus, ng = channel_rows(sys)
     nsteps, _ = GradPower._time_grid(t_final, dt)
-    rec = DynstabRecorder(sys, nsteps)
-    _, sub = GradPower.integrate!(dprob, sys, t_final; dt=dt, save_idxs=rows,
-                                  save_every=downsample, step_callback=rec)
+    rec = DynstabRecorder(sys, nsteps;
+                          stop_sep = early_stop_sep === nothing ? Inf : early_stop_sep)
+    stop = early_stop_sep === nothing ? nothing : (k, t, z) -> should_stop(rec, k)
+    tv, sub = GradPower.integrate!(dprob, sys, t_final; dt=dt, save_idxs=rows,
+                                   save_every=downsample, step_callback=rec,
+                                   stop_condition=stop)
     ch = channels_from_rows(sub, nbus, ng)
     m = metrics(rec; angle_sep_threshold=angle_sep_threshold,
                 tail_fraction=tail_fraction, decay_ratio=decay_ratio)
+    if early_stop_sep !== nothing
+        m = Dict{String,Any}(m)
+        early = stopped_early(rec)
+        m["terminated_early"] = early
+        m["t_stop"] = early ? (rec.nseen - 1) * dt : nsteps * dt
+        m["stop_reason"] = early ? "angle_separation" : "none"
+    end
     return ch, m
 end
 

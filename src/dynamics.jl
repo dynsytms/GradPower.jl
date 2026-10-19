@@ -610,6 +610,15 @@ By default the full trajectory is returned: `traj[:, j]` is the state at
     after every accepted step `k = 2, …, nsteps+1`, with the full state `z` at
     time `t`, whether or not it is stored. `z` must not be modified.
 
+# Early termination
+
+`stop_condition(k, t, z) -> Bool` is evaluated after every accepted step
+`k = 2, …, nsteps+1` (after `step_callback`, before that step's events). When
+it returns `true` the integration ends at `t`: `dp.zvec` is set to that state
+and the output holds the stored steps up to it (`tvec[end] <= t`; with
+`save_every > 1` the stop step itself is stored only if it is on the grid).
+The caller's condition records why it stopped. `z` must not be modified.
+
 At an event step the stored (and passed) state is the one before the event's
 algebraic re-solve. These options do not change the computed solution;
 `dp.zvec` is always set to the final state.
@@ -636,6 +645,7 @@ function integrate!(
     save_eltype::Type{<:AbstractFloat}=Float64,
     step_callback=nothing,
     integrator::Symbol=:backward_euler,
+    stop_condition=nothing,
 )
     # NOTE: Assumes initialize_dynamics!(dp, ps) has been called.
     _check_integrator(integrator)
@@ -744,6 +754,7 @@ function integrate!(
     # disconnects). Snapshot both and restore them on exit, including on
     # error, so repeated integrations of the same `ps` are independent.
     saved = _snapshot_event_state(ps)
+    kstop = 0      # grid step of an early stop (0 = ran to tf)
 
     try
     # time loop
@@ -779,6 +790,11 @@ function integrate!(
         _record!(rec, k + 1, zold)
         step_callback === nothing || step_callback(k + 1, tvec[k+1], zold)
         k == nsteps && copyto!(zfinal, zold)
+        if stop_condition !== nothing && stop_condition(k + 1, tvec[k+1], zold)
+            copyto!(zfinal, zold)
+            kstop = k + 1
+            break
+        end
 
         # process all events scheduled at this step
         any_event = false
@@ -839,6 +855,7 @@ function integrate!(
     # Final state: the last grid step, before any event re-solve at that step
     # (the convention of the stored trajectory, and the previous behavior).
     dp.zvec = zfinal
+    kstop > 0 && return _truncated_output(rec, tvec, kstop)
     return _saved_times(tvec, rec.every), rec.traj
 end
 

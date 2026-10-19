@@ -60,6 +60,14 @@ full resolution exactly as before. See `simulate_sample` in `dynstab_io.jl`;
 `julia --project=scripts scripts/test_dynstab_recorder.jl` checks it is
 bit-identical to the full-trajectory path.
 
+**Early stop (optional).** `[sim] early_stop_deg = 360.0` ends a simulation
+once the rotor-angle separation, relative to the initial operating point,
+exceeds that angle (it must be `>= angle_sep_threshold_deg`, so the `stable`
+label cannot change). Stopped samples are shorter (`T` attribute) and carry
+`terminated_early = 1`, `t_stop`, `stop_reason = "angle_separation"`; their
+`tail_peak_ratio` is NaN and `settled = 0`. Off by default; when off, the
+output is unchanged.
+
 ## Output
 
 `/grid` holds static topology once per file (`bus_id`, `bus_type`,

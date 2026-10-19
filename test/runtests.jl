@@ -24,6 +24,7 @@ end
     include("test_tgov1_limits.jl")
     include("test_recorder.jl")
     include("test_crank_nicolson.jl")
+    include("test_early_stop.jl")
 end
 @testset "layout" begin
     include("test_layout.jl")
