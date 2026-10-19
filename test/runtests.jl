@@ -26,6 +26,7 @@ end
     include("test_crank_nicolson.jl")
     include("test_early_stop.jl")
     include("test_load_step.jl")
+    include("test_events_ext.jl")
 end
 @testset "layout" begin
     include("test_layout.jl")

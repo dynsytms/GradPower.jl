@@ -563,6 +563,10 @@ end
     GradPower.add_trip_event!(ps, GradPower.create_trip_line_event(ps, 4, 5, 0.05))
     @test_throws ArgumentError ext.integrate_gpu_cudss!(gbl, ps, 0.2)
     empty!(ps.dynamic.trip_events)
+    add_event!(ps, ContingencyEvent(4, 0.01, 0.05, 0.1; xfault = 0.05))   # reactive fault
+    @test_throws ArgumentError ext.integrate_gpu_cudss!(gbl, ps, 0.2)
+    @test_throws ArgumentError ext.integrate_gpu_shared!(gbl, ps, 0.2)
+    empty!(ps.dynamic.events)
 end
 
 end # @testset "gpu_backend"

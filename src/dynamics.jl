@@ -369,9 +369,15 @@ end
             bus = event.bus
             vr = v[2*(bus-1)+1]
             vi = v[2*(bus-1)+2]
-            yfault = 1.0/event.rfault
-            f[net_ptr+2*(bus-1)+1] -= yfault*vr
-            f[net_ptr+2*(bus-1)+2] -= yfault*vi
+            g, b = fault_admittance(event)
+            if b == 0.0
+                f[net_ptr+2*(bus-1)+1] -= g*vr
+                f[net_ptr+2*(bus-1)+2] -= g*vi
+            else
+                # current y v into ground, y = g + jb
+                f[net_ptr+2*(bus-1)+1] -= g*vr - b*vi
+                f[net_ptr+2*(bus-1)+2] -= b*vr + g*vi
+            end
         end
     end
     return nothing
@@ -673,9 +679,11 @@ function integrate!(
         push!(event_schedule, (Int(round(ev.toff / dt)), ei, :off))
     end
     for (di, dev) in enumerate(disconnect_events)
+        _check_event_time(dev.ton, dt, "DisconnectDeviceEvent")
         push!(event_schedule, (Int(round(dev.ton / dt)), di, :disconnect))
     end
     for (ti, tev) in enumerate(trip_events)
+        _check_event_time(tev.ton, dt, "TripLineEvent")
         push!(event_schedule, (Int(round(tev.ton / dt)), ti, :trip))
         if isfinite(tev.toff)
             push!(event_schedule, (Int(round(tev.toff / dt)), ti, :reclose))
@@ -878,7 +886,8 @@ function _check_gpu_events(ps::PowerSystem, what::AbstractString)
     isempty(dyn.disconnect_events) || push!(bad, "DisconnectDeviceEvent")
     isempty(dyn.trip_events) || push!(bad, "TripLineEvent")
     isempty(dyn.load_step_events) || push!(bad, "LoadStepEvent")
-    isempty(bad) || throw(ArgumentError("$what supports ContingencyEvent only; registered: " *
+    any(ev -> ev.xfault != 0.0, dyn.events) && push!(bad, "ContingencyEvent with xfault != 0")
+    isempty(bad) || throw(ArgumentError("$what supports resistive ContingencyEvent only; registered: " *
                                         join(bad, ", ") * " (use the CPU integrators)"))
     return nothing
 end
@@ -1138,11 +1147,15 @@ end
     @inbounds for event in events
         if event.status
             bus = event.bus
-            yfault = 1.0/event.rfault
+            g, b = fault_admittance(event)
             ptr1 = net_ptr+2*(bus-1)+1
             ptr2 = net_ptr+2*(bus-1)+2
-            jac[ptr1, ptr1] += -yfault
-            jac[ptr2, ptr2] += -yfault
+            jac[ptr1, ptr1] += -g
+            jac[ptr2, ptr2] += -g
+            if b != 0.0   # same-bus vr/vi entries are in the pattern
+                jac[ptr1, ptr2] += b
+                jac[ptr2, ptr1] += -b
+            end
         end
     end
     return nothing

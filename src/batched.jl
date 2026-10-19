@@ -226,6 +226,19 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
         _check_event_time(lev.t, dt, "LoadStepEvent")
         push!(event_schedule, (Int(round(lev.t / dt)), li, :load_step))
     end
+    # Removals (device disconnects, line trips) are the same for every
+    # scenario: they change the shared system between steps.
+    disconnect_events = dyn.disconnect_events
+    for (di, dev) in enumerate(disconnect_events)
+        _check_event_time(dev.ton, dt, "DisconnectDeviceEvent")
+        push!(event_schedule, (Int(round(dev.ton / dt)), di, :disconnect))
+    end
+    trip_events = dyn.trip_events
+    for (ti, tev) in enumerate(trip_events)
+        _check_event_time(tev.ton, dt, "TripLineEvent")
+        push!(event_schedule, (Int(round(tev.ton / dt)), ti, :trip))
+        isfinite(tev.toff) && push!(event_schedule, (Int(round(tev.toff / dt)), ti, :reclose))
+    end
     sort!(event_schedule, by = x -> x[1])
 
     # preallocate_jacobian writes the layout's position caches, so it runs
@@ -248,6 +261,7 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
     # Load steps scale each scenario's own initial parameters (bl.p is not
     # modified: the workspaces hold copies).
     p0s = isempty(load_steps) ? nothing : [copy(w.p) for w in ws]
+    saved = _snapshot_event_state(ps)
 
     try
     sched_idx = 1
@@ -271,6 +285,12 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                 for m in 1:M
                     _apply_load_step!(ws[m].p, p0s[m], dyn, load_steps[idx])
                 end
+            elseif action === :disconnect
+                _set_device_offline!(dyn, disconnect_events[idx].device_idx)
+            elseif action === :trip
+                _apply_trip_line!(ybus, trip_events[idx])
+            elseif action === :reclose
+                _apply_reclose_line!(ybus, trip_events[idx])
             end
             any_event = true
             sched_idx += 1
@@ -286,7 +306,7 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
         end
     end
     finally
-        foreach(deactivate!, events)
+        _restore_event_state!(ps, saved)
     end
 
     for m in 1:M

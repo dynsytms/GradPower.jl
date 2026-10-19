@@ -214,12 +214,12 @@ end
     @testset "restored after a failed run" begin
         tev = GradPower.create_trip_line_event(ps, 4, 5, 1.0/120.0)
         GradPower.add_trip_event!(ps, tev)
-        # A zero-resistance fault (infinite admittance) makes the dt=0
-        # re-solve fail after the trip and the disconnect have mutated the
-        # system.
+        # A near-zero-resistance fault (admittance 1e300; rfault = 0 is
+        # rejected) makes the dt=0 re-solve fail after the trip and the
+        # disconnect have mutated the system.
         gidx = findfirst(d -> d.dtype isa GradPower.IEESGO, ps.dynamic.devices)
         GradPower.add_disconnect_event!(ps, GradPower.DisconnectDeviceEvent(gidx, 1.0/120.0))
-        GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 0.0, 1.0/120.0, 0.1))
+        GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 1e-300, 1.0/120.0, 0.1))
         dp = GradPower.DynamicProblem(ps)
         GradPower.initialize_dynamics!(dp, ps)
         @test_throws Exception GradPower.integrate!(dp, ps, 0.1; dt=1.0/120.0)
