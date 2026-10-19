@@ -681,7 +681,14 @@ function integrate!(
             push!(event_schedule, (Int(round(tev.toff / dt)), ti, :reclose))
         end
     end
+    load_steps = ps.dynamic.load_step_events
+    for (li, lev) in enumerate(load_steps)
+        _check_event_time(lev.t, dt, "LoadStepEvent")
+        push!(event_schedule, (Int(round(lev.t / dt)), li, :load_step))
+    end
     sort!(event_schedule, by = x -> x[1])
+    # Initial values of the parameters a load step changes (restored on exit).
+    pvec_saved = isempty(load_steps) ? nothing : copy(dp.pvec)
 
     # retrieve sizes
     nbus = length(ps.buses)
@@ -816,6 +823,9 @@ function integrate!(
                 _apply_trip_line!(ps.network.ybus_real, tev)
                 any_topology_change = true
                 verbose && println("Trip $idx: line $(tev.from_bus)-$(tev.to_bus) tripped at t = $(tev.ton) s.")
+            elseif action === :load_step
+                _apply_load_step!(dp.pvec, pvec_saved, ps.dynamic, load_steps[idx])
+                verbose && println("Load step $idx: device $(load_steps[idx].device_idx) x $(load_steps[idx].scale) at t = $(load_steps[idx].t) s.")
             elseif action === :reclose
                 tev = trip_events[idx]
                 _apply_reclose_line!(ps.network.ybus_real, tev)
@@ -850,6 +860,7 @@ function integrate!(
     end
     finally
         _restore_event_state!(ps, saved)
+        pvec_saved === nothing || copyto!(dp.pvec, pvec_saved)
     end
 
     # Final state: the last grid step, before any event re-solve at that step
@@ -857,6 +868,40 @@ function integrate!(
     dp.zvec = zfinal
     kstop > 0 && return _truncated_output(rec, tvec, kstop)
     return _saved_times(tvec, rec.every), rec.traj
+end
+
+# GPU integrators apply ContingencyEvent only. Refuse other registered events
+# instead of silently ignoring them.
+function _check_gpu_events(ps::PowerSystem, what::AbstractString)
+    dyn = ps.dynamic::PowerSystemDynamics
+    bad = String[]
+    isempty(dyn.disconnect_events) || push!(bad, "DisconnectDeviceEvent")
+    isempty(dyn.trip_events) || push!(bad, "TripLineEvent")
+    isempty(dyn.load_step_events) || push!(bad, "LoadStepEvent")
+    isempty(bad) || throw(ArgumentError("$what supports ContingencyEvent only; registered: " *
+                                        join(bad, ", ") * " (use the CPU integrators)"))
+    return nothing
+end
+
+# An event at step 0 would be skipped by the time loop (events are applied
+# after the step that lands on them). Steps 1..nsteps are fine.
+function _check_event_time(t::Float64, dt::Float64, what::AbstractString)
+    Int(round(t / dt)) >= 1 ||
+        throw(ArgumentError("$what at t = $t is before the first step (dt = $dt); use t >= dt"))
+    return nothing
+end
+
+# ZIPLoad parameters a load step scales: pinj, qinj (constant power) and
+# yreal, yimag (constant impedance), relative to their initial values `p0`.
+const _LOAD_STEP_OFFSETS = (0, 1, 7, 8)
+
+function _apply_load_step!(p::AbstractVector, p0::AbstractVector,
+                           dyn::PowerSystemDynamics, ev::LoadStepEvent)
+    pp = dyn.devices[ev.device_idx].par_ptr
+    for o in _LOAD_STEP_OFFSETS
+        p[pp + o] = ev.scale * p0[pp + o]
+    end
+    return nothing
 end
 
 function _snapshot_event_state(ps::PowerSystem)

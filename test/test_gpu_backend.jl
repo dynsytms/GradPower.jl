@@ -546,4 +546,23 @@ end
     end
 end
 
+@testset "GPU integrators refuse CPU-only events" begin
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    GradPower.build_network!(ps); GradPower.runpf!(ps)
+    dp = GradPower.DynamicProblem(ps); GradPower.initialize_dynamics!(dp, ps)
+    ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
+    gbl = ext.GpuBatchedLayout(dp, ps, 2)
+    li = findfirst(d -> d.dtype isa GradPower.ZIPLoad, ps.dynamic.devices)
+    add_load_step_event!(ps, LoadStepEvent(li, 0.1, 1.2))
+    @test_throws ArgumentError ext.integrate_gpu_cudss!(gbl, ps, 0.2)
+    @test_throws ArgumentError ext.integrate_gpu_schur_cudss!(gbl, ps, 0.2)
+    @test_throws ArgumentError ext.integrate_gpu_shared_multi!(gbl, ps, 0.2, [4, 5],
+                                                               [0.02, 0.02], 0.05, 0.1)
+    empty!(ps.dynamic.load_step_events)
+    GradPower.add_trip_event!(ps, GradPower.create_trip_line_event(ps, 4, 5, 0.05))
+    @test_throws ArgumentError ext.integrate_gpu_cudss!(gbl, ps, 0.2)
+    empty!(ps.dynamic.trip_events)
+end
+
 end # @testset "gpu_backend"
