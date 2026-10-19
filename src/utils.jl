@@ -43,6 +43,12 @@ function compare_matrix(A::AbstractMatrix, B::AbstractMatrix; rtol=1e-2, atol=1e
     return valid
 end
 
+"""
+    gen_speeds(sys) -> Vector
+
+Rows of the state vector holding the rotor speed deviation of every GENROU
+machine (the rotor angle is the next row).
+"""
 function gen_speeds(sys::PowerSystem)
     if sys.dynamic == nothing
         return []

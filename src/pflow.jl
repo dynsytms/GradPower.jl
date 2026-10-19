@@ -283,6 +283,12 @@ function compute_pinj!(sinj, v, ybus_mat, nbus)
     end
 end
 
+"""
+    runpf(sys; verbose=false) -> (v, success)
+
+Newton power flow on `sys` without writing the solution back and without
+reactive limits. Most users want [`runpf!`](@ref).
+"""
 function runpf(psys::PowerSystem; verbose=false, fdiff=false)
 
     prF = psys.profiler

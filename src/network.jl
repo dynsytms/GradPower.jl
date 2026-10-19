@@ -1,3 +1,10 @@
+"""
+    build_network!(sys)
+
+Build the network admittance matrix of `sys` (complex `Y` and its realified
+form used by the dynamics) from its branches and shunts. Call it after reading
+or modifying the network and before `runpf!`.
+"""
 function build_network!(psys::PowerSystem)
     # Create the adjacency list
     adjacency = adjacency_list(psys)
