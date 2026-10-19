@@ -220,21 +220,56 @@ end
         _clear_all_events!(ps)
     end
 
-    @testset "static generator removal (ACTIVSg2000)" begin
-        ps, dp, z0, _ = _ev_setup("ACTIVSg2000.raw", "ACTIVSg2000.dyr")
+    @testset "exciter/stabilizer and static-generator removal" begin
+        # Variants of ieee9 built in a temp dir (only tracked cases are used):
+        # gen 1 has GENROU + SEXS + IEEEST, gen 2 GENROU + SEXS, gen 3 has no
+        # dynamic record (-> StaticGenerator). In `raw2`, bus 3 has two
+        # generators, so its StaticGenerator aggregates both.
+        ex = joinpath(@__DIR__, "..", "examples")
+        dir = mktempdir()
+        sexs = readlines(joinpath(ex, "ieee9bus_SEXS.dyr"))
+        # drop gen 3's GENROU record (its 3 lines) and SEXS line
+        g3 = findfirst(l -> occursin(r"^3\s+'GENROU'", l), sexs)
+        dyr = vcat(sexs[1:g3-1], filter(l -> !occursin(r"^3 'SEXS'", l), sexs[g3+3:end]),
+                   ["1 'IEEEST' 1 1 0 0.06 0.04 0.06 0.04 0.08 0.04 0.2 0.02 0.2 0.02 5.0 0.1 1 999 -999 999 -999 /"])
+        write(joinpath(dir, "v.dyr"), join(dyr, "\n") * "\n")
+        raw = readlines(joinpath(ex, "ieee9_v33.raw"))
+        write(joinpath(dir, "v.raw"), join(raw, "\n") * "\n")
+        k3 = findfirst(l -> occursin(r"^\s*3,'1 ',", l), raw)
+        g = split(raw[k3], ",")
+        g[3] = "    42.500"; gA = join(g, ",")
+        g[2] = "'2 '"; gB = join(g, ",")
+        write(joinpath(dir, "v2.raw"), join(vcat(raw[1:k3-1], [gA, gB], raw[k3+1:end]), "\n") * "\n")
+
+        function vsetup(rawf)
+            ps = from_psse(joinpath(dir, rawf), joinpath(dir, "v.dyr"))
+            GradPower.build_network!(ps); GradPower.runpf!(ps)
+            dp = GradPower.DynamicProblem(ps); GradPower.initialize_dynamics!(dp, ps)
+            return ps, dp, copy(dp.zvec)
+        end
+        ps, dp, z0 = vsetup("v.raw")
         devs = ps.dynamic.devices
-        idx = generator_devices(ps, 6085, "1")
-        @test length(idx) == 1 && devs[idx[1]].dtype isa GradPower.StaticGenerator
-        @test_throws ArgumentError generator_devices(ps, 1090, "1")   # aggregated with another gen
-        # a machine with exciter + stabilizer
-        idx2 = generator_devices(ps, 3106, "1")
-        @test Set(typeof(devs[i].dtype) for i in idx2) ⊇ Set([GradPower.Genrou, GradPower.ESDC1A, GradPower.IEEEST])
-        add_generator_trip!(ps, 6085, "1", 0.05)
-        add_generator_trip!(ps, 3106, "1", 0.1)
+        idx1 = generator_devices(ps, 1, "1")
+        @test Set(typeof(devs[i].dtype) for i in idx1) ==
+              Set([GradPower.Genrou, GradPower.SEXS, GradPower.IEEEST])
+        idx3 = generator_devices(ps, 3, "1")
+        @test length(idx3) == 1 && devs[idx3[1]].dtype isa GradPower.StaticGenerator
+        add_generator_trip!(ps, 1, "1", 0.1)
+        add_generator_trip!(ps, 3, "1", 0.05)
         dp.zvec .= z0
-        tv, tr = integrate!(dp, ps, 0.3)
+        tv, tr = integrate!(dp, ps, 0.4)
         @test all(isfinite, tr)
+        dd = ps.dynamic.diff_dim
+        rows = reduce(vcat, [vcat(devs[i].diff_ptr:devs[i].diff_ptr + devs[i].dtype.diff_size - 1,
+                                  dd + devs[i].alg_ptr:dd + devs[i].alg_ptr + devs[i].dtype.alg_size - 1)
+                             for i in vcat(idx1, idx3)])
+        kt = Int(round(0.1 * 120)) + 1
+        @test all(tr[rows, end] .== tr[rows, kt + 1])            # all frozen after the later trip
         @test all(d.online for d in devs)
         _clear_all_events!(ps)
+
+        ps2, _, _ = vsetup("v2.raw")
+        err = try generator_devices(ps2, 3, "1"); nothing catch e; e end
+        @test err isa ArgumentError && occursin("aggregated", err.msg)
     end
 end
