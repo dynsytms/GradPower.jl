@@ -36,3 +36,7 @@ docs/report.md
 
 # Benchmark scripts (local only)
 scripts/bench_*.jl
+
+# Documenter build output
+docs/build/
+docs/Manifest.toml

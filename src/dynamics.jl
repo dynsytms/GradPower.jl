@@ -120,6 +120,13 @@ function extract_init_params!(dtype::ESDC1A, sol_zero::AbstractArray, p::Abstrac
     return nothing
 end
 
+"""
+    initialize_dynamics!(dp, sys)
+
+Initialize every device at the power-flow operating point stored in `sys`
+(run `runpf!` first): machine internal states, controller setpoints and load
+admittances, so that the DAE residual is zero at `dp.zvec`.
+"""
 function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
 
     z = dp.zvec

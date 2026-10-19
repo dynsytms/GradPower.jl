@@ -1,6 +1,12 @@
 # GradPower.jl
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://dynsytms.github.io/GradPower.jl/dev/)
+[![Test](https://github.com/dynsytms/GradPower.jl/actions/workflows/test.yml/badge.svg)](https://github.com/dynsytms/GradPower.jl/actions/workflows/test.yml)
+
+**Documentation:** <https://dynsytms.github.io/GradPower.jl/dev/>. It covers
+tutorials, the event types, integrators, GPU use, dataset generation and the
+API reference.
 
 A Julia package for **GPU-accelerated power-system dynamic simulation**.
 
@@ -15,7 +21,11 @@ call.
 - Read PSS/E `.raw` (network) and `.dyr` (dynamic) files; MATPOWER `.m` files
   for the static network.
 - Sparse Newton power flow on the resulting system.
-- Backward-Euler DAE integration through scheduled bus-fault contingencies.
+- Backward-Euler or Crank–Nicolson DAE integration through scheduled events:
+  resistive/impedance bus faults, line trips (with circuit ids), generator
+  trips (with their controllers), load trips and relative load steps.
+- Selective recording (`save_every`, `save_idxs`, `Float32`), step callbacks
+  and early termination on loss of synchronism.
 - Struct-of-arrays state layout and per-device-type batched residual /
   Jacobian kernels via KernelAbstractions.jl (CPU and GPU backends).
 - **GPU acceleration** via a CUDA extension: residual, Jacobian assembly,

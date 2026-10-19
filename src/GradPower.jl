@@ -541,6 +541,12 @@ function set_dynamics!(ps::PowerSystem, psd::PowerSystemDynamics;
     end
 end
 
+"""
+    DynamicProblem(sys)
+
+Allocate the state `zvec`, control `uvec` and parameter `pvec` vectors of the
+dynamic model of `sys`. Fill them with [`initialize_dynamics!`](@ref).
+"""
 function DynamicProblem(ps::PowerSystem)
     @assert ps.dynamic != nothing "Dynamic system not initialized."
     @assert ps.dynamic.map != nothing "Dynamic map not initialized."
@@ -553,6 +559,12 @@ function add_event!(psd::PowerSystemDynamics, event::ContingencyEvent)
     push!(psd.events, event)
 end
 
+"""
+    add_event!(sys, ev::ContingencyEvent)
+
+Register a bus fault on `sys`; it is applied by every subsequent integration
+until removed from `sys.dynamic.events`.
+"""
 function add_event!(ps::PowerSystem, event::ContingencyEvent)
     if ps.dynamic == nothing
         @warn "No dynamics data found. Did not register event"
@@ -573,6 +585,12 @@ function add_disconnect_event!(psd::PowerSystemDynamics, event::DisconnectDevice
     push!(psd.disconnect_events, event)
 end
 
+"""
+    add_disconnect_event!(sys, ev::DisconnectDeviceEvent)
+
+Register a device disconnection. [`add_generator_trip!`](@ref) and
+[`add_load_trip!`](@ref) build these from PSS/E bus numbers and ids.
+"""
 function add_disconnect_event!(ps::PowerSystem, event::DisconnectDeviceEvent)
     if ps.dynamic === nothing
         @warn "No dynamics data found. Did not register disconnect event"
@@ -588,6 +606,11 @@ function add_trip_event!(psd::PowerSystemDynamics, event::TripLineEvent)
     push!(psd.trip_events, event)
 end
 
+"""
+    add_trip_event!(sys, ev::TripLineEvent)
+
+Register a line trip (build it with [`create_trip_line_event`](@ref)).
+"""
 function add_trip_event!(ps::PowerSystem, event::TripLineEvent)
     if ps.dynamic === nothing
         @warn "No dynamics data found. Did not register trip event"
@@ -596,6 +619,12 @@ function add_trip_event!(ps::PowerSystem, event::TripLineEvent)
     add_trip_event!(ps.dynamic, event)
 end
 
+"""
+    add_load_step_event!(sys, ev::LoadStepEvent)
+
+Register a load step (build it with [`create_load_step_event`](@ref)). The
+device must be a ZIP load and `scale` finite and `>= 0`.
+"""
 function add_load_step_event!(ps::PowerSystem, event::LoadStepEvent)
     ps.dynamic === nothing && throw(ArgumentError("no dynamics data: cannot register a load step"))
     dev = ps.dynamic.devices[event.device_idx]
