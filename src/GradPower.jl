@@ -122,17 +122,40 @@ function DynamicMap(ndevices::Int64)
     return dm
 end
 
+"""
+    ContingencyEvent(bus, rfault, ton, toff; xfault=0.0)
+
+Shunt fault at internal bus `bus`, active for `ton <= t < toff`, with fault
+impedance `rfault + j xfault` (pu), i.e. admittance `y = 1/(rfault + j xfault)`
+to ground. `xfault = 0` (default) is the resistive fault `y = 1/rfault`.
+`rfault >= 0` and `xfault` must be finite and not both zero: a bolted fault
+(zero impedance) is not representable; use a small impedance instead.
+The GPU integrators support `xfault = 0` only.
+"""
 mutable struct ContingencyEvent
     bus::Int64
     status::Bool
     rfault::Float64
     ton::Float64
     toff::Float64
+    xfault::Float64
 end
 
-function ContingencyEvent(bus::Int64, rfault::Float64, ton::Float64, toff::Float64)
-    ce = ContingencyEvent(bus, false, rfault, ton, toff)
-    return ce
+function ContingencyEvent(bus::Int64, rfault::Float64, ton::Float64, toff::Float64;
+                          xfault::Float64=0.0)
+    (isfinite(rfault) && isfinite(xfault) && rfault >= 0.0) ||
+        throw(ArgumentError("fault impedance must be finite with rfault >= 0 (got $rfault + j$xfault)"))
+    (rfault == 0.0 && xfault == 0.0) &&
+        throw(ArgumentError("bolted fault (rfault = xfault = 0) is not supported: use a small impedance"))
+    return ContingencyEvent(bus, false, rfault, ton, toff, xfault)
+end
+
+# Fault admittance (g, b) = 1/(rfault + j xfault). The resistive case keeps
+# 1/rfault exactly (previous arithmetic).
+@inline function fault_admittance(ev::ContingencyEvent)
+    ev.xfault == 0.0 && return (1.0 / ev.rfault, 0.0)
+    d = ev.rfault * ev.rfault + ev.xfault * ev.xfault
+    return (ev.rfault / d, -ev.xfault / d)
 end
 
 """
@@ -172,7 +195,10 @@ struct TripLineEvent
     yft::ComplexF64
     ytf::ComplexF64
     ytt::ComplexF64
+    branch::Int64     # index into ps.branches (0 = not known)
 end
+TripLineEvent(fr, to, ton, toff, yff, yft, ytf, ytt) =
+    TripLineEvent(fr, to, ton, toff, yff, yft, ytf, ytt, 0)
 
 """
     LoadStepEvent(device_idx, t, scale)
@@ -556,6 +582,9 @@ function add_disconnect_event!(ps::PowerSystem, event::DisconnectDeviceEvent)
 end
 
 function add_trip_event!(psd::PowerSystemDynamics, event::TripLineEvent)
+    # Tripping a branch twice would subtract its admittance twice.
+    event.branch != 0 && any(e -> e.branch == event.branch, psd.trip_events) &&
+        throw(ArgumentError("branch $(event.branch) already has a trip event"))
     push!(psd.trip_events, event)
 end
 
@@ -605,26 +634,109 @@ create_load_step_event(ps::PowerSystem, bus_ext::Int, id::AbstractString, t::Rea
     LoadStepEvent(find_load_device(ps, bus_ext, id), Float64(t), Float64(scale))
 
 """
-    create_trip_line_event(ps, from_bus_ext, to_bus_ext, ton; toff=Inf) -> TripLineEvent
+    add_load_trip!(ps, bus_ext, id, t) -> DisconnectDeviceEvent
 
-Create a TripLineEvent by looking up the branch between `from_bus_ext` and
-`to_bus_ext` (external PSS/E bus numbers) and precomputing its admittance
-contribution. Line is tripped at `ton` and reclosed at `toff` (default `Inf`
-= permanent).
+Remove (permanently disconnect) the load `id` at PSS/E bus `bus_ext` at `t`.
 """
-function create_trip_line_event(ps::PowerSystem, from_bus_ext::Int, to_bus_ext::Int, ton::Float64; toff::Float64=Inf)
-    from_int = ps.busmap[from_bus_ext]
-    to_int   = ps.busmap[to_bus_ext]
+function add_load_trip!(ps::PowerSystem, bus_ext::Int, id::AbstractString, t::Real)
+    ev = DisconnectDeviceEvent(find_load_device(ps, bus_ext, id), Float64(t))
+    add_disconnect_event!(ps, ev)
+    return ev
+end
 
-    # Find the branch
-    br = nothing
-    for b in ps.branches
-        if (b.fr == from_int && b.to == to_int) || (b.fr == to_int && b.to == from_int)
-            br = b
-            break
-        end
+"""
+    generator_devices(ps, bus_ext, id) -> Vector{Int}
+
+Indices in `ps.dynamic.devices` that model the generator `id` at PSS/E bus
+`bus_ext`: its machine model and every controller (governor, exciter,
+stabilizer) attached to it (same bus and id, as used to wire them). A
+generator without a machine model is represented by the bus's
+`StaticGenerator`, returned only if it stands for this generator alone.
+"""
+function generator_devices(ps::PowerSystem, bus_ext::Int, id::AbstractString)
+    haskey(ps.busmap, bus_ext) || throw(ArgumentError("bus $bus_ext not in the case"))
+    dyn = ps.dynamic::PowerSystemDynamics
+    key = _normalize_id(id)
+    match(d) = (d.dtype isa AbstractGeneratorType || d.dtype isa AbstractGenControlType) &&
+               !(d.dtype isa StaticGenerator) &&
+               d.dtype.bus == bus_ext && _normalize_id(d.dtype.id) == key
+    idx = findall(match, dyn.devices)
+    machines = filter(i -> dyn.devices[i].dtype isa AbstractGeneratorType, idx)
+    length(machines) > 1 &&
+        throw(ArgumentError("generator \"$key\" at bus $bus_ext has $(length(machines)) machine models"))
+    length(machines) == 1 && return idx
+    isempty(idx) || throw(ArgumentError("generator \"$key\" at bus $bus_ext has controllers but no machine model"))
+    # No machine model: the static stand-in, if it represents only this gen.
+    g = find_gen(ps, ps.busmap[bus_ext], String(id))
+    g == 0 && throw(ArgumentError("no generator \"$key\" at bus $bus_ext"))
+    sg = findfirst(d -> d.dtype isa StaticGenerator && g in d.dtype.gen_idxs, dyn.devices)
+    sg === nothing && throw(ArgumentError("generator \"$key\" at bus $bus_ext has no dynamic representation"))
+    dt = dyn.devices[sg].dtype
+    length(dt.gen_idxs) == 1 ||
+        throw(ArgumentError("generator \"$key\" at bus $bus_ext is aggregated with $(length(dt.gen_idxs) - 1) " *
+                            "other static generator(s); removing it alone is not supported"))
+    dt.bus_type == 3 &&
+        throw(ArgumentError("generator \"$key\" at bus $bus_ext is the slack static generator; removing it is not supported"))
+    return [sg]
+end
+
+"""
+    add_generator_trip!(ps, bus_ext, id, t) -> Vector{DisconnectDeviceEvent}
+
+Remove the generator `id` at PSS/E bus `bus_ext` at `t`: its machine and all
+its controllers go offline together (see [`generator_devices`](@ref)); their
+states are frozen and the machine stops injecting current.
+"""
+function add_generator_trip!(ps::PowerSystem, bus_ext::Int, id::AbstractString, t::Real)
+    evs = [DisconnectDeviceEvent(i, Float64(t)) for i in generator_devices(ps, bus_ext, id)]
+    foreach(ev -> add_disconnect_event!(ps, ev), evs)
+    return evs
+end
+
+# Circuit ids are stored as parsed (e.g. "\"'1 '\""): compare without
+# quotes and blanks.
+_normalize_ckt(s::AbstractString) = _normalize_id(replace(s, "\"" => ""))
+
+"""
+    find_branch(ps, from_bus_ext, to_bus_ext; ckt=nothing) -> branch index
+
+Index in `ps.branches` of the branch (line or two-winding transformer)
+between PSS/E buses `from_bus_ext` and `to_bus_ext`, in either direction,
+with circuit id `ckt` (quotes/blanks ignored). Without `ckt` the branch must
+be unique: parallel circuits raise an `ArgumentError` listing their ids.
+"""
+function find_branch(ps::PowerSystem, from_bus_ext::Int, to_bus_ext::Int; ckt=nothing)
+    for b in (from_bus_ext, to_bus_ext)
+        haskey(ps.busmap, b) || throw(ArgumentError("bus $b not in the case"))
     end
-    br === nothing && error("No branch found between buses $from_bus_ext and $to_bus_ext")
+    f = ps.busmap[from_bus_ext]; t = ps.busmap[to_bus_ext]
+    hits = findall(b -> (b.fr == f && b.to == t) || (b.fr == t && b.to == f), ps.branches)
+    isempty(hits) && throw(ArgumentError("no branch between buses $from_bus_ext and $to_bus_ext"))
+    if ckt === nothing
+        length(hits) == 1 && return hits[1]
+        ids = join((_normalize_ckt(ps.branches[i].id) for i in hits), ", ")
+        throw(ArgumentError("$(length(hits)) parallel branches between buses $from_bus_ext and " *
+                            "$to_bus_ext (circuits $ids): pass ckt"))
+    end
+    key = _normalize_ckt(string(ckt))
+    sel = filter(i -> _normalize_ckt(ps.branches[i].id) == key, hits)
+    isempty(sel) && throw(ArgumentError("no circuit \"$key\" between buses $from_bus_ext and $to_bus_ext"))
+    length(sel) == 1 || throw(ArgumentError("circuit \"$key\" between buses $from_bus_ext and $to_bus_ext is ambiguous"))
+    return sel[1]
+end
+
+"""
+    create_trip_line_event(ps, from_bus_ext, to_bus_ext, ton; toff=Inf, ckt=nothing) -> TripLineEvent
+
+Create a TripLineEvent (line removal) by looking up the branch between
+`from_bus_ext` and `to_bus_ext` (external PSS/E bus numbers, circuit `ckt`;
+see [`find_branch`](@ref)) and precomputing its admittance contribution. The
+line is tripped at `ton` and reclosed at `toff` (default `Inf` = permanent).
+"""
+function create_trip_line_event(ps::PowerSystem, from_bus_ext::Int, to_bus_ext::Int, ton::Float64;
+                                toff::Float64=Inf, ckt=nothing)
+    bidx = find_branch(ps, from_bus_ext, to_bus_ext; ckt=ckt)
+    br = ps.branches[bidx]
 
     # Compute admittance contributions (same convention as create_ybus_complex)
     tap = br.tap
@@ -645,7 +757,7 @@ function create_trip_line_event(ps::PowerSystem, from_bus_ext::Int, to_bus_ext::
     yft = -y / conj(tpsh)
     ytf = -y / tpsh
 
-    return TripLineEvent(fr, to, ton, toff, yff, yft, ytf, ytt)
+    return TripLineEvent(fr, to, ton, toff, yff, yft, ytf, ytt, bidx)
 end
 
 """
@@ -847,6 +959,7 @@ export runpf, runpf!
 export DynamicDevice, PowerSystemDynamics
 export DynamicProblem, ContingencyEvent, DisconnectDeviceEvent, TripLineEvent, LoadStepEvent
 export add_load_step_event!, create_load_step_event, find_load_device
+export add_load_trip!, add_generator_trip!, generator_devices, find_branch
 export add_device!
 export add_event!, add_disconnect_event!, add_trip_event!, create_trip_line_event
 export initialize_dynamics!, integrate!

@@ -106,7 +106,7 @@
 
     @testset "restored after a failed run" begin
         add_load_step_event!(ps, create_load_step_event(ps, bus_ext, ld.dtype.id, dt, 1.5))
-        add_event!(ps, ContingencyEvent(1, 0.0, 2dt, 0.1))           # rfault = 0: re-solve fails
+        add_event!(ps, ContingencyEvent(1, 1e-300, 2dt, 0.1))        # ~bolted: re-solve fails
         @test_throws Exception run(tf = 0.1)
         @test dp.pvec == p0
         empty!(ps.dynamic.load_step_events); empty!(ps.dynamic.events)
