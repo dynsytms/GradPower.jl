@@ -63,3 +63,10 @@ end
         traj[r, j] = z[i]
     end
 end
+
+# Output up to grid step `kstop` (early termination): the stored columns of
+# steps 1:every:kstop.
+function _truncated_output(r::_Recorder, tvec::AbstractVector, kstop::Int)
+    j = (kstop - 1) ÷ r.every + 1
+    return tvec[1:r.every:kstop], r.traj[:, 1:j]
+end

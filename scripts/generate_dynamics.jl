@@ -60,6 +60,8 @@ function main()
         and decay_ratio (default 0.5).""")
     tail_fraction = Float64(get(lbl, "tail_fraction", 0.2))
     decay_ratio   = Float64(get(lbl, "decay_ratio", 0.5))
+    # Optional early termination on loss of synchronism (off by default).
+    early_stop_sep = haskey(sim, "early_stop_deg") ? deg2rad(Float64(sim["early_stop_deg"])) : nothing
 
     rank == 0 && @info "Building $(length(cfg["cases"])) case system(s)..."
     built   = [build_system(case) for case in cfg["cases"]]
@@ -117,6 +119,7 @@ function main()
             ra["dt_eff"]         = dt * downsample
             ra["t_final"]        = t_final
             ra["downsample"]     = downsample
+            early_stop_sep === nothing || (ra["early_stop_deg"] = rad2deg(early_stop_sep))
             ra["n_bus"]          = length(sys.buses)
             ra["diff_dim"]       = sys.dynamic.diff_dim
             ra["alg_dim"]        = sys.dynamic.alg_dim
@@ -167,7 +170,8 @@ function main()
                 # accumulated over every step (see simulate_sample).
                 ch, metrics = simulate_sample(dprob, sys, t_final; dt=dt,
                     downsample=downsample, angle_sep_threshold=angle_thr,
-                    tail_fraction=tail_fraction, decay_ratio=decay_ratio)
+                    tail_fraction=tail_fraction, decay_ratio=decay_ratio,
+                    early_stop_sep=early_stop_sep)
                 write_sample!(fid, k, sc, ch, metrics)
                 nwritten += 1
             end
