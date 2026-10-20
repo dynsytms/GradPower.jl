@@ -533,6 +533,9 @@ end
     GradPower.add_event!(ps, GradPower.ContingencyEvent(1, 0.02, 0.1, 0.2))
 
     @test GradPower.default_gpu_backend() isa CUDSSBackend
+    # batch-size-dependent default: SparseDirectSolver for large batches
+    @test GradPower.default_gpu_backend(GradPower.SDS_MIN_BATCH - 1) isa CUDSSBackend
+    @test GradPower.default_gpu_backend(GradPower.SDS_MIN_BATCH) isa SparseDirectSolverBackend
 
     for integ in (ext.integrate_gpu_cudss!, ext.integrate_gpu_schur_cudss!), M in (1, 4)
         gbl_c = ext.GpuBatchedLayout(dp, ps, M; linear_solver = CUDSSBackend())
@@ -544,6 +547,17 @@ end
             @test maximum(abs, trajs_s[m] .- trajs_c[m]) < 1e-6
         end
     end
+
+    # Large batch: the default layout uses SparseDirectSolver and agrees with
+    # cuDSS (the factored flag drives factorization -> refactorization).
+    M = GradPower.SDS_MIN_BATCH
+    gbl_d = ext.GpuBatchedLayout(dp, ps, M)
+    @test gbl_d.linear_solver isa SparseDirectSolverBackend
+    gbl_c = ext.GpuBatchedLayout(dp, ps, M; linear_solver = CUDSSBackend())
+    _, trajs_d = ext.integrate_gpu_schur_cudss!(gbl_d, ps, 0.4)
+    _, trajs_c = ext.integrate_gpu_schur_cudss!(gbl_c, ps, 0.4)
+    @test gbl_d.cudss_S_solver_batched.factored[]
+    @test maximum(maximum(abs, trajs_d[m] .- trajs_c[m]) for m in 1:M) < 1e-6
 end
 
 @testset "GPU integrators refuse CPU-only events" begin

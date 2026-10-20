@@ -150,14 +150,25 @@ ds_matrix(::CUDSSBackend, args...; kwargs...) =
 ds_matrix(::SparseDirectSolverBackend, args...; kwargs...) =
     error("SparseDirectSolverBackend requires SparseDirectSolver.jl: run `using SparseDirectSolver` first")
 
-"""
-    default_gpu_backend() -> AbstractDirectSolverBackend
+# Batch size from which SparseDirectSolver is preferred over cuDSS when both
+# are loaded. Its uniform batch scales past cuDSS's 15-system chunks
+# (ACTIVSg2000 reduced system: per-system refactorization 184 vs 265 us and
+# solve 23 vs 39 us at 256 systems), but its single-system cost is ~10x higher;
+# in the GPU Schur integrator the two tie at 64 scenarios and SDS is 1.3x
+# faster at 256.
+const SDS_MIN_BATCH = 128
 
-`CUDSSBackend()` when CUDSS.jl is loaded, else `SparseDirectSolverBackend()`
-when SparseDirectSolver.jl is loaded, else an error.
 """
-function default_gpu_backend()
-    Base.get_extension(@__MODULE__, :GradPowerCUDSSExt) !== nothing && return CUDSSBackend()
-    Base.get_extension(@__MODULE__, :GradPowerSparseDirectSolverExt) !== nothing && return SparseDirectSolverBackend()
+    default_gpu_backend(M = 1) -> AbstractDirectSolverBackend
+
+GPU sparse direct solver for a batch of `M` systems: `SparseDirectSolverBackend()`
+when SparseDirectSolver.jl is loaded and `M >= $(SDS_MIN_BATCH)` (or CUDSS.jl is not
+loaded), else `CUDSSBackend()` when CUDSS.jl is loaded, else an error.
+"""
+function default_gpu_backend(M::Integer = 1)
+    has_cudss = Base.get_extension(@__MODULE__, :GradPowerCUDSSExt) !== nothing
+    has_sds = Base.get_extension(@__MODULE__, :GradPowerSparseDirectSolverExt) !== nothing
+    has_sds && (M >= SDS_MIN_BATCH || !has_cudss) && return SparseDirectSolverBackend()
+    has_cudss && return CUDSSBackend()
     error("no GPU sparse direct solver loaded: run `using CUDSS` or `using SparseDirectSolver`")
 end

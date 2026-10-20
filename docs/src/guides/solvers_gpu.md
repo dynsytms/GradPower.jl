@@ -44,6 +44,16 @@ t, trajs = ext.integrate_gpu_cudss!(gbl, sys, 1.0)     # monolithic Newton
 t, trajs = ext.integrate_gpu_schur_cudss!(gbl, sys, 1.0) # Schur-reduced Newton
 ```
 
+Without `linear_solver`, `GpuBatchedLayout` chooses the solver from the batch
+size:
+- below 128 scenarios: cuDSS;
+- from 128 scenarios: SparseDirectSolver, if it is loaded.
+
+SparseDirectSolver's uniform batch keeps getting cheaper per system up to about
+1,000 systems. cuDSS has to be split into chunks of 15, and its cost per system
+is flat beyond that. On ACTIVSg2000 the full GPU Schur integration ties at 64
+scenarios, and SparseDirectSolver is 1.3× faster at 256.
+
 Like `BatchedLayout`, `GpuBatchedLayout` holds per-scenario states and
 parameters (`gbl.z`, `gbl.p`). Scenarios with **different fault buses or
 impedances** share one factorization through low-rank updates:
