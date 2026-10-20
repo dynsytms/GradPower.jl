@@ -1001,7 +1001,7 @@ end
 # -----------------------------------------------------------------------
 
 @kernel function uvec_routing_gpu_kernel!(u, z, uvec_idx)
-    j, m = @index(Global, NTuple)
+    m, j = @index(Global, NTuple)
     @inbounds begin
         src = uvec_idx[j]
         if src != 0
@@ -1012,7 +1012,7 @@ end
 
 # Event Jacobian kernel: adds -1/rfault to diagonal entries for active faults
 @kernel function events_jac_gpu_kernel!(nzval, rfault_arr, status_arr, diag_pos)
-    ei, m = @index(Global, NTuple)
+    m, ei = @index(Global, NTuple)
     @inbounds begin
         if status_arr[ei]
             yfault = 1.0 / rfault_arr[ei]
@@ -1025,7 +1025,7 @@ end
 end
 
 @kernel function events_fun_gpu_kernel!(f, z, bus_arr, rfault_arr, status_arr, net_ptr)
-    ei, m = @index(Global, NTuple)
+    m, ei = @index(Global, NTuple)
     @inbounds begin
         if status_arr[ei]
             bus = bus_arr[ei]
@@ -1120,7 +1120,7 @@ end
 @kernel function genrou_residual_batched_ka!(f, z, u, p, inj, online,
         diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr,
         @Const(diff_dim), @Const(net_ptr), @Const(twopi60))
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._genrou_residual_one!(
             @view(f[m,:]), @view(z[m,:]), @view(u[m,:]), @view(p[m,:]),
@@ -1132,7 +1132,7 @@ end
 @kernel function ieesgo_residual_batched_ka!(f, z, p, online,
         diff_ptr, alg_ptr, par_ptr, w_idx_arr,
         @Const(diff_dim))
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._ieesgo_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
             diff_ptr, alg_ptr, par_ptr, w_idx_arr, k, diff_dim)
@@ -1142,7 +1142,7 @@ end
 @kernel function tgov1_residual_batched_ka!(f, z, p, online,
         diff_ptr, alg_ptr, par_ptr, w_idx_arr,
         @Const(diff_dim))
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._tgov1_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
             diff_ptr, alg_ptr, par_ptr, w_idx_arr, k, diff_dim)
@@ -1151,7 +1151,7 @@ end
 
 @kernel function sexs_residual_batched_ka!(f, z, p, online,
         diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr)
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._sexs_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
             diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, k)
@@ -1160,7 +1160,7 @@ end
 
 @kernel function esdc1a_residual_batched_ka!(f, z, p, online,
         diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr)
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._esdc1a_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
             diff_ptr, par_ptr, vr_idx_arr, vs_idx_arr, k)
@@ -1170,7 +1170,7 @@ end
 @kernel function ieeest_residual_batched_ka!(f, z, p, online,
         diff_ptr, alg_ptr, par_ptr, w_idx_arr,
         @Const(diff_dim))
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._ieeest_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
             diff_ptr, alg_ptr, par_ptr, w_idx_arr, diff_dim, k)
@@ -1180,7 +1180,7 @@ end
 @kernel function zipload_residual_batched_ka!(f, z, p, inj, online,
         bus_arr, par_ptr,
         @Const(net_ptr), @Const(inj_offset))
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._zipload_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
             bus_arr, par_ptr, k, net_ptr, @view(inj[m,:]), inj_offset + k)
@@ -1190,7 +1190,7 @@ end
 @kernel function static_gen_residual_batched_ka!(f, z, p, inj, online,
         vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr,
         @Const(inj_offset))
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._static_gen_residual_one!(@view(f[m,:]), @view(z[m,:]), @view(p[m,:]),
             vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr,
@@ -1201,7 +1201,7 @@ end
 # Per-bus injection reduce, batched over M scenarios
 @kernel function bus_injection_reduce_batched_ka!(f, inj, bus_inj_start, bus_inj_list,
         @Const(nbus), @Const(net_ptr))
-    b, m = @index(Global, NTuple)
+    m, b = @index(Global, NTuple)
     @inbounds if b <= nbus
         vr_idx = net_ptr + 2 * (b - 1) + 1
         vi_idx = vr_idx + 1
@@ -1221,7 +1221,7 @@ end
 # Computes f[m, net_ptr + row] = -sum(nzval[idx] * z[m, net_ptr + col]) for each CSR row
 @kernel function ybus_spmv_batched_ka!(f, z, rowptr, colval, nzval,
                                         @Const(net_ptr), @Const(nv))
-    row, m = @index(Global, NTuple)
+    m, row = @index(Global, NTuple)
     @inbounds if row <= nv
         val = 0.0
         for idx in rowptr[row]:(rowptr[row+1]-1)
@@ -1237,7 +1237,7 @@ end
 @kernel function genrou_jacobian_batched_ka!(nzval, z, p, online,
         diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
         @Const(diff_dim), @Const(net_ptr), @Const(twopi60))
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._genrou_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
             diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
@@ -1247,7 +1247,7 @@ end
 
 @kernel function ieesgo_jacobian_batched_ka!(nzval, p, online,
         par_ptr, jac_pos)
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._ieesgo_jacobian_one!(@view(nzval[m,:]), @view(p[m,:]),
             par_ptr, jac_pos, k)
@@ -1256,7 +1256,7 @@ end
 
 @kernel function tgov1_jacobian_batched_ka!(nzval, p, online,
         par_ptr, jac_pos)
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._tgov1_jacobian_one!(@view(nzval[m,:]), @view(p[m,:]),
             par_ptr, jac_pos, k)
@@ -1265,7 +1265,7 @@ end
 
 @kernel function sexs_jacobian_batched_ka!(nzval, z, p, online,
         par_ptr, vr_idx_arr, vs_idx_arr, jac_pos)
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._sexs_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
             par_ptr, vr_idx_arr, vs_idx_arr, jac_pos, k)
@@ -1274,7 +1274,7 @@ end
 
 @kernel function esdc1a_jacobian_batched_ka!(nzval, z, p, online,
         par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos)
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._esdc1a_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
             par_ptr, vr_idx_arr, vs_idx_arr, diff_ptr, jac_pos, k)
@@ -1284,7 +1284,7 @@ end
 @kernel function ieeest_jacobian_batched_ka!(nzval, z, p, online,
         par_ptr, diff_ptr, alg_ptr, w_idx_arr, jac_pos,
         @Const(diff_dim))
-    k, m = @index(Global, NTuple)
+    m, k = @index(Global, NTuple)
     @inbounds if online[k]
         GradPower._ieeest_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
             par_ptr, diff_ptr, alg_ptr, w_idx_arr, jac_pos, diff_dim, k)
@@ -1294,7 +1294,7 @@ end
 @kernel function zipload_jacobian_batched_ka!(nzval, z, p, online,
         bus_arr, par_ptr, jac_pos,
         @Const(net_ptr), layer)
-    i, m = @index(Global, NTuple)
+    m, i = @index(Global, NTuple)
     @inbounds k = Int(layer[i])
     @inbounds if online[k]
         GradPower._zipload_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
@@ -1304,7 +1304,7 @@ end
 
 @kernel function static_gen_jacobian_batched_ka!(nzval, z, p, online,
         vr_idx_arr, alg_ptr, par_ptr, bus_type_arr, regulating_arr, jac_pos, layer)
-    i, m = @index(Global, NTuple)
+    m, i = @index(Global, NTuple)
     @inbounds k = Int(layer[i])
     @inbounds if online[k]
         GradPower._static_gen_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
@@ -1314,7 +1314,7 @@ end
 
 # Batched ybus → J_nzval copy (all M scenarios)
 @kernel function ybus_to_jnzval_batched_ka!(nzval, ybus_nzval, ybus_to_jnz)
-    i, m = @index(Global, NTuple)
+    m, i = @index(Global, NTuple)
     @inbounds begin
         jpos = ybus_to_jnz[i]
         if jpos > 0
@@ -1326,7 +1326,7 @@ end
 # Batched backward Euler Jacobian scaling
 @kernel function beuler_jac_scale_batched_ka!(nzval, J_colptr, J_rowval, is_diff,
         @Const(n_da), @Const(sys_dim), @Const(dt))
-    col, m = @index(Global, NTuple)
+    m, col = @index(Global, NTuple)
     @inbounds for nz_idx in J_colptr[col]:(J_colptr[col+1]-1)
         row = J_rowval[nz_idx]
         if row <= n_da && is_diff[row]
@@ -1340,7 +1340,7 @@ end
 
 @kernel function beuler_jac_scale_simple_batched_ka!(nzval, J_colptr, J_rowval,
         @Const(diff_dim), @Const(sys_dim), @Const(dt))
-    col, m = @index(Global, NTuple)
+    m, col = @index(Global, NTuple)
     @inbounds for nz_idx in J_colptr[col]:(J_colptr[col+1]-1)
         row = J_rowval[nz_idx]
         if row <= diff_dim
@@ -1354,7 +1354,7 @@ end
 
 # Batched backward Euler diff residual scaling
 @kernel function beuler_diff_batched_ka!(f, z, zold, diff_indices, @Const(dt))
-    idx, m = @index(Global, NTuple)
+    m, idx = @index(Global, NTuple)
     @inbounds begin
         i = diff_indices[idx]
         f[m, i] = z[m, i] - zold[m, i] - dt * f[m, i]
@@ -1399,13 +1399,13 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
     if nv > 0
         kernel = ybus_spmv_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.ybus_csr.rowPtr, gbl.ybus_csr.colVal,
-               gbl.ybus_csr.nzVal, net_ptr, nv; ndrange=(nv, M))
+               gbl.ybus_csr.nzVal, net_ptr, nv; ndrange=(M, nv))
     end
 
     # 3. uvec routing (2D: one thread per (uvec_slot, scenario))
     if length(gbl.uvec_idx) > 0
         kernel = uvec_routing_gpu_kernel!(backend)
-        kernel(gbl.u, gbl.z, gbl.uvec_idx; ndrange=(length(gbl.uvec_idx), M))
+        kernel(gbl.u, gbl.z, gbl.uvec_idx; ndrange=(M, length(gbl.uvec_idx)))
     end
 
     # 4. Device residual kernels — one launch per device type
@@ -1413,53 +1413,53 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
         kernel = genrou_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.u, gbl.p, gbl.inj, gt.online,
                gt.diff_ptr, gt.alg_ptr, gt.ctrl_ptr, gt.par_ptr, gt.bus,
-               diff_dim, net_ptr, twopi60; ndrange=(gt.n, M))
+               diff_dim, net_ptr, twopi60; ndrange=(M, gt.n))
     end
     if ig.n > 0
         kernel = ieesgo_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, ig.online,
                ig.diff_ptr, ig.alg_ptr, ig.par_ptr, ig.w_idx,
-               diff_dim; ndrange=(ig.n, M))
+               diff_dim; ndrange=(M, ig.n))
     end
     if tg.n > 0
         kernel = tgov1_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, tg.online,
                tg.diff_ptr, tg.alg_ptr, tg.par_ptr, tg.w_idx,
-               diff_dim; ndrange=(tg.n, M))
+               diff_dim; ndrange=(M, tg.n))
     end
     if pss.n > 0
         kernel = ieeest_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, pss.online,
                pss.diff_ptr, pss.alg_ptr, pss.par_ptr, pss.w_idx,
-               diff_dim; ndrange=(pss.n, M))
+               diff_dim; ndrange=(M, pss.n))
     end
     if sx.n > 0
         kernel = sexs_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, sx.online,
-               sx.diff_ptr, sx.par_ptr, sx.vr_idx, sx.vs_idx; ndrange=(sx.n, M))
+               sx.diff_ptr, sx.par_ptr, sx.vr_idx, sx.vs_idx; ndrange=(M, sx.n))
     end
     if ex.n > 0
         kernel = esdc1a_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, ex.online,
-               ex.diff_ptr, ex.par_ptr, ex.vr_idx, ex.vs_idx; ndrange=(ex.n, M))
+               ex.diff_ptr, ex.par_ptr, ex.vr_idx, ex.vs_idx; ndrange=(M, ex.n))
     end
     if zt.n > 0
         kernel = zipload_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, gbl.inj, zt.online,
-               zt.bus, zt.par_ptr, net_ptr, n_genrou; ndrange=(zt.n, M))
+               zt.bus, zt.par_ptr, net_ptr, n_genrou; ndrange=(M, zt.n))
     end
     if st.n > 0
         kernel = static_gen_residual_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.p, gbl.inj, st.online,
                st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.regulating,
-               n_genrou + n_zipload; ndrange=(st.n, M))
+               n_genrou + n_zipload; ndrange=(M, st.n))
     end
 
     # 5. Bus injection reduce — one launch, M-loop inside
     if n_total > 0
         kernel = bus_injection_reduce_batched_ka!(backend)
         kernel(gbl.f, gbl.inj, gbl.bus_inj_start, gbl.bus_inj_list,
-               gbl.nbus, net_ptr; ndrange=(gbl.nbus, M))
+               gbl.nbus, net_ptr; ndrange=(M, gbl.nbus))
     end
 
     # 6. Events — update status from CPU (O(n_events), small)
@@ -1469,7 +1469,7 @@ function _residual_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
         copyto!(gbl.event_status, CuVector(status_cpu))
         kernel = events_fun_gpu_kernel!(backend)
         kernel(gbl.f, gbl.z, gbl.event_bus, gbl.event_rfault, gbl.event_status, net_ptr;
-               ndrange=(length(events), M))
+               ndrange=(M, length(events)))
     end
 
     KernelAbstractions.synchronize(backend)
@@ -1507,7 +1507,7 @@ function _jacobian_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
     # 2. Copy −ybus into J_nzval (all M scenarios)
     if ybus_nnz > 0
         kernel = ybus_to_jnzval_batched_ka!(backend)
-        kernel(gbl.J_nzval, gbl.ybus_nzval_gpu, gbl.ybus_to_jnz; ndrange=(ybus_nnz, M))
+        kernel(gbl.J_nzval, gbl.ybus_nzval_gpu, gbl.ybus_to_jnz; ndrange=(M, ybus_nnz))
     end
 
     # 3. Device Jacobians — one launch per type
@@ -1516,46 +1516,46 @@ function _jacobian_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
         kernel(gbl.J_nzval, gbl.z, gbl.p, gt.online,
                gt.diff_ptr, gt.alg_ptr, gt.par_ptr, gt.bus, gt.jac_pos,
                gt.has_gov, gt.has_exc,
-               diff_dim, net_ptr, twopi60; ndrange=(gt.n, M))
+               diff_dim, net_ptr, twopi60; ndrange=(M, gt.n))
     end
     if ig.n > 0
         kernel = ieesgo_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.p, ig.online,
-               ig.par_ptr, ig.jac_pos; ndrange=(ig.n, M))
+               ig.par_ptr, ig.jac_pos; ndrange=(M, ig.n))
     end
     if tg.n > 0
         kernel = tgov1_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.p, tg.online,
-               tg.par_ptr, tg.jac_pos; ndrange=(tg.n, M))
+               tg.par_ptr, tg.jac_pos; ndrange=(M, tg.n))
     end
     if sx.n > 0
         kernel = sexs_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.z, gbl.p, sx.online,
-               sx.par_ptr, sx.vr_idx, sx.vs_idx, sx.jac_pos; ndrange=(sx.n, M))
+               sx.par_ptr, sx.vr_idx, sx.vs_idx, sx.jac_pos; ndrange=(M, sx.n))
     end
     if ex.n > 0
         kernel = esdc1a_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.z, gbl.p, ex.online,
-               ex.par_ptr, ex.vr_idx, ex.vs_idx, ex.diff_ptr, ex.jac_pos; ndrange=(ex.n, M))
+               ex.par_ptr, ex.vr_idx, ex.vs_idx, ex.diff_ptr, ex.jac_pos; ndrange=(M, ex.n))
     end
     if pss.n > 0
         kernel = ieeest_jacobian_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.z, gbl.p, pss.online,
                pss.par_ptr, pss.diff_ptr, pss.alg_ptr, pss.w_idx, pss.jac_pos,
-               diff_dim; ndrange=(pss.n, M))
+               diff_dim; ndrange=(M, pss.n))
     end
     # Bus-sharing devices: one launch per layer (see `_bus_layers`).
     # Launches on the same stream execute in order, so layers do not race.
     kernel = zipload_jacobian_batched_ka!(backend)
     for layer in zt.jac_layers
         kernel(gbl.J_nzval, gbl.z, gbl.p, zt.online,
-               zt.bus, zt.par_ptr, zt.jac_pos, net_ptr, layer; ndrange=(length(layer), M))
+               zt.bus, zt.par_ptr, zt.jac_pos, net_ptr, layer; ndrange=(M, length(layer)))
     end
     kernel = static_gen_jacobian_batched_ka!(backend)
     for layer in st.jac_layers
         kernel(gbl.J_nzval, gbl.z, gbl.p, st.online,
                st.vr_idx, st.alg_ptr, st.par_ptr, st.bus_type, st.regulating, st.jac_pos,
-               layer; ndrange=(length(layer), M))
+               layer; ndrange=(M, length(layer)))
     end
 
     # 4. Event Jacobian: add -1/rfault to bus diagonals for active faults
@@ -1565,7 +1565,7 @@ function _jacobian_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
         copyto!(gbl.event_status, CuVector(status_cpu))
         kernel = events_jac_gpu_kernel!(backend)
         kernel(gbl.J_nzval, gbl.event_rfault, gbl.event_status,
-               gbl.event_jac_diag_pos; ndrange=(length(events), M))
+               gbl.event_jac_diag_pos; ndrange=(M, length(events)))
     end
 
     KernelAbstractions.synchronize(backend)
@@ -1584,7 +1584,7 @@ function _beuler_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerS
         backend = CUDABackend()
         kernel = beuler_diff_batched_ka!(backend)
         kernel(gbl.f, gbl.z, gbl.zold, gbl.diff_indices, dt;
-               ndrange=(length(gbl.diff_indices), gbl.M))
+               ndrange=(gbl.M, length(gbl.diff_indices)))
         KernelAbstractions.synchronize(backend)
     else
         f_cpu = Array(gbl.f)
@@ -1611,11 +1611,11 @@ function _beuler_jac_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Po
         n_da = length(is_diff)
         kernel = beuler_jac_scale_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.J_colptr, gbl.J_rowval, gbl.is_diff,
-               n_da, sys_dim, dt; ndrange=(sys_dim, gbl.M))
+               n_da, sys_dim, dt; ndrange=(gbl.M, sys_dim))
     else
         kernel = beuler_jac_scale_simple_batched_ka!(backend)
         kernel(gbl.J_nzval, gbl.J_colptr, gbl.J_rowval,
-               gbl.diff_dim, sys_dim, dt; ndrange=(sys_dim, gbl.M))
+               gbl.diff_dim, sys_dim, dt; ndrange=(gbl.M, sys_dim))
     end
     KernelAbstractions.synchronize(backend)
     return nothing
@@ -1760,19 +1760,19 @@ end
 # Batched CSC→CSR gather: for CSR position i, csr_nz[i, m] = csc_nz[m, perm[i]]
 # perm maps CSR position -> CSC position (same as single-scenario csc_to_csr_gather_ka!)
 @kernel function csc_to_csr_batched_ka!(csr_nz, csc_nz, perm)
-    i, m = @index(Global, NTuple)
+    m, i = @index(Global, NTuple)
     @inbounds csr_nz[i, m] = csc_nz[m, perm[i]]
 end
 
 # Transpose and negate: dst is (sys_dim, M), src is (M, sys_dim)
 @kernel function _transpose_negate_ka!(dst, src)
-    j, m = @index(Global, NTuple)
+    m, j = @index(Global, NTuple)
     @inbounds dst[j, m] = -src[m, j]
 end
 
 # Add solution back to z: z is (M, sys_dim), sol is (sys_dim, M)
 @kernel function _add_sol_to_z_ka!(z, sol)
-    j, m = @index(Global, NTuple)
+    m, j = @index(Global, NTuple)
     @inbounds z[m, j] += sol[j, m]
 end
 
@@ -1785,7 +1785,7 @@ end
 # 2D ndrange: (n_entries, M) — idx indexes structural nz, m indexes scenario.
 @kernel function schur_gather_A_ka!(A_packed, J_nzval, A_jnz, A_local,
                                      @Const(wk_sq), @Const(M))
-    idx, m = @index(Global, NTuple)
+    m, idx = @index(Global, NTuple)
     @inbounds begin
         jnz = A_jnz[idx]          # J nzval position (1-based)
         encoded = A_local[idx]     # (ki-1)*wk² + local_pos  (1-based)
@@ -1799,7 +1799,7 @@ end
 # Gather B_k entries from J_nzval
 @kernel function schur_gather_B_ka!(B_packed, J_nzval, B_jnz, B_local,
                                      @Const(wk_x2), @Const(M))
-    idx, m = @index(Global, NTuple)
+    m, idx = @index(Global, NTuple)
     @inbounds begin
         jnz = B_jnz[idx]
         encoded = B_local[idx]     # (ki-1)*wk*2 + local_pos
@@ -1813,7 +1813,7 @@ end
 # Gather C_k entries from J_nzval
 @kernel function schur_gather_C_ka!(C_packed, J_nzval, C_jnz, C_local,
                                      @Const(x2_wk), @Const(M))
-    idx, m = @index(Global, NTuple)
+    m, idx = @index(Global, NTuple)
     @inbounds begin
         jnz = C_jnz[idx]
         encoded = C_local[idx]     # (ki-1)*2*wk + local_pos
@@ -1903,7 +1903,7 @@ function _schur_extract_and_factor_gpu!(gbl::GpuBatchedLayout)
                      view(gbl.cluster_A_jnz, a_start:a_end),
                      view(gbl.cluster_A_local, a_start:a_end),
                      Int32(wk * wk), Int32(gbl.M);
-                     ndrange=(n_a, gbl.M))
+                     ndrange=(gbl.M, n_a))
         end
 
         n_b = gbl.schur_group_B_offsets[g + 1] - gbl.schur_group_B_offsets[g]
@@ -1916,7 +1916,7 @@ function _schur_extract_and_factor_gpu!(gbl::GpuBatchedLayout)
                      view(gbl.cluster_B_jnz, b_start:b_end),
                      view(gbl.cluster_B_local, b_start:b_end),
                      Int32(wk * 2), Int32(gbl.M);
-                     ndrange=(n_b, gbl.M))
+                     ndrange=(gbl.M, n_b))
         end
 
         n_c = gbl.schur_group_C_offsets[g + 1] - gbl.schur_group_C_offsets[g]
@@ -1929,7 +1929,7 @@ function _schur_extract_and_factor_gpu!(gbl::GpuBatchedLayout)
                      view(gbl.cluster_C_jnz, c_start:c_end),
                      view(gbl.cluster_C_local, c_start:c_end),
                      Int32(2 * wk), Int32(gbl.M);
-                     ndrange=(n_c, gbl.M))
+                     ndrange=(gbl.M, n_c))
         end
 
         KernelAbstractions.synchronize(backend)
@@ -2012,7 +2012,7 @@ function _schur_assemble_S_batched_gpu!(gbl::GpuBatchedLayout)
                      gbl.cluster_D_S_nzpos,
                      Int32(wk), Int32(M), Int32(d_offset),
                      Int32(0), layer;
-                     ndrange=(length(layer), M))
+                     ndrange=(M, length(layer)))
         end
         d_offset += 4 * nc
     end
@@ -2043,7 +2043,7 @@ end
 # 2D ndrange: (nc, M) — ki indexes cluster, m indexes scenario.
 @kernel function schur_gather_fwk_fused_ka!(fwk_packed, f, w_start_arr,
                                              @Const(wk), @Const(M))
-    ki, m = @index(Global, NTuple)
+    m, ki = @index(Global, NTuple)
     @inbounds begin
         w_start = w_start_arr[ki]
         b = (ki - 1) * M + m
@@ -2107,7 +2107,7 @@ end
 @kernel function schur_subtract_Dk_batched_ka!(S_nzval_b, B_packed, C_packed, D_S_nzpos,
                                                 @Const(wk), @Const(M), @Const(d_offset),
                                                 @Const(ki_offset), layer)
-    i, m = @index(Global, NTuple)
+    m, i = @index(Global, NTuple)
     @inbounds ki_local = Int(layer[i])
     @inbounds begin
         b = (ki_local - 1 + ki_offset) * M + m
@@ -2137,7 +2137,7 @@ end
 @kernel function schur_accum_Ck_fwk_batched_ka!(rhs_b, C_packed, fwk_solved,
                                                   vr_l_arr, vi_l_arr,
                                                   @Const(wk), @Const(M), layer)
-    i, m = @index(Global, NTuple)
+    m, i = @index(Global, NTuple)
     @inbounds ki = Int(layer[i])
     @inbounds begin
         batch = (ki - 1) * M + m
@@ -2174,7 +2174,7 @@ end
 @kernel function schur_backsub_batched_ka!(z, fwk_solved, AinvBk, dv_sol_b,
                                             w_start_arr, vr_l_arr, vi_l_arr,
                                             @Const(wk), @Const(M))
-    ki, m = @index(Global, NTuple)
+    m, ki = @index(Global, NTuple)
     @inbounds begin
         batch = (ki - 1) * M + m
         w_start = w_start_arr[ki]
@@ -2310,7 +2310,7 @@ function _newton_step_shared_gpu!(
             nc = glu.n_clusters; wk = glu.w_k
             fwk = gbl.schur_fwk_packed[g]
             kernel_fw = schur_gather_fwk_fused_ka!(backend)
-            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=(nc, M))
+            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=(M, nc))
             KernelAbstractions.synchronize(backend)
             CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, fwk, glu.ipiv)
         end
@@ -2326,7 +2326,7 @@ function _newton_step_shared_gpu!(
             for layer in glu.layers
                 kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
                            gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
-                           wk, M, layer; ndrange=(length(layer), M))
+                           wk, M, layer; ndrange=(M, length(layer)))
             end
         end
         KernelAbstractions.synchronize(backend)
@@ -2356,7 +2356,7 @@ function _newton_step_shared_gpu!(
             kernel_bs = schur_backsub_batched_ka!(backend)
             kernel_bs(gbl.z, gbl.schur_fwk_packed[g], glu.B_packed, gbl.sf_P_sol,
                       gbl.schur_w_start_gpu[g], gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
-                      wk, M; ndrange=(nc, M))
+                      wk, M; ndrange=(M, nc))
         end
         KernelAbstractions.synchronize(backend)
     end
@@ -2394,7 +2394,7 @@ function integrate_gpu_shared!(
     z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
     backend = CUDABackend()
     snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1; ndrange=(sys_dim, M))
+    snap(z_hist, gbl.z, 1; ndrange=(M, sys_dim))
     KernelAbstractions.synchronize(backend)
 
     copyto!(gbl.zold, gbl.z)
@@ -2435,7 +2435,7 @@ function integrate_gpu_shared!(
         ok = _newton_step_shared_gpu!(gbl, dyn, L, dt, sf_vr_l, sf_vi_l, refresh_P!; tol = newton_tol)
         GradPower.check_newton(ok, tvec[k + 1], "GPU shared time step")
 
-        snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
+        snap(z_hist, gbl.z, k + 1; ndrange=(M, sys_dim))
         KernelAbstractions.synchronize(backend)
 
         any_event = false
@@ -2671,7 +2671,7 @@ function _newton_step_shared_multi_gpu!(
             nc = glu.n_clusters; wk = glu.w_k
             fwk = gbl.schur_fwk_packed[g]
             kernel_fw = schur_gather_fwk_fused_ka!(backend)
-            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=(nc, M))
+            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=(M, nc))
             KernelAbstractions.synchronize(backend)
             CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, fwk, glu.ipiv)
         end
@@ -2689,7 +2689,7 @@ function _newton_step_shared_multi_gpu!(
             for layer in glu.layers
                 kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
                            gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
-                           wk, M, layer; ndrange=(length(layer), M))
+                           wk, M, layer; ndrange=(M, length(layer)))
             end
         end
         KernelAbstractions.synchronize(backend)
@@ -2736,7 +2736,7 @@ function _newton_step_shared_multi_gpu!(
             kernel_bs = schur_backsub_batched_ka!(backend)
             kernel_bs(gbl.z, gbl.schur_fwk_packed[g], glu.B_packed, dv,
                       gbl.schur_w_start_gpu[g], gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
-                      wk, M; ndrange=(nc, M))
+                      wk, M; ndrange=(M, nc))
         end
         KernelAbstractions.synchronize(backend)
     end
@@ -2781,7 +2781,7 @@ function integrate_gpu_shared_multi!(
     z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
     backend = CUDABackend()
     snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1; ndrange=(sys_dim, M))
+    snap(z_hist, gbl.z, 1; ndrange=(M, sys_dim))
     KernelAbstractions.synchronize(backend)
 
     copyto!(gbl.zold, gbl.z)
@@ -2803,7 +2803,7 @@ function integrate_gpu_shared_multi!(
             fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
         GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi time step")
 
-        snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
+        snap(z_hist, gbl.z, k + 1; ndrange=(M, sys_dim))
         KernelAbstractions.synchronize(backend)
 
         # Event handling: all scenarios share the same ton/toff
@@ -2917,7 +2917,7 @@ function _newton_loop_schur_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Pow
             nc = glu.n_clusters; wk = glu.w_k
             fwk = gbl.schur_fwk_packed[g]
             kernel_fw = schur_gather_fwk_fused_ka!(backend)
-            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=(nc, M))
+            kernel_fw(fwk, gbl.f, gbl.schur_w_start_gpu[g], wk, M; ndrange=(M, nc))
             KernelAbstractions.synchronize(backend)
             CUDA.CUBLAS.getrs_strided_batched!('N', glu.A_packed, fwk, glu.ipiv)
         end
@@ -2935,7 +2935,7 @@ function _newton_loop_schur_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Pow
             for layer in glu.layers
                 kernel_acc(gbl.schur_rhs_batched, glu.C_packed, gbl.schur_fwk_packed[g],
                            gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
-                           wk, M, layer; ndrange=(length(layer), M))
+                           wk, M, layer; ndrange=(M, length(layer)))
             end
         end
         KernelAbstractions.synchronize(backend)
@@ -2957,7 +2957,7 @@ function _newton_loop_schur_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Pow
             kernel_bs = schur_backsub_batched_ka!(backend)
             kernel_bs(gbl.z, gbl.schur_fwk_packed[g], glu.B_packed, gbl.S_sol_buf,
                       gbl.schur_w_start_gpu[g], gbl.schur_vr_l_gpu[g], gbl.schur_vi_l_gpu[g],
-                      wk, M; ndrange=(nc, M))
+                      wk, M; ndrange=(M, nc))
         end
         KernelAbstractions.synchronize(backend)
         stale += 1
@@ -2969,7 +2969,7 @@ end
 
 # Copy z[m, :] into z_hist[:, m, step] on GPU (one kernel, no download)
 @kernel function snapshot_z_ka!(z_hist, z, @Const(step))
-    j, m = @index(Global, NTuple)
+    m, j = @index(Global, NTuple)
     @inbounds z_hist[j, m, step] = z[m, j]
 end
 
@@ -3025,7 +3025,7 @@ function _newton_loop_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSyst
             # 4. Batched CSC→CSR permutation (all M scenarios at once)
             kernel = csc_to_csr_batched_ka!(backend)
             kernel(gbl.csr_nzval_batched, gbl.J_nzval, gbl.csc_to_csr_perm;
-                   ndrange=(nnz_J, M))
+                   ndrange=(M, nnz_J))
             KernelAbstractions.synchronize(backend)
 
             # 5. Batched factorization (all M scenarios at once)
@@ -3038,7 +3038,7 @@ function _newton_loop_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSyst
 
         # 6. Build batched RHS = -f^T  (f is (M, sys_dim), rhs_buf is (sys_dim, M))
         kernel = _transpose_negate_ka!(backend)
-        kernel(gbl.rhs_buf, gbl.f; ndrange=(sys_dim, M))
+        kernel(gbl.rhs_buf, gbl.f; ndrange=(M, sys_dim))
         KernelAbstractions.synchronize(backend)
         # No ds_update! needed — rhs_batched already holds a pointer to
         # rhs_buf, which the kernel updated in-place above.
@@ -3048,7 +3048,7 @@ function _newton_loop_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSyst
 
         # 8. Update z from solution: z is (M, sys_dim), sol_buf is (sys_dim, M)
         kernel = _add_sol_to_z_ka!(backend)
-        kernel(gbl.z, gbl.sol_buf; ndrange=(sys_dim, M))
+        kernel(gbl.z, gbl.sol_buf; ndrange=(M, sys_dim))
         KernelAbstractions.synchronize(backend)
         stale += 1
         norm_prev = norm_f
@@ -3115,7 +3115,7 @@ function integrate_gpu_cudss!(
     z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
     backend = CUDABackend()
     snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1; ndrange=(sys_dim, M))
+    snap(z_hist, gbl.z, 1; ndrange=(M, sys_dim))
     KernelAbstractions.synchronize(backend)
 
     copyto!(gbl.zold, gbl.z)
@@ -3142,7 +3142,7 @@ function integrate_gpu_cudss!(
         have_prev = true
 
         # Trajectory snapshot — GPU to GPU, no download
-        snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
+        snap(z_hist, gbl.z, k + 1; ndrange=(M, sys_dim))
         KernelAbstractions.synchronize(backend)
 
         any_event = false
@@ -3223,7 +3223,7 @@ function integrate_gpu_schur_cudss!(
     z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
     backend = CUDABackend()
     snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1; ndrange=(sys_dim, M))
+    snap(z_hist, gbl.z, 1; ndrange=(M, sys_dim))
     KernelAbstractions.synchronize(backend)
 
     copyto!(gbl.zold, gbl.z)
@@ -3250,7 +3250,7 @@ function integrate_gpu_schur_cudss!(
         have_prev = true
 
         # Trajectory snapshot — GPU to GPU, no download
-        snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
+        snap(z_hist, gbl.z, k + 1; ndrange=(M, sys_dim))
         KernelAbstractions.synchronize(backend)
 
         any_event = false
