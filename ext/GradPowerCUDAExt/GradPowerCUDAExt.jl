@@ -2252,9 +2252,10 @@ function _precompute_woodbury_gpu!(
     vr_l = gbl.g2r_cpu[vr_g]
     vi_l = gbl.g2r_cpu[vi_g]
 
-    rhs = CUDA.zeros(Float64, n_red, 2)
-    CUDA.@allowscalar rhs[vr_l, 1] = 1.0
-    CUDA.@allowscalar rhs[vi_l, 2] = 1.0
+    rhs_h = zeros(Float64, n_red, 2)
+    rhs_h[vr_l, 1] = 1.0
+    rhs_h[vi_l, 2] = 1.0
+    rhs = CuMatrix(rhs_h)
     W_gpu = CUDA.zeros(Float64, n_red, 2)
     GradPower.ds_execute!("solve", gbl.sf_P_solver, W_gpu, rhs; asynchronous=false)
 
@@ -2298,7 +2299,7 @@ function _newton_step_shared_gpu!(
     for iter in 1:itermax
         _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
 
-        norm_f = CUDA.CUBLAS.nrm2(f_flat)
+        norm_f = norm(f_flat)
         norm_f < tol_l2 && return true
         norm_f > SHARED_P_RHO * norm_prev && refresh_P!(dt; force = true)
         norm_prev = norm_f
@@ -2331,7 +2332,7 @@ function _newton_step_shared_gpu!(
         end
         KernelAbstractions.synchronize(backend)
 
-        CUDA.CUBLAS.scal!(n_red * M, -1.0, gbl.schur_rhs_batched)
+        gbl.schur_rhs_batched .*= -1.0
 
         copyto!(gbl.sf_P_rhs, gbl.schur_rhs_batched)
         GradPower.ds_execute!("solve", gbl.sf_P_solver, gbl.sf_P_sol, gbl.sf_P_rhs; asynchronous=false)
@@ -2453,9 +2454,7 @@ function integrate_gpu_shared!(
         end
 
         if any_event
-            for (ei, ev) in enumerate(events)
-                CUDA.@allowscalar gbl.event_status[ei] = ev.status
-            end
+            copyto!(gbl.event_status, Bool[ev.status for ev in events])
             copyto!(gbl.zold, gbl.z)
             ok = _newton_step_shared_gpu!(gbl, dyn, L, 0.0, sf_vr_l, sf_vi_l, refresh_P!; tol = newton_tol)
             GradPower.check_newton(ok, tvec[k + 1], "GPU shared dt=0 event re-solve")
@@ -2650,7 +2649,7 @@ function _newton_step_shared_multi_gpu!(
         KernelAbstractions.synchronize(backend)
 
         # 2. Convergence
-        norm_f = CUDA.CUBLAS.nrm2(f_flat)
+        norm_f = norm(f_flat)
         norm_f < tol_l2 && return true
         exact |= norm_f > SHARED_P_RHO * norm_prev
         norm_prev = norm_f
@@ -2695,7 +2694,7 @@ function _newton_step_shared_multi_gpu!(
         KernelAbstractions.synchronize(backend)
 
         # 5d. Negate
-        CUDA.CUBLAS.scal!(n_red * M, -1.0, gbl.schur_rhs_batched)
+        gbl.schur_rhs_batched .*= -1.0
 
         if exact
             # 5e'. Exact per-scenario S (fault terms are already in J_nzval)
@@ -2891,7 +2890,7 @@ function _newton_loop_schur_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Pow
         _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
 
         # 2. Convergence check
-        norm_f = CUDA.CUBLAS.nrm2(f_flat)
+        norm_f = norm(f_flat)
         norm_f < tol_l2 && return true
 
         if GradPower._needs_refactor(reuse, use_reuse, dt, stale, norm_f, norm_prev)
@@ -2941,7 +2940,7 @@ function _newton_loop_schur_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Pow
         KernelAbstractions.synchronize(backend)
 
         # 5d. Negate RHS for all scenarios at once
-        CUDA.CUBLAS.scal!(n_red * M, -1.0, gbl.schur_rhs_batched)
+        gbl.schur_rhs_batched .*= -1.0
 
         # 5e. Batched cuDSS solve with the (possibly reused) factored S
         _execute_chunks!("solve", gbl.cudss_S_solver_batched)
@@ -3014,8 +3013,8 @@ function _newton_loop_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSyst
         # 1. Residual + backward Euler on GPU
         _beuler_all_scenarios_gpu!(gbl, dyn, L, dt)
 
-        # 2. Convergence check — CUBLAS nrm2 (no full download)
-        norm_f = CUDA.CUBLAS.nrm2(f_flat)
+        # 2. Convergence check — device-side 2-norm (no full download)
+        norm_f = norm(f_flat)
         norm_f < tol_l2 && return true
 
         if GradPower._needs_refactor(reuse, use_reuse, dt, stale, norm_f, norm_prev)
@@ -3162,9 +3161,7 @@ function integrate_gpu_cudss!(
             # trajectory is not smooth across the event.
             reuse.dt = NaN
             have_prev = false
-            for (ei, ev) in enumerate(events)
-                CUDA.@allowscalar gbl.event_status[ei] = ev.status
-            end
+            copyto!(gbl.event_status, Bool[ev.status for ev in events])
             copyto!(gbl.zold, gbl.z)
             ok = _newton_step_cudss_gpu!(gbl, dyn, L, 0.0; tol = newton_tol,
                                          reuse = reuse, zstart = zstart)
@@ -3270,9 +3267,7 @@ function integrate_gpu_schur_cudss!(
             # trajectory is not smooth across the event.
             reuse.dt = NaN
             have_prev = false
-            for (ei, ev) in enumerate(events)
-                CUDA.@allowscalar gbl.event_status[ei] = ev.status
-            end
+            copyto!(gbl.event_status, Bool[ev.status for ev in events])
             copyto!(gbl.zold, gbl.z)
             ok = _newton_step_schur_cudss_gpu!(gbl, dyn, L, 0.0; tol = newton_tol,
                                                reuse = reuse, zstart = zstart)
