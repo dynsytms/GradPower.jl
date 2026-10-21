@@ -8,6 +8,9 @@
 tutorials, the event types, integrators, GPU use, dataset generation and the
 API reference.
 
+See [Queries and parameter edits](docs/src/guides/queries.md) for device lookup
+and the lifecycle for changing parameters or operating points.
+
 A Julia package for **GPU-accelerated power-system dynamic simulation**.
 
 `GradPower.jl` parses standard PSS/E input files (`.raw` + `.dyr`), solves the
