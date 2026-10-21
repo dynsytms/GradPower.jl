@@ -11,6 +11,9 @@ API reference.
 See [Queries and parameter edits](docs/src/guides/queries.md) for device lookup
 and the lifecycle for changing parameters or operating points.
 
+See [Plotting simulation results](docs/src/guides/plotting.md) for optional
+CairoMakie figures, scenario envelopes, and animated network voltages.
+
 A Julia package for **GPU-accelerated power-system dynamic simulation**.
 
 `GradPower.jl` parses standard PSS/E input files (`.raw` + `.dyr`), solves the

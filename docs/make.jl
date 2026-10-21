@@ -2,6 +2,7 @@
 # (first time: julia --project=docs -e 'using Pkg; Pkg.instantiate()')
 using Documenter
 using GradPower
+using CairoMakie
 
 DocMeta.setdocmeta!(GradPower, :DocTestSetup, :(using GradPower); recursive=true)
 
@@ -26,6 +27,7 @@ makedocs(;
         ],
         "Guides" => [
             "Queries and parameter edits" => "guides/queries.md",
+            "Plotting simulation results" => "guides/plotting.md",
             "Integrators and Newton options" => "guides/integrators.md",
             "Recording and early stop" => "guides/recording.md",
             "Linear solvers and GPU" => "guides/solvers_gpu.md",

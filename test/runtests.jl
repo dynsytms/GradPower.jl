@@ -28,6 +28,7 @@ end
     include("test_results.jl")
     include("test_queries.jl")
     include("test_interactions.jl")
+    include("test_plotting.jl")
     include("test_crank_nicolson.jl")
     include("test_early_stop.jl")
     include("test_load_step.jl")

@@ -61,6 +61,21 @@ GradPower.BatchedLayout
 GradPower.gen_speeds
 ```
 
+## Optional plotting
+
+Load a Makie backend such as `CairoMakie` before or after `GradPower` to enable
+these methods; Makie is not a core dependency. See
+[Plotting simulation results](guides/plotting.md) for runnable illustrated
+examples, units, scenario envelopes, and network-layout limitations.
+
+```@docs
+plot_states
+plot_voltage
+plot_speed
+plot_network
+animate_network
+```
+
 ## Events
 
 ```@docs
