@@ -1,5 +1,5 @@
 #!/usr/bin/env julia
-using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
+using Pkg; Pkg.activate(@__DIR__)
 using GradPower
 using SHA
 

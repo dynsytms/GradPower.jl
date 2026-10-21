@@ -22,7 +22,7 @@
 # and examples/refs/ — recorded as an open question in the builder report.
 
 using Pkg
-Pkg.activate(joinpath(@__DIR__, "..", ".."))
+Pkg.activate(joinpath(@__DIR__, ".."))
 
 using GradPower
 using NPZ

@@ -225,8 +225,11 @@ remain unavailable. See `examples/nlp.jl` for a runnable objective evaluation.
 
 The unused internal `newton`, `compare_matrix`, `find_outliers` helpers and the
 `newton_step!` debug keyword `jac_verify` have been removed. FiniteDiff and NPZ
-remain test dependencies, not core dependencies. ForwardDiff is still pulled
-in transitively by NLsolve for device initialization.
+remain test dependencies, not core dependencies. Verification and timing
+scripts use `scripts/Project.toml`, which declares their NPZ, FiniteDiff and
+Statistics dependencies. Set it up once with
+`julia --project=scripts -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'`.
+ForwardDiff is still pulled in transitively by NLsolve for device initialization.
 
 ## Repository layout
 

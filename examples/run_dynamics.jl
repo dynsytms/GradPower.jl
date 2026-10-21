@@ -1,14 +1,4 @@
-using Plots
-using Revise    
 using GradPower
-using SparseArrays
-using FiniteDiff
-
-using Profile
-using PProf
-
-raw_file = "data/2bus_33.raw"
-dyr_file = "data/2bus.dyr"
 
 raw_file = "examples/2bus.raw"
 dyr_file = "examples/2bus.dyr"

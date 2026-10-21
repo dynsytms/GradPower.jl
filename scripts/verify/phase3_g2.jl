@@ -2,7 +2,7 @@
 # Phase 3 G2 — Jacobian vs finite-difference for ESDC1A case at z0.
 
 using Pkg
-Pkg.activate(joinpath(@__DIR__, "..", ".."))
+Pkg.activate(joinpath(@__DIR__, ".."))
 
 using GradPower
 using FiniteDiff

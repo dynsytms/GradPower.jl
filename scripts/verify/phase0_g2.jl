@@ -18,6 +18,9 @@
 # actual on-disk location of the uqgrid reference traces in this repo
 # is examples/refs/. Recorded as an open question in the builder report.
 
+using Pkg
+Pkg.activate(joinpath(@__DIR__, ".."))
+
 using SHA
 using Dates
 using NPZ

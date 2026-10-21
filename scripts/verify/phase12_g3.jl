@@ -9,7 +9,7 @@
 # Writes artifacts/phase12/g3.json. Always exits 0 (diagnostic gate).
 
 using Pkg
-Pkg.activate(joinpath(@__DIR__, "..", ".."))
+Pkg.activate(joinpath(@__DIR__, ".."))
 
 using GradPower
 using Statistics
