@@ -63,6 +63,24 @@ t, trajs = ext.integrate_gpu_shared_multi!(gbl, sys, 1.0,
                 fault_buses, rfaults, 0.1, 0.2)   # one (bus, r) per scenario
 ```
 
+### Storing less
+
+The GPU integrators take the same output options as `integrate!`:
+`save_every`, `save_idxs` and `save_eltype`. Only the selected rows of the
+selected steps are kept on the device, and they are downloaded once at the
+end:
+
+```julia
+net  = sys.dynamic.diff_dim + sys.dynamic.alg_dim
+rows = collect(net + 1 : net + 2length(sys.buses))        # bus voltages only
+t, V = ext.integrate_gpu_schur_cudss!(gbl, sys, 1.0;
+           save_idxs = rows, save_every = 2, save_eltype = Float32)
+```
+
+On ACTIVSg2000 (1 s, 256 scenarios) this takes 3.4 s instead of 6.6 s for the
+full trajectory. Device memory drops from 5.3 to 3.7 GiB, and the output from
+1.9 GB to 0.29 GB.
+
 The GPU integrators support resistive bus faults (`ContingencyEvent` without
 `xfault`). If other events are registered (trips, load steps, impedance faults),
 they raise an `ArgumentError` rather than silently ignoring them; use the CPU

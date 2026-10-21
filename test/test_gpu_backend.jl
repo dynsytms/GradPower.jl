@@ -583,4 +583,50 @@ end
     empty!(ps.dynamic.events)
 end
 
+@testset "GPU recorder: save_every / save_idxs / save_eltype ($(nameof(typeof(ls))))" for ls in GPU_SOLVERS
+    # Every reduced output equals the matching slice of the full output (up
+    # to cuDSS run-to-run noise); shapes, times and element types exactly.
+    ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"))
+    GradPower.build_network!(ps); GradPower.runpf!(ps)
+    dp = GradPower.DynamicProblem(ps); GradPower.initialize_dynamics!(dp, ps)
+    GradPower.add_event!(ps, GradPower.ContingencyEvent(4, 0.02, 0.1, 0.2))
+    n = length(dp.zvec); M = 3; tf = 0.5           # 60 steps
+    net = ps.dynamic.diff_dim + ps.dynamic.alg_dim
+    rows = vcat(collect(net+1:n), GradPower.gen_speeds(ps))
+    newgbl() = ext.GpuBatchedLayout(dp, ps, M; linear_solver = ls)
+    for integ in (ext.integrate_gpu_cudss!, ext.integrate_gpu_schur_cudss!)
+        tv, full = integ(newgbl(), ps, tf)
+        @test length(tv) == 61 && all(size(full[m]) == (n, 61) for m in 1:M)
+        for (kw, cols, rr, T) in (((; save_every = 7), 1:7:61, 1:n, Float64),
+                                  ((; save_every = 60), 1:60:61, 1:n, Float64),
+                                  ((; save_every = 100), 1:1, 1:n, Float64),
+                                  ((; save_idxs = rows, save_every = 2), 1:2:61, rows, Float64),
+                                  ((; save_idxs = rows, save_every = 3, save_eltype = Float32), 1:3:61, rows, Float32))
+            tvs, red = integ(newgbl(), ps, tf; kw...)
+            @test tvs == tv[cols]
+            for m in 1:M
+                @test eltype(red[m]) == T
+                @test size(red[m]) == (length(rr), length(cols))
+                @test maximum(abs.(Float64.(red[m]) .- T.(full[m][rr, cols]))) < (T == Float32 ? 1e-5 : 1e-7)
+            end
+        end
+        _, none = integ(newgbl(), ps, tf; save_idxs = Int[])
+        @test all(size(none[m]) == (0, 61) for m in 1:M)
+        @test_throws ArgumentError integ(newgbl(), ps, tf; save_every = 0)
+        @test_throws ArgumentError integ(newgbl(), ps, tf; save_idxs = [n + 1])
+    end
+    # shared-factor integrators take the same options
+    tv, full = ext.integrate_gpu_shared!(newgbl(), ps, tf)
+    tvs, red = ext.integrate_gpu_shared!(newgbl(), ps, tf; save_idxs = rows, save_every = 4)
+    @test tvs == tv[1:4:61] && maximum(maximum(abs.(red[m] .- full[m][rows, 1:4:61])) for m in 1:M) < 1e-7
+    empty!(ps.dynamic.events)
+    tv, full = ext.integrate_gpu_shared_multi!(newgbl(), ps, tf, [4, 5, 7], [0.02, 0.02, 0.02], 0.1, 0.2)
+    tvs, red = ext.integrate_gpu_shared_multi!(newgbl(), ps, tf, [4, 5, 7], [0.02, 0.02, 0.02], 0.1, 0.2;
+                                              save_every = 5, save_eltype = Float32)
+    @test tvs == tv[1:5:61] && all(eltype(r) == Float32 for r in red)
+    @test maximum(maximum(abs.(Float64.(red[m]) .- Float32.(full[m][:, 1:5:61]))) for m in 1:M) < 1e-5
+end
+
 end # @testset "gpu_backend"
