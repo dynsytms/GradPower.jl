@@ -2375,6 +2375,9 @@ function integrate_gpu_shared!(
     tf::Float64;
     dt::Float64 = 1.0 / 120.0,
     newton_tol::Float64 = 1e-10,
+    save_every::Integer = 1,
+    save_idxs = Colon(),
+    save_eltype::Type{<:AbstractFloat} = Float64,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
     GradPower._check_gpu_events(ps, "integrate_gpu_shared")
@@ -2392,11 +2395,9 @@ function integrate_gpu_shared!(
     end
     sort!(event_schedule, by = x -> x[1])
 
-    z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
     backend = CUDABackend()
-    snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1; ndrange=(M, sys_dim))
-    KernelAbstractions.synchronize(backend)
+    rec = GpuRecorder(sys_dim, M, nsteps, save_idxs, save_every, save_eltype)
+    _record_gpu!(rec, gbl.z, 1)
 
     copyto!(gbl.zold, gbl.z)
 
@@ -2436,8 +2437,7 @@ function integrate_gpu_shared!(
         ok = _newton_step_shared_gpu!(gbl, dyn, L, dt, sf_vr_l, sf_vi_l, refresh_P!; tol = newton_tol)
         GradPower.check_newton(ok, tvec[k + 1], "GPU shared time step")
 
-        snap(z_hist, gbl.z, k + 1; ndrange=(M, sys_dim))
-        KernelAbstractions.synchronize(backend)
+        _record_gpu!(rec, gbl.z, k + 1)
 
         any_event = false
         while sched_idx <= length(event_schedule) && event_schedule[sched_idx][1] == k
@@ -2464,10 +2464,7 @@ function integrate_gpu_shared!(
         foreach(GradPower.deactivate!, events)
     end
 
-    z_hist_cpu = Array(z_hist)
-    trajs = [z_hist_cpu[:, m, :] for m in 1:M]
-
-    return tvec, trajs
+    return _recorder_output(rec, tvec)
 end
 
 # -----------------------------------------------------------------------
@@ -2764,6 +2761,9 @@ function integrate_gpu_shared_multi!(
     toff::Float64;
     dt::Float64 = 1.0 / 120.0,
     newton_tol::Float64 = 1e-10,
+    save_every::Integer = 1,
+    save_idxs = Colon(),
+    save_eltype::Type{<:AbstractFloat} = Float64,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
     GradPower._check_gpu_events(ps, "integrate_gpu_shared_multi")
@@ -2777,11 +2777,9 @@ function integrate_gpu_shared_multi!(
     step_on  = Int(round(ton / dt))
     step_off = Int(round(toff / dt))
 
-    z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
     backend = CUDABackend()
-    snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1; ndrange=(M, sys_dim))
-    KernelAbstractions.synchronize(backend)
+    rec = GpuRecorder(sys_dim, M, nsteps, save_idxs, save_every, save_eltype)
+    _record_gpu!(rec, gbl.z, 1)
 
     copyto!(gbl.zold, gbl.z)
 
@@ -2802,8 +2800,7 @@ function integrate_gpu_shared_multi!(
             fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
         GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi time step")
 
-        snap(z_hist, gbl.z, k + 1; ndrange=(M, sys_dim))
-        KernelAbstractions.synchronize(backend)
+        _record_gpu!(rec, gbl.z, k + 1)
 
         # Event handling: all scenarios share the same ton/toff
         if k == step_on
@@ -2821,10 +2818,7 @@ function integrate_gpu_shared_multi!(
         end
     end
 
-    z_hist_cpu = Array(z_hist)
-    trajs = [z_hist_cpu[:, m, :] for m in 1:M]
-
-    return tvec, trajs
+    return _recorder_output(rec, tvec)
 end
 
 # Modified Newton on the GPU (see `GradPower.JacobianReuse`): the batched
@@ -2966,10 +2960,53 @@ function _newton_loop_schur_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Pow
     return false
 end
 
-# Copy z[m, :] into z_hist[:, m, step] on GPU (one kernel, no download)
-@kernel function snapshot_z_ka!(z_hist, z, @Const(step))
-    m, j = @index(Global, NTuple)
-    @inbounds z_hist[j, m, step] = z[m, j]
+# -----------------------------------------------------------------------
+# GPU trajectory recorder (same contract as the CPU recorder, src/recorder.jl)
+#
+# Only the stored rows (`save_idxs`) of the stored steps (`1:save_every:end`)
+# are written, on the device, in `save_eltype`; one download at the end. The
+# buffer is hist[row, scenario, column].
+# -----------------------------------------------------------------------
+
+struct GpuRecorder{T}
+    rows::CuVector{Int}        # z index of each stored row
+    every::Int
+    hist::CuArray{T, 3}        # (nrows, M, nsaved)
+end
+
+function GpuRecorder(sys_dim::Int, M::Int, nsteps::Int, save_idxs, save_every::Integer,
+                     ::Type{T}) where {T}
+    GradPower._check_save_every(save_every)
+    idx = GradPower._resolve_save_idxs(save_idxs, sys_dim)
+    rows = idx === Colon() ? collect(1:sys_dim) : idx
+    nsaved = GradPower._nsaved(nsteps, Int(save_every))
+    return GpuRecorder{T}(CuVector{Int}(rows), Int(save_every),
+                          CUDA.zeros(T, length(rows), M, nsaved))
+end
+
+@kernel function record_rows_ka!(hist, z, rows, @Const(col))
+    m, r = @index(Global, NTuple)
+    @inbounds hist[r, m, col] = z[m, rows[r]]
+end
+
+# Store state of grid step `k` (1 = initial state) if it is an output step.
+function _record_gpu!(rec::GpuRecorder, z::CuMatrix, k::Int)
+    (k - 1) % rec.every == 0 || return nothing
+    col = (k - 1) ÷ rec.every + 1
+    nr = length(rec.rows)
+    nr == 0 && return nothing
+    kern = record_rows_ka!(CUDABackend())
+    kern(rec.hist, z, rec.rows, col; ndrange = (size(z, 1), nr))
+    KernelAbstractions.synchronize(CUDABackend())
+    return nothing
+end
+
+# One download; per-scenario (nrows, nsaved) matrices and the stored times.
+function _recorder_output(rec::GpuRecorder, tvec)
+    h = Array(rec.hist)
+    M = size(h, 2)
+    trajs = [h[:, m, :] for m in 1:M]
+    return GradPower._saved_times(tvec, rec.every), trajs
 end
 
 # -----------------------------------------------------------------------
@@ -3075,15 +3112,19 @@ end
 
 """
     integrate_gpu_cudss!(gbl, ps, tf; dt=1/120, newton_tol=1e-10,
-                         jacobian_reuse=true, predictor=true)
+                         jacobian_reuse=true, predictor=true,
+                         save_every=1, save_idxs=:, save_eltype=Float64) -> (tvec, trajs)
 
 GPU-resident batched integration with cuDSS monolithic direct solve.
-Zero CPU↔GPU transfers in the Newton loop. Trajectory snapshots
-downloaded once per time step.
+Zero CPU↔GPU transfers in the Newton loop.
 
 `jacobian_reuse` and `predictor` have the meaning of `GradPower.integrate!`
 (modified Newton, linear predictor). The refactorization decision is shared by
 all scenarios of the batch. Set both to `false` for full Newton.
+
+Output: `trajs[m]` holds the rows `save_idxs` of scenario `m` at the steps
+`1:save_every:nsteps+1`, in `save_eltype`, as in `GradPower.integrate!`.
+Only those values are kept on the device and downloaded once at the end.
 """
 function integrate_gpu_cudss!(
     gbl::GpuBatchedLayout,
@@ -3093,6 +3134,9 @@ function integrate_gpu_cudss!(
     newton_tol::Float64 = 1e-10,
     jacobian_reuse::Bool = true,
     predictor::Bool = true,
+    save_every::Integer = 1,
+    save_idxs = Colon(),
+    save_eltype::Type{<:AbstractFloat} = Float64,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
     GradPower._check_gpu_events(ps, "integrate_gpu_cudss")
@@ -3110,12 +3154,10 @@ function integrate_gpu_cudss!(
     end
     sort!(event_schedule, by = x -> x[1])
 
-    # GPU-resident trajectory buffer: z_hist[state, scenario, step]
-    z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
+    # GPU-resident stored output (see GpuRecorder)
     backend = CUDABackend()
-    snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1; ndrange=(M, sys_dim))
-    KernelAbstractions.synchronize(backend)
+    rec = GpuRecorder(sys_dim, M, nsteps, save_idxs, save_every, save_eltype)
+    _record_gpu!(rec, gbl.z, 1)
 
     copyto!(gbl.zold, gbl.z)
 
@@ -3140,9 +3182,7 @@ function integrate_gpu_cudss!(
         GradPower.check_newton(ok, tvec[k + 1], "GPU cuDSS time step")
         have_prev = true
 
-        # Trajectory snapshot — GPU to GPU, no download
-        snap(z_hist, gbl.z, k + 1; ndrange=(M, sys_dim))
-        KernelAbstractions.synchronize(backend)
+        _record_gpu!(rec, gbl.z, k + 1)
 
         any_event = false
         while sched_idx <= length(event_schedule) && event_schedule[sched_idx][1] == k
@@ -3172,11 +3212,8 @@ function integrate_gpu_cudss!(
         foreach(GradPower.deactivate!, events)
     end
 
-    # Single bulk download at the end
-    z_hist_cpu = Array(z_hist)
-    trajs = [z_hist_cpu[:, m, :] for m in 1:M]
-
-    return tvec, trajs
+    # Single download of the stored output at the end
+    return _recorder_output(rec, tvec)
 end
 
 # -----------------------------------------------------------------------
@@ -3188,8 +3225,9 @@ end
                                jacobian_reuse=true, predictor=true)
 
 GPU-resident batched integration using Schur-complement reduction.
-A_k factored via cuBLAS batched, S solved via cuDSS. `jacobian_reuse` and
-`predictor` as in [`integrate_gpu_cudss!`](@ref).
+A_k factored via cuBLAS batched, S solved via cuDSS. `jacobian_reuse`,
+`predictor` and the output options (`save_every`, `save_idxs`, `save_eltype`)
+as in [`integrate_gpu_cudss!`](@ref).
 """
 function integrate_gpu_schur_cudss!(
     gbl::GpuBatchedLayout,
@@ -3199,6 +3237,9 @@ function integrate_gpu_schur_cudss!(
     newton_tol::Float64 = 1e-10,
     jacobian_reuse::Bool = true,
     predictor::Bool = true,
+    save_every::Integer = 1,
+    save_idxs = Colon(),
+    save_eltype::Type{<:AbstractFloat} = Float64,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
     GradPower._check_gpu_events(ps, "integrate_gpu_schur_cudss")
@@ -3216,12 +3257,10 @@ function integrate_gpu_schur_cudss!(
     end
     sort!(event_schedule, by = x -> x[1])
 
-    # GPU-resident trajectory buffer: z_hist[state, scenario, step]
-    z_hist = CUDA.zeros(Float64, sys_dim, M, nsteps + 1)
+    # GPU-resident stored output (see GpuRecorder)
     backend = CUDABackend()
-    snap = snapshot_z_ka!(backend)
-    snap(z_hist, gbl.z, 1; ndrange=(M, sys_dim))
-    KernelAbstractions.synchronize(backend)
+    rec = GpuRecorder(sys_dim, M, nsteps, save_idxs, save_every, save_eltype)
+    _record_gpu!(rec, gbl.z, 1)
 
     copyto!(gbl.zold, gbl.z)
 
@@ -3246,9 +3285,7 @@ function integrate_gpu_schur_cudss!(
         GradPower.check_newton(ok, tvec[k + 1], "GPU Schur time step")
         have_prev = true
 
-        # Trajectory snapshot — GPU to GPU, no download
-        snap(z_hist, gbl.z, k + 1; ndrange=(M, sys_dim))
-        KernelAbstractions.synchronize(backend)
+        _record_gpu!(rec, gbl.z, k + 1)
 
         any_event = false
         while sched_idx <= length(event_schedule) && event_schedule[sched_idx][1] == k
@@ -3278,11 +3315,8 @@ function integrate_gpu_schur_cudss!(
         foreach(GradPower.deactivate!, events)
     end
 
-    # Single bulk download at the end
-    z_hist_cpu = Array(z_hist)
-    trajs = [z_hist_cpu[:, m, :] for m in 1:M]
-
-    return tvec, trajs
+    # Single download of the stored output at the end
+    return _recorder_output(rec, tvec)
 end
 
 end # module GradPowerCUDAExt
