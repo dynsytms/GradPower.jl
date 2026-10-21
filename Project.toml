@@ -17,6 +17,7 @@ TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 CUDSS = "45b445bb-4962-46a0-9369-b4df9d0f772e"
 MadNLP = "2621e9c9-9eb4-46b1-8089-e8c72242dfb6"
+Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 NLPModels = "a4795742-8479-5a88-8948-cc11e1c8c1a6"
 SparseDirectSolver = "dc8e0fd9-41f1-440b-9624-22817132f700"
 
@@ -24,6 +25,7 @@ SparseDirectSolver = "dc8e0fd9-41f1-440b-9624-22817132f700"
 GradPowerCUDAExt = "CUDA"
 GradPowerCUDSSExt = "CUDSS"
 GradPowerNLPExt = ["MadNLP", "NLPModels"]
+GradPowerMakieExt = "Makie"
 GradPowerSparseDirectSolverExt = "SparseDirectSolver"
 
 [compat]
@@ -34,4 +36,5 @@ SparseDirectSolver = "0.1"
 KernelAbstractions = "0.9.41"
 Krylov = "0.10.6"
 MadNLP = "0.8, 0.9, 0.10"
+Makie = "0.24"
 NLPModels = "0.21"

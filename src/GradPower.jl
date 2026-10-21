@@ -978,6 +978,7 @@ include("parse.jl")
 # Display functions.
 include("queries.jl")
 include("interactions.jl")
+include("plotting.jl")
 include("display.jl")
 
 # Exports
@@ -996,6 +997,7 @@ export bus_index, get_bus, find_generator, find_load, find_devices, find_device
 export state_index, parameter_index, get_parameter, set_parameter!
 export system_summary, display_parameters, get_bus_info, get_index_info
 export set_load!, set_generator!
+export plot_states, plot_voltage, plot_speed, plot_network, animate_network
 export FixedStateLimit, LimitEvent, LimitWorkspace
 export set_dynamics!
 export from_psse

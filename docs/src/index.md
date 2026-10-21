@@ -39,6 +39,7 @@ fig
 | **Scale out** | Run many scenarios in one call on CPU threads or the GPU ([Many scenarios at once](tutorials/batched.md), [Linear solvers and GPU](guides/solvers_gpu.md)). |
 | **Choose accuracy** | Backward Euler or second-order Crank–Nicolson, with Jacobian reuse and a predictor ([Integrators](guides/integrators.md)). |
 | **Store less** | Record only some states, every *k*-th step, in `Float32`; stop unstable runs early ([Recording and early stop](guides/recording.md)). |
+| **Plot results** | Plot named states, voltage and speed, scenario envelopes, and network animations with an optional Makie backend ([Plotting simulation results](guides/plotting.md)). |
 | **Build datasets** | Sweep loads × faults and write labelled HDF5 files for training ([Generating training data](guides/datasets.md)). |
 
 ## Installation

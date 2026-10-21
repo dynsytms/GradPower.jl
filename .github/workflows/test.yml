@@ -19,3 +19,20 @@ jobs:
 
       - name: Run tests
         run: julia --project=. -e 'using Pkg; Pkg.test()'
+
+  headlessplot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.13"
+
+      - uses: julia-actions/cache@v2
+
+      - name: Instantiate optional plotting environment
+        run: julia --project=test/plotting -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Run optional headless plotting tests
+        run: julia --project=test/plotting test/plotting/runtests.jl
