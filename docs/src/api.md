@@ -51,3 +51,15 @@ GradPower.JacobianReuse
 SolverLog
 GradPower.NewtonConvergenceError
 ```
+
+## Optional NLP Model
+
+```@docs
+GradPower.DynamicNLP
+```
+
+Install and load `NLPModels` and `MadNLP` before constructing the model. The
+constructor returns an `NLPModels.AbstractNLPModel` implemented in
+`GradPowerNLPExt`; `GradPower.DynamicNLP` itself is a function, not a type.
+Only forward objective evaluation is supported. Gradients still raise an
+explicit error, so gradient-based optimization is not currently available.

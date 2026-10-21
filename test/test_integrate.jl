@@ -1,5 +1,4 @@
 # Integration and event handling tests.
-# Replaces the skipped test_dynamics.jl (which depended on deleted ad.jl).
 
 const EX_INT = joinpath(@__DIR__, "..", "examples")
 
@@ -345,7 +344,7 @@ end
     zold = copy(dp2.zvec)
     z_stale = copy(zold)
     ok_stale = GradPower._newton_loop!(zeros(n), z_stale, zeros(n), J, fact, zold, dp2.uvec,
-        dp2.pvec, ps2, 1/120, r, true, 3, 1e-10, false, false, zeros(n), nothing, :inf, nothing)
+        dp2.pvec, ps2, 1/120, r, true, 3, 1e-10, false, zeros(n), nothing, :inf, nothing)
     @test !ok_stale
     log = GradPower.SolverLog()
     z = copy(zold)

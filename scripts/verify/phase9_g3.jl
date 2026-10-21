@@ -10,7 +10,7 @@
 # Writes artifacts/phase9/g3.json. Exits 0 iff passed.
 
 using Pkg
-Pkg.activate(joinpath(@__DIR__, "..", ".."))
+Pkg.activate(joinpath(@__DIR__, ".."))
 
 using GradPower
 using NPZ

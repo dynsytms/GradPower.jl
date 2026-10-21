@@ -8,7 +8,7 @@
 #   julia --project=. scripts/timing_baseline.jl
 
 using Pkg
-Pkg.activate(joinpath(@__DIR__, ".."))
+Pkg.activate(@__DIR__)
 
 using GradPower
 using Statistics

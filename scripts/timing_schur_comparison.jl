@@ -7,7 +7,7 @@
 #   julia --project=. scripts/timing_schur_comparison.jl
 
 using Pkg
-Pkg.activate(joinpath(@__DIR__, ".."))
+Pkg.activate(@__DIR__)
 
 using GradPower
 using Statistics

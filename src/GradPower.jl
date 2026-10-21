@@ -8,10 +8,6 @@ using SparseArrays
 using NLsolve
 using KLU
 using Krylov
-using Statistics
-
-import NLPModels
-import MadNLP
 
 # profiling
 using TimerOutputs
@@ -972,7 +968,7 @@ include("devices/seeds.jl")
 # 2D scenario-indexed batched layout + batched CPU integration.
 include("batched.jl")
 
-# Optimization model.
+# Optional optimization entry point (implementation in GradPowerNLPExt).
 include("nlp.jl")
 
 # Include files. parsers.

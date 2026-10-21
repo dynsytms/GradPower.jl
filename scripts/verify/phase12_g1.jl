@@ -8,7 +8,7 @@
 # Writes artifacts/phase12/g1.json. Exits 0 iff passed.
 
 using Pkg
-Pkg.activate(joinpath(@__DIR__, "..", ".."))
+Pkg.activate(joinpath(@__DIR__, ".."))
 
 using GradPower
 using Statistics

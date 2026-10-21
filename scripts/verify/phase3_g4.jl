@@ -2,7 +2,7 @@
 # Phase 3 G4 — Trajectory parity vs uqgrid for 2bus GENROU+ESDC1A.
 
 using Pkg
-Pkg.activate(joinpath(@__DIR__, "..", ".."))
+Pkg.activate(joinpath(@__DIR__, ".."))
 
 using GradPower
 using NPZ
