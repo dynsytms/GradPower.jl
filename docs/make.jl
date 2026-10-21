@@ -25,6 +25,7 @@ makedocs(;
             "Many scenarios at once" => "tutorials/batched.md",
         ],
         "Guides" => [
+            "Queries and parameter edits" => "guides/queries.md",
             "Integrators and Newton options" => "guides/integrators.md",
             "Recording and early stop" => "guides/recording.md",
             "Linear solvers and GPU" => "guides/solvers_gpu.md",

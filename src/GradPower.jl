@@ -976,6 +976,8 @@ include("nlp.jl")
 include("parse.jl")
 
 # Display functions.
+include("queries.jl")
+include("interactions.jl")
 include("display.jl")
 
 # Exports
@@ -990,6 +992,10 @@ export add_device!
 export add_event!, add_disconnect_event!, add_trip_event!, create_trip_line_event
 export initialize_dynamics!, integrate!
 export SimulationResult, StateChannel, state_channels, state, speed, bus_voltage
+export bus_index, get_bus, find_generator, find_load, find_devices, find_device
+export state_index, parameter_index, get_parameter, set_parameter!
+export system_summary, display_parameters, get_bus_info, get_index_info
+export set_load!, set_generator!
 export FixedStateLimit, LimitEvent, LimitWorkspace
 export set_dynamics!
 export from_psse

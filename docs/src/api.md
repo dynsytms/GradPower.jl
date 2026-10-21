@@ -10,6 +10,40 @@ runpf
 analyze_dyr_coverage
 ```
 
+## Queries and inspection
+
+See [Queries and parameter edits](guides/queries.md) for identity conventions
+and an IEEE9 example. Bus selectors default to external numbering; internal
+indices require `numbering=:internal`.
+
+```@docs
+bus_index
+get_bus
+find_generator
+find_load
+find_devices
+find_device
+state_index
+parameter_index
+system_summary
+display_parameters
+get_bus_info
+get_index_info
+```
+
+## Parameter and operating-point edits
+
+Parameter edits are CPU-only and between runs, never during integration.
+Operating-point edits require power flow followed by a new dynamic problem
+and initialization; existing problems and GPU/batch layouts must be recreated.
+
+```@docs
+get_parameter
+set_parameter!
+set_load!
+set_generator!
+```
+
 ## Dynamic problem
 
 ```@docs
