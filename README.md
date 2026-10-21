@@ -87,6 +87,18 @@ add_event!(sys, ContingencyEvent(2, 0.2, 0.2, 0.3))
 tvec, traj = integrate!(dp, sys, 10.0)
 ```
 
+For named state access, opt into a result without changing the default tuple API:
+
+```julia
+res = integrate!(dp, sys, 10.0; result=true)
+w = speed(res, 1)                          # raw pu speed deviation, view
+v = bus_voltage(res, sys.buses[1].i)        # complex voltage at external bus
+```
+
+Data generation defaults to `output_mode = "all_states"`: every differential,
+algebraic, and network-voltage state row. Compact derived channels require
+`output_mode = "derived_channels"`; see the dataset guide.
+
 `traj` is a `(system_size x nsteps)` matrix laid out as
 `[diff_states; alg_states; v_re/v_im per bus]`. The rotor speed of
 generator `k` is at `traj[L.genrou.diff_ptr[k] + 4, :]` (the `w`

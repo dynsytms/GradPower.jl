@@ -20,10 +20,15 @@ julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/example.toml
 ## One sample
 
 A sample is one simulation: an operating point (load scale λ), a fault (bus,
-resistance, duration) and the response. `simulate_sample` records only what the
-dataset stores:
-- bus voltage magnitude and angle;
-- machine rotor angle and speed, every `downsample`-th step, in `Float32`.
+resistance, duration) and the response. By default `simulate_sample` records
+**all state rows** in `Float64`: device differential and algebraic states,
+plus real and imaginary voltage at every bus. `downsample` affects only the
+saved time columns. The output includes actual saved times and a row schema
+with external bus, model, device ID, state name, kind, and initial online flag.
+
+Use `output_mode=:derived_channels` explicitly for only bus voltage magnitude
+and angle and machine rotor angle and speed in `Float32`. The default is
+`output_mode=:all_states`, including when no option is supplied.
 
 The labels are accumulated from **every** step by a step callback.
 
@@ -44,7 +49,7 @@ function sample(bus, r, duration; kw...)
 end
 
 ch, m = sample(16, 0.005, 0.1)
-(keys(ch)..., ), size(ch["bus_vm"]), m["stable"], round(m["max_angle_sep_deg"], digits = 1)
+(keys(ch)..., ), size(ch["states"]), m["stable"], round(m["max_angle_sep_deg"], digits = 1)
 ```
 
 ## Stable or not?
@@ -63,10 +68,10 @@ ax = Axis(fig[1, 1], xlabel = "time (s)", ylabel = "max rotor angle separation (
           yscale = Makie.pseudolog10, yticks = [0, 10, 100, 1000, 10000],
           title = "fault at bus 16, r = 0.005 pu")
 for d in durations
-    ch, m = sample(16, 0.005, d)
+    ch, m = sample(16, 0.005, d; output_mode=:derived_channels)
     delta = ch["gen_delta"]
     sep = vec(maximum(delta .- delta[:, 1], dims = 1) .- minimum(delta .- delta[:, 1], dims = 1))
-    t = (0:size(delta, 2) - 1) .* (2 / 120)
+    t = ch["time"]
     lines!(ax, t, rad2deg.(sep), label = "$(Int(1000d)) ms → " * (m["stable"] ? "stable" : "UNSTABLE"),
            linestyle = m["stable"] ? :solid : :dash)
 end
@@ -122,6 +127,8 @@ output_root = "./dynstab_out"
 t_final    = 10.0
 dt         = 0.008333333333333333   # 1/120 s
 downsample = 2                      # store every 2nd step
+output_mode = "all_states"          # default, even when omitted
+# output_mode = "derived_channels" # explicit compact Float32 output
 early_stop_deg = 360.0              # optional: stop unstable runs early
 
 [load]
@@ -156,10 +163,11 @@ checks that it is a stable equilibrium (`check_self_stability`).
 
 ```
 <case>_rank0000.h5
-├── attributes: schema_version, case_name, baseMVA, dt, dt_eff, t_final, downsample, ...
+├── attributes: schema_version=4, output_mode, case_name, baseMVA, dt, dt_eff, t_final, downsample, ...
 ├── grid/            topology, once per file: bus_id, bus_type, branch_index, gen_bus, ...
+├── state_schema/    index, model, bus, device_id, name, kind, online (all_states only)
 └── samples/
-    ├── 000001/      bus_vm, bus_va [n_bus × T]   gen_delta, gen_omega [n_gen × T]   (Float32)
+    ├── 000001/      time [T], states [length(z) × T] (Float64, all_states default)
     │                attributes: load_scale, fault_bus_ext, r_fault, t_on, t_off, clearing_time,
     │                            stable, max_angle_sep_deg, max_freq_dev, tail_peak_ratio, ...
     │                            (+ terminated_early, t_stop, stop_reason with early stop)
@@ -168,6 +176,15 @@ checks that it is a stable equilibrium (`check_self_stability`).
 
 `/grid` holds what a graph neural network needs: the nodes are buses, the edges
 are `branch_index`, and machines are attached through `gen_bus`.
+
+In `derived_channels` mode, each sample contains `bus_vm`, `bus_va`,
+`gen_delta`, and `gen_omega` instead of `states`, and no `/state_schema` is
+written. Both modes store `time[T]`; use it rather than reconstructing times
+from the requested horizon, particularly with early stopping.
+
+Schema entries describe rows in recording order. Use
+`(model, bus, device_id, name)` to identify a raw state across layouts, not the
+solver row `index`. See `scripts/README_datagen.md` for a readback example.
 
 ## Pitfalls
 

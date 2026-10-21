@@ -865,6 +865,7 @@ include("utils.jl")
 include("direct_solver.jl")
 include("numerics.jl")
 include("recorder.jl")
+include("results.jl")
 include("network.jl")
 include("pflow.jl")
 include("dynamics.jl")
@@ -988,6 +989,7 @@ export add_load_trip!, add_generator_trip!, generator_devices, find_branch
 export add_device!
 export add_event!, add_disconnect_event!, add_trip_event!, create_trip_line_event
 export initialize_dynamics!, integrate!
+export SimulationResult, StateChannel, state_channels, state, speed, bus_voltage
 export FixedStateLimit, LimitEvent, LimitWorkspace
 export set_dynamics!
 export from_psse

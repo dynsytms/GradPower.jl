@@ -84,6 +84,8 @@ zip_alpha = 0.5
 # the peak actually falls before you pick a horizon for thousands of runs.
 dt      = 1 / 120
 t_final = 3.0        # IEEE9; use 10.0 for ACTIVSg2000
+output_mode = :all_states # default: every differential + algebraic z row
+# output_mode = :derived_channels # explicit compact Float32 export instead
 
 # ---------------------------------------------------------------------------
 # 1. Build the system once.
@@ -176,16 +178,14 @@ for (li, lambda) in enumerate(lambdas)
         GradPower.add_event!(sys,
             GradPower.ContingencyEvent(bus_internal, r_fault, t_on, t_on + duration))
 
-        tvec, traj = GradPower.integrate!(dprob, sys, t_final; dt=dt)
-
-        # --- extract channels and label ------------------------------------
-        # traj is [n_states, n_steps+1]. dynamics_channels pulls out the parts
-        # you actually want as [n, T] Float32: bus voltage magnitude/angle and
-        # per-machine rotor angle / speed deviation.
-        ch = dynamics_channels(sys, traj; downsample=1)
-        m  = stability_metrics(sys, traj;
-                               angle_sep_threshold=deg2rad(180.0),
-                               tail_fraction=0.2, decay_ratio=0.5)
+        # all_states preserves every z row in ch["states"], its saved times
+        # in ch["time"], and stable row identities in ch["state_schema"].
+        # derived_channels must be selected explicitly to discard other rows.
+        # Labels see every step, regardless of mode or downsampling.
+        ch, m = simulate_sample(dprob, sys, t_final; dt=dt,
+                                output_mode=output_mode, downsample=1,
+                                angle_sep_threshold=deg2rad(180.0),
+                                tail_fraction=0.2, decay_ratio=0.5)
 
         push!(results, (lambda=lambda, bus=bus_ext, r_fault=r_fault,
                         sep=m["max_angle_sep_deg"], fdev=m["max_freq_dev"],
@@ -208,6 +208,12 @@ nstable = count(r -> r.stable, results)
 println("""
 
 Shapes per scenario (for the case above):
+  all_states (default):
+    states            [length(z), T] Float64, every differential + algebraic row
+    time              [T]            actual saved times
+    state_schema                     stable row identities
+
+  derived_channels (explicit opt-in, Float32):
   bus_vm, bus_va      [n_bus, T]   voltage magnitude (pu) and angle (rad)
   gen_delta, gen_omega[n_gen, T]   rotor angle (rad), speed deviation (pu)
 

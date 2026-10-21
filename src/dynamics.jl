@@ -619,6 +619,9 @@ By default the full trajectory is returned: `traj[:, j]` is the state at
   * `save_idxs` stores only those rows of the state (`traj[r, j] =
     z[save_idxs[r]]`); default `:` (all rows).
   * `save_eltype = Float32` stores in that element type.
+  * `result = true` returns a [`SimulationResult`](@ref) with named state
+    accessors and metadata. The default remains `(tvec, traj)`.
+    `scenario_ids` may supply a one-element vector identifying this run.
   * `step_callback(k, t, z)` is called after the initial state (`k = 1`) and
     after every accepted step `k = 2, …, nsteps+1`, with the full state `z` at
     time `t`, whether or not it is stored. `z` must not be modified.
@@ -659,6 +662,8 @@ function integrate!(
     step_callback=nothing,
     integrator::Symbol=:backward_euler,
     stop_condition=nothing,
+    result::Bool=false,
+    scenario_ids=nothing,
 )
     # NOTE: Assumes initialize_dynamics!(dp, ps) has been called.
     _check_integrator(integrator)
@@ -670,6 +675,9 @@ function integrate!(
 
     # calculate number of steps
     nsteps, tvec = _time_grid(tf, dt)
+    result_context = result ? _result_context(ps, save_idxs, 1, scenario_ids, dt,
+        (; dt, requested_tf=tf, integrator, solver)) : nothing
+    limit_event_start = limit_events === nothing ? 0 : length(limit_events)
 
     # retrieve events — build sorted schedule of (step, event_index, action)
     # tuples so the time loop can process all events at each step in O(1).
@@ -857,6 +865,7 @@ function integrate!(
 
         # re-solve at dt=0 after any event state change
         if any_event
+            _mark_result_event!(result_context, k)
             # The event changed the equations: the cached factorization is
             # stale, and the trajectory is not smooth across the event.
             reuse.dt = NaN
@@ -880,8 +889,12 @@ function integrate!(
     # Final state: the last grid step, before any event re-solve at that step
     # (the convention of the stored trajectory, and the previous behavior).
     dp.zvec = zfinal
-    kstop > 0 && return _truncated_output(rec, tvec, kstop)
-    return _saved_times(tvec, rec.every), rec.traj
+    output = kstop > 0 ? _truncated_output(rec, tvec, kstop) :
+                        (_saved_times(tvec, rec.every), rec.traj)
+    return _result_output(output, result_context;
+        status=kstop > 0 ? :terminated : :success,
+        final_time=kstop > 0 ? tvec[kstop] : tvec[end],
+        limit_events=limit_workspace.events, limit_event_start)
 end
 
 # GPU integrators apply ContingencyEvent only. Refuse other registered events

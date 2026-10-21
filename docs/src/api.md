@@ -17,6 +17,12 @@ DynamicProblem
 initialize_dynamics!
 integrate!
 GradPower.integrate_batched!
+SimulationResult
+StateChannel
+state_channels
+state
+speed
+bus_voltage
 GradPower.BatchedLayout
 GradPower.gen_speeds
 ```

@@ -35,6 +35,19 @@ Ranks shard scenarios round-robin and each writes
 ## Config
 
 ```toml
+[sim]
+output_mode = "all_states"  # default, even when omitted
+downsample = 1             # save every integration step; affects columns only
+```
+
+`all_states` exports **every row of the solver's `z` vector**: all device
+differential states, all device algebraic states, and both rectangular voltage
+components at every bus. Values remain Float64. To export only the compact
+Float32 voltage magnitude/angle and machine angle/speed channels, explicitly
+set `[sim] output_mode = "derived_channels"`. No state rows are silently
+discarded by the default mode.
+
+```toml
 [load]                      # lambda ~ Uniform(low, high); base case is the mean
 distribution = "uniform"    #   when low + high == 2
 low = 0.95
@@ -49,32 +62,93 @@ once per simulation. Scenario count = `n_samples × n_buses × n_r_fault ×
 n_durations`.
 
 Cost reference: ~3.3 s per 5 s ACTIVSg2000 simulation on one core, ≈35k
-simulations per Polaris node-hour. Output ≈1.2 MB per ACTIVSg2000 sample at
-`downsample = 2`.
+simulations per Polaris node-hour. The compact `derived_channels` output is
+≈1.2 MB per ACTIVSg2000 sample at `downsample = 2`; the default `all_states`
+output is larger.
 
-**Memory.** Each simulation stores only what the sample needs: the bus
-`(vr, vi)` and machine `omega`/`delta` rows, every `downsample`-th step
-(`integrate!(...; save_idxs, save_every)`). The labels are accumulated over
-every step through `step_callback` (`DynstabRecorder`), so they are computed at
-full resolution exactly as before. See `simulate_sample` in `dynstab_io.jl`;
-`julia --project=scripts scripts/test_dynstab_recorder.jl` checks it is
-bit-identical to the full-trajectory path.
+**Memory.** `all_states` retains all `z` rows at every `downsample`-th step.
+Only the explicit `derived_channels` mode restricts stored rows to bus
+`(vr, vi)` and machine `omega`/`delta` before deriving the compact output.
+Both use `integrate!(...; save_idxs, save_every)`. Labels are accumulated over
+every step through `step_callback` (`DynstabRecorder`), so they are computed
+at full resolution in either mode. See `simulate_sample` in `dynstab_io.jl`;
+`julia --project=scripts scripts/test_dynstab_recorder.jl` checks exact
+full-trajectory equivalence and HDF5 roundtrips.
 
 **Early stop (optional).** `[sim] early_stop_deg = 360.0` ends a simulation
 once the rotor-angle separation, relative to the initial operating point,
 exceeds that angle (it must be `>= angle_sep_threshold_deg`, so the `stable`
 label cannot change). Stopped samples are shorter (`T` attribute) and carry
 `terminated_early = 1`, `t_stop`, `stop_reason = "angle_separation"`; their
-`tail_peak_ratio` is NaN and `settled = 0`. Off by default; when off, the
-output is unchanged.
+`tail_peak_ratio` is NaN and `settled = 0`. Off by default. `time` always
+contains the actual saved times; its final entry may precede an off-stride
+`t_stop`.
 
 ## Output
 
+Schema version **4** adds `output_mode` to file/sample attributes and an
+explicit Float64 `time[T]` dataset to every `/samples/NNNNNN`.
 `/grid` holds static topology once per file (`bus_id`, `bus_type`,
-`branch_index`, `gen_bus`, …). Each `/samples/NNNNNN` holds
-`bus_vm`, `bus_va` `[n_bus, T]` and `gen_delta`, `gen_omega` `[n_gen, T]`, all
-Float32, plus attributes: `load_scale`, `fault_bus_ext`, `r_fault`,
-`clearing_time`, `stable`, `max_angle_sep_deg`, `max_freq_dev`, …
+`branch_index`, `gen_bus`, …).
+
+In the default **`all_states`** mode each sample holds Float64
+`states[length(z), T]`, in solver row order. `/state_schema` holds one column
+per field of `GradPower.state_channels(sys; save_idxs=:)`, shared by the
+samples in that file:
+
+| Column | Stored Type | Meaning |
+| --- | --- | --- |
+| `index` | Int | 1-based original `z` row |
+| `model` | String | Device model, or `"bus"` for network voltages |
+| `bus` | Int | External PSS/E bus number |
+| `device_id` | String | Stable device identifier; empty for network voltages |
+| `name` | String | Raw state name, including `"vr"` and `"vi"` |
+| `kind` | String | `"differential"` or `"algebraic"` |
+| `online` | Bool | Initial device online status |
+
+The entry at schema position `r` describes row `r` of `states`. Identify a
+state across layouts using `(model, bus, device_id, name)`, not `index`.
+All fields are ordinary HDF5 arrays, not Julia object serialization.
+
+The opt-in **`derived_channels`** mode instead holds Float32 `bus_vm`,
+`bus_va` `[n_bus, T]` and `gen_delta`, `gen_omega` `[n_gen, T]`; it does
+not write `states` or `/state_schema`. These are derived channels, not a
+complete raw-state representation.
+
+Both modes include sample attributes `load_scale`, `fault_bus_ext`,
+`r_fault`, `clearing_time`, `stable`, `max_angle_sep_deg`, `max_freq_dev`, …
+Consumers of schema v3 must explicitly opt in to the compact mode to retain
+those channel names, and should use the stored `time` rather than inferring
+times from a requested horizon.
+
+For example, reconstruct a named result from an `all_states` sample without
+a Julia-specific serialization format:
+
+```julia
+using GradPower, HDF5
+result = h5open("dataset.h5", "r") do fid
+    t = read(fid["samples/000001/time"])
+    z = read(fid["samples/000001/states"])
+    schema = read(fid["state_schema"])
+    channels = StateChannel[
+        StateChannel(schema["index"][i], Symbol(schema["model"][i]),
+                     schema["bus"][i], schema["device_id"][i],
+                     Symbol(schema["name"][i]), Symbol(schema["kind"][i]),
+                     schema["online"][i])
+        for i in eachindex(schema["index"])
+    ]
+    SimulationResult(t, z, channels)
+end
+# For a dataset with GENROU machines:
+dw = speed(result, 1)
+delta = state(result, :genrou, 1, :delta)
+bus = first(c.bus for c in result.channels if c.model === :bus)
+vm = bus_voltage(result, bus; component=:magnitude)
+```
+
+The arrays remain usable after the file closes. This reconstructs state
+channels and times, not solver status or event history; the constructor's
+status defaults to `:unknown`.
 
 ## Three things that will bite you
 

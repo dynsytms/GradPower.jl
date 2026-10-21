@@ -2378,6 +2378,8 @@ function integrate_gpu_shared!(
     save_every::Integer = 1,
     save_idxs = Colon(),
     save_eltype::Type{<:AbstractFloat} = Float64,
+    result::Bool = false,
+    scenario_ids = nothing,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
     GradPower._check_gpu_events(ps, "integrate_gpu_shared")
@@ -2386,6 +2388,8 @@ function integrate_gpu_shared!(
     sys_dim = gbl.sys_dim
 
     nsteps, tvec = GradPower._time_grid(tf, dt)
+    result_context = result ? GradPower._result_context(ps, save_idxs, M, scenario_ids, dt,
+        (; dt, requested_tf=tf, integrator=:backward_euler, solver=:gpu_shared)) : nothing
 
     events = dyn.events
     event_schedule = Tuple{Int,Int,Symbol}[]
@@ -2454,6 +2458,7 @@ function integrate_gpu_shared!(
         end
 
         if any_event
+            GradPower._mark_result_event!(result_context, k)
             copyto!(gbl.event_status, Bool[ev.status for ev in events])
             copyto!(gbl.zold, gbl.z)
             ok = _newton_step_shared_gpu!(gbl, dyn, L, 0.0, sf_vr_l, sf_vi_l, refresh_P!; tol = newton_tol)
@@ -2464,7 +2469,8 @@ function integrate_gpu_shared!(
         foreach(GradPower.deactivate!, events)
     end
 
-    return _recorder_output(rec, tvec)
+    return GradPower._result_output(_recorder_output(rec, tvec), result_context;
+                                    final_time=tvec[end])
 end
 
 # -----------------------------------------------------------------------
@@ -2764,6 +2770,8 @@ function integrate_gpu_shared_multi!(
     save_every::Integer = 1,
     save_idxs = Colon(),
     save_eltype::Type{<:AbstractFloat} = Float64,
+    result::Bool = false,
+    scenario_ids = nothing,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
     GradPower._check_gpu_events(ps, "integrate_gpu_shared_multi")
@@ -2776,6 +2784,20 @@ function integrate_gpu_shared_multi!(
     nsteps, tvec = GradPower._time_grid(tf, dt)
     step_on  = Int(round(ton / dt))
     step_off = Int(round(toff / dt))
+    result_context = result ? GradPower._result_context(ps, save_idxs, M, scenario_ids, dt,
+        (; dt, requested_tf=tf, integrator=:backward_euler, solver=:gpu_shared_multi);
+        system_events=false) : nothing
+    if result
+        # This backend uses the explicit per-scenario faults, not dyn.events.
+        for m in 1:M
+            details = (scenario=result_context.ids[m], bus=ps.buses[fault_buses[m]].i,
+                       rfault=rfaults[m], xfault=0.0)
+            push!(result_context.events, (step=step_on, action=:fault_on, details))
+            step_off == step_on ||
+                push!(result_context.events, (step=step_off, action=:fault_off, details))
+        end
+        sort!(result_context.events, by=e -> e.step)
+    end
 
     backend = CUDABackend()
     rec = GpuRecorder(sys_dim, M, nsteps, save_idxs, save_every, save_eltype)
@@ -2804,12 +2826,14 @@ function integrate_gpu_shared_multi!(
 
         # Event handling: all scenarios share the same ton/toff
         if k == step_on
+            GradPower._mark_result_event!(result_context, k)
             fill!(gbl.sf_fault_active_gpu, true)
             copyto!(gbl.zold, gbl.z)
             ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
                 fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
             GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi dt=0 event re-solve")
         elseif k == step_off
+            GradPower._mark_result_event!(result_context, k)
             fill!(gbl.sf_fault_active_gpu, false)
             copyto!(gbl.zold, gbl.z)
             ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
@@ -2818,7 +2842,8 @@ function integrate_gpu_shared_multi!(
         end
     end
 
-    return _recorder_output(rec, tvec)
+    return GradPower._result_output(_recorder_output(rec, tvec), result_context;
+                                    final_time=tvec[end])
 end
 
 # Modified Newton on the GPU (see `GradPower.JacobianReuse`): the batched
@@ -3137,6 +3162,8 @@ function integrate_gpu_cudss!(
     save_every::Integer = 1,
     save_idxs = Colon(),
     save_eltype::Type{<:AbstractFloat} = Float64,
+    result::Bool = false,
+    scenario_ids = nothing,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
     GradPower._check_gpu_events(ps, "integrate_gpu_cudss")
@@ -3145,6 +3172,8 @@ function integrate_gpu_cudss!(
     sys_dim = gbl.sys_dim
 
     nsteps, tvec = GradPower._time_grid(tf, dt)
+    result_context = result ? GradPower._result_context(ps, save_idxs, M, scenario_ids, dt,
+        (; dt, requested_tf=tf, integrator=:backward_euler, solver=:gpu_cudss)) : nothing
 
     events = dyn.events
     event_schedule = Tuple{Int,Int,Symbol}[]
@@ -3197,6 +3226,7 @@ function integrate_gpu_cudss!(
         end
 
         if any_event
+            GradPower._mark_result_event!(result_context, k)
             # The equations changed: the factorization is stale and the
             # trajectory is not smooth across the event.
             reuse.dt = NaN
@@ -3213,7 +3243,8 @@ function integrate_gpu_cudss!(
     end
 
     # Single download of the stored output at the end
-    return _recorder_output(rec, tvec)
+    return GradPower._result_output(_recorder_output(rec, tvec), result_context;
+                                    final_time=tvec[end])
 end
 
 # -----------------------------------------------------------------------
@@ -3240,6 +3271,8 @@ function integrate_gpu_schur_cudss!(
     save_every::Integer = 1,
     save_idxs = Colon(),
     save_eltype::Type{<:AbstractFloat} = Float64,
+    result::Bool = false,
+    scenario_ids = nothing,
 )
     dyn     = ps.dynamic::GradPower.PowerSystemDynamics
     GradPower._check_gpu_events(ps, "integrate_gpu_schur_cudss")
@@ -3248,6 +3281,8 @@ function integrate_gpu_schur_cudss!(
     sys_dim = gbl.sys_dim
 
     nsteps, tvec = GradPower._time_grid(tf, dt)
+    result_context = result ? GradPower._result_context(ps, save_idxs, M, scenario_ids, dt,
+        (; dt, requested_tf=tf, integrator=:backward_euler, solver=:gpu_schur_cudss)) : nothing
 
     events = dyn.events
     event_schedule = Tuple{Int,Int,Symbol}[]
@@ -3300,6 +3335,7 @@ function integrate_gpu_schur_cudss!(
         end
 
         if any_event
+            GradPower._mark_result_event!(result_context, k)
             # The equations changed: the factorization is stale and the
             # trajectory is not smooth across the event.
             reuse.dt = NaN
@@ -3316,7 +3352,8 @@ function integrate_gpu_schur_cudss!(
     end
 
     # Single download of the stored output at the end
-    return _recorder_output(rec, tvec)
+    return GradPower._result_output(_recorder_output(rec, tvec), result_context;
+                                    final_time=tvec[end])
 end
 
 end # module GradPowerCUDAExt
