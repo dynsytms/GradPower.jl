@@ -1,5 +1,3 @@
-using FiniteDiff
-
 function resfun!(f::AbstractArray, x::AbstractArray, vmag, vang, pinj, qinj, ybus_mat, bus_type, pq_idx, pqv_idx)
     fill!(f, 0.0)
     npq = sum(bus_type .== 1)
@@ -348,8 +346,6 @@ function runpf(psys::PowerSystem; verbose=false, fdiff=false)
         f0 = zero(x0)
         df = OnceDifferentiable(func!, jac!, x0, f0, J0)
         @timeit prF "pflow: nlsolve - jac" result = nlsolve(df, x0, method=:newton, iterations=50, show_trace=verbose)
-        # Alternative: custom Newton solver (currently using NLsolve)
-        #@timeit prF "pflow: newton" result, success = newton(x0, J0, func!, jac!, tol = 1e-8, verbose = true)
     end
 
     # Retrieve solution

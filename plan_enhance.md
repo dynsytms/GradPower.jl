@@ -155,7 +155,7 @@ Every limiter or model task must use the same gates. Start with a 2-bus fixture;
 
 - For differentiable model parameters, compare tangent/adjoint gradients with centered finite differences on an inactive-limit trajectory.
 - For active limits, compare smoothed `mu > 0` gradients with finite differences and explicitly classify exact `mu = 0` gradients as generalized, unsupported, or separately validated.
-- Include existing non-default sensitivity tests such as `test/test_tlm_genrou_param.jl` in the relevant verification command rather than assuming `Pkg.test()` runs them.
+- Restore and run the sensitivity checks specified in `docs/sensitivity_specs.md` once tangent/adjoint APIs are implemented; `Pkg.test()` currently validates neither.
 
 ## 5. Phase 0: Freeze Baselines And Build The Comparison Harness
 

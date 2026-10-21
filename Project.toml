@@ -4,30 +4,26 @@ version = "0.2.0"
 authors = ["D. Adrian Maldonado <maldonadod@anl.gov>", "François Pacaud <francois.pacaud@minesparis.psl.eu>", "Michel Schanen <mschanen@anl.gov>"]
 
 [deps]
-FiniteDiff = "6a86dc24-6348-571c-b903-95158fe2bd41"
-ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 KLU = "ef3ab10e-7fda-4108-b977-705223b18434"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 Krylov = "ba0b0d4f-ebba-5204-a429-3ac8c609bfb7"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-MadNLP = "2621e9c9-9eb4-46b1-8089-e8c72242dfb6"
-Match = "7eb4fadd-790c-5f42-8a69-bfa0b872bfbf"
-NLPModels = "a4795742-8479-5a88-8948-cc11e1c8c1a6"
 NLsolve = "2774e3e8-f4cf-5e23-947b-6d7e65073b56"
-NPZ = "15e1cf62-19b3-5cfa-8e77-841668bca605"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
-Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 CUDSS = "45b445bb-4962-46a0-9369-b4df9d0f772e"
+MadNLP = "2621e9c9-9eb4-46b1-8089-e8c72242dfb6"
+NLPModels = "a4795742-8479-5a88-8948-cc11e1c8c1a6"
 SparseDirectSolver = "dc8e0fd9-41f1-440b-9624-22817132f700"
 
 [extensions]
 GradPowerCUDAExt = "CUDA"
 GradPowerCUDSSExt = "CUDSS"
+GradPowerNLPExt = ["MadNLP", "NLPModels"]
 GradPowerSparseDirectSolverExt = "SparseDirectSolver"
 
 [compat]
@@ -37,3 +33,5 @@ CUDSS = "0.8"
 SparseDirectSolver = "0.1"
 KernelAbstractions = "0.9.41"
 Krylov = "0.10.6"
+MadNLP = "0.8, 0.9, 0.10"
+NLPModels = "0.21"

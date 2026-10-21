@@ -129,15 +129,6 @@ function show(io::IO, bus::Bus)
     println(io, "  v0a: ", bus.v0a)
 end
 
-function find_outliers(vec::Vector{Float64})
-    # finds outliers in a vector of Float64
-    # returns indices of outliers
-    mean_val = mean(vec)
-    std_val = std(vec)
-    outliers = findall(x -> x > mean_val + 2.5 * std_val || x < mean_val - 3.5 * std_val, vec)
-    return outliers
-end
-
 function get_bus_info(busn::Int64, sys::PowerSystem)
     # prints all information about a bus. including connected branches, connected generators,
     # connected loads, etc.

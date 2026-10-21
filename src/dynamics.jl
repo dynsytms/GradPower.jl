@@ -727,7 +727,6 @@ function integrate!(
     # fault transients (gen i_q/i_d off by ~1e-2 if tol is 1e-9, vs
     # ~1e-10 with tol=1e-10).
     ftol = newton_tol
-    max_iter = 30
 
     # initial condition
     zold .= dp.zvec
@@ -800,7 +799,7 @@ function integrate!(
         elseif use_schur_gmres
             success = newton_step_schur_gmres!(zguess, f0, J0, gsw, zanchor, dp.uvec, dp.pvec, ps, hstep, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
         else
-            success = newton_step!(zguess, f0, J0, fact, zanchor, dp.uvec, dp.pvec, ps, hstep, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace, reuse=reuse)
+            success = newton_step!(zguess, f0, J0, fact, zanchor, dp.uvec, dp.pvec, ps, hstep, verbose=verbose, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace, reuse=reuse)
         end
         check_newton(success, tvec[k+1], "time step (solver=$solver, limit_method=$limit_method)")
         zguess === zold || copyto!(zold, zguess)
@@ -867,7 +866,7 @@ function integrate!(
             elseif use_schur_gmres
                 success = newton_step_schur_gmres!(zold, f0, J0, gsw, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, zwork=zwork, log=log, newton_norm=newton_norm)
             else
-                success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, jac_verify=false, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace, reuse=reuse)
+                success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace, reuse=reuse)
             end
             check_newton(success, tvec[k+1], "dt=0 event re-solve (solver=$solver, limit_method=$limit_method)")
         end

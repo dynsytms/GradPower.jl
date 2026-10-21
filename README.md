@@ -214,6 +214,20 @@ threaded CPU path is usually faster (ACTIVSg2000, 64 scenarios: 3.8 s GPU vs
 2.6 s CPU on 64 threads). GPU batch memory grows with M (ACTIVSg70k: about
 0.33 GiB per scenario).
 
+### Optional NLP model
+
+Install and load `NLPModels` and `MadNLP` to enable
+`GradPower.DynamicNLP(sys, dp, tfinal, lvar, uvar)`. Neither package is required
+for simulation. The constructor is now a function returning a model whose
+concrete type lives in `GradPowerNLPExt`, rather than a type in `GradPower`.
+Forward objective evaluation works; gradients and gradient-based optimization
+remain unavailable. See `examples/nlp.jl` for a runnable objective evaluation.
+
+The unused internal `newton`, `compare_matrix`, `find_outliers` helpers and the
+`newton_step!` debug keyword `jac_verify` have been removed. FiniteDiff and NPZ
+remain test dependencies, not core dependencies. ForwardDiff is still pulled
+in transitively by NLsolve for device initialization.
+
 ## Repository layout
 
 | Path | Contents |
