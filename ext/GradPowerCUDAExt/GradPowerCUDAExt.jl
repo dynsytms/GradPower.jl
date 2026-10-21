@@ -282,6 +282,7 @@ struct ChunkedBatchSolver
     solvers::Vector{Any}
     sol::Vector{Any}    # per-chunk solution wrappers (ds_matrix)
     rhs::Vector{Any}    # per-chunk right-hand-side wrappers
+    factored::Base.RefValue{Bool}   # numeric factorization done once (then refactorize)
 end
 
 """
@@ -295,7 +296,7 @@ pattern `(rowptr, colval)` and values `nzval_b[:, m]`, solving into
 function _chunked_batch_solver(ds, rowptr, colval, nzval_b::CuMatrix, sol_buf::CuMatrix,
                                rhs_buf::CuMatrix; chunk::Int = _ubatch_chunk(ds, size(nzval_b, 2)))
     n = size(sol_buf, 1); M = size(nzval_b, 2)
-    cs = ChunkedBatchSolver(Any[], Any[], Any[])
+    cs = ChunkedBatchSolver(Any[], Any[], Any[], Ref(false))
     for r in (lo:min(lo + chunk - 1, M) for lo in 1:chunk:M)
         nb = length(r)
         solver = GradPower.ds_solver(ds, rowptr, colval, view(nzval_b, :, r), "G", 'F')
@@ -314,8 +315,14 @@ function _execute_chunks!(phase::String, cs::ChunkedBatchSolver)
     for (solver, sol, rhs) in zip(cs.solvers, cs.sol, cs.rhs)
         GradPower.ds_execute!(phase, solver, sol, rhs; asynchronous = false)
     end
+    phase == "factorization" && (cs.factored[] = true)
     return nothing
 end
+
+# Numeric factorization of the current values: the full factorization the
+# first time, refactorization (same pattern, analysis reused) afterwards.
+_factor_chunks!(cs::ChunkedBatchSolver) =
+    _execute_chunks!(cs.factored[] ? "refactorization" : "factorization", cs)
 
 struct GpuBatchedLU
     w_k::Int
@@ -529,14 +536,15 @@ struct GpuBatchedLayout
 end
 
 """
-    GpuBatchedLayout(dp, ps, M)
+    GpuBatchedLayout(dp, ps, M; linear_solver = GradPower.default_gpu_backend(M))
 
 Construct a GPU-resident batched layout. Initialization runs on CPU,
-then arrays are transferred to GPU.
+then arrays are transferred to GPU. The default solver depends on the batch
+size (see [`GradPower.default_gpu_backend`](@ref)).
 """
 function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSystem, M::Int;
                           linear_solver::GradPower.AbstractDirectSolverBackend =
-                              GradPower.default_gpu_backend())
+                              GradPower.default_gpu_backend(M))
     ds = linear_solver
     # Build CPU layout first (reuses existing code)
     bl_cpu = GradPower.BatchedLayout(dp, ps, M)
@@ -2614,8 +2622,7 @@ function _newton_step_shared_multi_gpu!(
     L::GradPower.SimulationLayout,
     dt::Float64,
     fault_jac_vr_pos::CuVector{Int32},
-    fault_jac_vi_pos::CuVector{Int32},
-    S_factored::Base.RefValue{Bool};
+    fault_jac_vi_pos::CuVector{Int32};
     itermax::Int = 30,
     tol::Float64 = 1e-10,
 )
@@ -2697,8 +2704,7 @@ function _newton_step_shared_multi_gpu!(
             kernel_csr(gbl.S_csr_nzval_batched, gbl.S_nzval_batched, gbl.csc_to_csr_perm_S;
                        ndrange=(gbl.S_nnz, M))
             KernelAbstractions.synchronize(backend)
-            _execute_chunks!(S_factored[] ? "refactorization" : "factorization", gbl.cudss_S_solver_batched)
-            S_factored[] = true
+            _factor_chunks!(gbl.cudss_S_solver_batched)
             _execute_chunks!("solve", gbl.cudss_S_solver_batched)
             dv = gbl.S_sol_buf
         else
@@ -2789,13 +2795,12 @@ function integrate_gpu_shared_multi!(
 
     # All faults start inactive
     fill!(gbl.sf_fault_active_gpu, false)
-    S_factored = Ref(false)  # batched exact-S solver numerically factored yet
 
     for k in 1:nsteps
         copyto!(gbl.zold, gbl.z)
 
         ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, dt,
-            fault_jac_vr_pos, fault_jac_vi_pos, S_factored; tol=newton_tol)
+            fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
         GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi time step")
 
         snap(z_hist, gbl.z, k + 1; ndrange=(sys_dim, M))
@@ -2806,13 +2811,13 @@ function integrate_gpu_shared_multi!(
             fill!(gbl.sf_fault_active_gpu, true)
             copyto!(gbl.zold, gbl.z)
             ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
-                fault_jac_vr_pos, fault_jac_vi_pos, S_factored; tol=newton_tol)
+                fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
             GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi dt=0 event re-solve")
         elseif k == step_off
             fill!(gbl.sf_fault_active_gpu, false)
             copyto!(gbl.zold, gbl.z)
             ok = _newton_step_shared_multi_gpu!(gbl, dyn, L, 0.0,
-                fault_jac_vr_pos, fault_jac_vi_pos, S_factored; tol=newton_tol)
+                fault_jac_vr_pos, fault_jac_vi_pos; tol=newton_tol)
             GradPower.check_newton(ok, tvec[k + 1], "GPU shared-multi dt=0 event re-solve")
         end
     end
@@ -2878,7 +2883,6 @@ function _newton_loop_schur_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Pow
     f_flat = reshape(gbl.f, :)
     tol_l2 = tol * sqrt(Float64(sys_dim * M))
 
-    first_factor = true
     stale = 0
     norm_prev = Inf
 
@@ -2903,12 +2907,7 @@ function _newton_loop_schur_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Pow
             kernel_csr(gbl.S_csr_nzval_batched, gbl.S_nzval_batched, gbl.csc_to_csr_perm_S;
                        ndrange=(S_nnz, M))
             KernelAbstractions.synchronize(backend)
-            if first_factor
-                _execute_chunks!("factorization", gbl.cudss_S_solver_batched)
-                first_factor = false
-            else
-                _execute_chunks!("refactorization", gbl.cudss_S_solver_batched)
-            end
+            _factor_chunks!(gbl.cudss_S_solver_batched)
             reuse.dt = dt
             stale = 0
         end
@@ -3009,7 +3008,6 @@ function _newton_loop_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSyst
     f_flat = reshape(gbl.f, :)
     tol_l2 = tol * sqrt(Float64(sys_dim * M))
 
-    first_factor = true
     stale = 0
     norm_prev = Inf
     for iter in 1:itermax
@@ -3033,12 +3031,7 @@ function _newton_loop_cudss_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.PowerSyst
             # 5. Batched factorization (all M scenarios at once)
             # No ds_update! needed — solver already holds a pointer to
             # csr_nzval_batched, which the kernel updated in-place above.
-            if first_factor
-                _execute_chunks!("factorization", gbl.cudss_solver_batched)
-                first_factor = false
-            else
-                _execute_chunks!("refactorization", gbl.cudss_solver_batched)
-            end
+            _factor_chunks!(gbl.cudss_solver_batched)
             reuse.dt = dt
             stale = 0
         end
