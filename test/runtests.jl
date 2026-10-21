@@ -25,6 +25,7 @@ end
     include("test_integrate.jl")
     include("test_tgov1_limits.jl")
     include("test_recorder.jl")
+    include("test_results.jl")
     include("test_crank_nicolson.jl")
     include("test_early_stop.jl")
     include("test_load_step.jl")
@@ -55,6 +56,7 @@ end
 end
 @testset "gpu_backend" begin
     include("test_gpu_backend.jl")
+    include("test_gpu_results.jl")
 end
 @testset "coupling" begin
     include("test_coupling.jl")

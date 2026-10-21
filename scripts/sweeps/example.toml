@@ -13,6 +13,8 @@ output_root = "./dynstab_out"
 [sim]
 t_final    = 10.0     # integration horizon (s)
 dt         = 0.008333333333333333   # 1/120 s integrator step
+output_mode = "all_states"         # default: every differential + algebraic z row
+# output_mode = "derived_channels" # opt in to compact Float32 derived channels
 
 [fault]
 # buses = "all"  -> fault every bus (internal index 1..n_bus).

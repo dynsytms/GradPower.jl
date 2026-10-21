@@ -197,6 +197,8 @@ scenario `m`; the final states are written back to `bl.z`.
 called for scenario `m` with its state after the initial state (`k = 1`) and
 after every accepted step; with `threaded=true` it runs on worker threads,
 concurrently for different `m`, so it must only touch per-scenario data.
+`result=true` opts into [`SimulationResult`](@ref); `scenario_ids` supplies
+unique labels in scenario order (default `1:bl.M`).
 """
 function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                              dt::Float64=1.0/120.0, newton_tol::Float64=1e-10,
@@ -206,7 +208,8 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                              save_idxs=Colon(),
                              save_eltype::Type{<:AbstractFloat}=Float64,
                              step_callback=nothing,
-                             integrator::Symbol=:backward_euler)
+                             integrator::Symbol=:backward_euler,
+                             result::Bool=false, scenario_ids=nothing)
     _check_integrator(integrator)
     dyn = ps.dynamic::PowerSystemDynamics
     L = dyn.layout::SimulationLayout
@@ -214,6 +217,8 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
     M = bl.M
 
     nsteps, tvec = _time_grid(tf, dt)
+    result_context = result ? _result_context(ps, save_idxs, M, scenario_ids, dt,
+        (; dt, requested_tf=tf, integrator, solver=:monolithic)) : nothing
 
     events = dyn.events
     event_schedule = Tuple{Int,Int,Symbol}[]
@@ -297,6 +302,7 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
         end
 
         if any_event
+            _mark_result_event!(result_context, k)
             _foreach_scenario(M, threaded) do m
                 ws[m].reuse.dt = NaN   # the equations changed
                 ok[m] = _solve_scenario!(ws[m], ps, 0.0, newton_tol, predictor)
@@ -312,5 +318,6 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
     for m in 1:M
         bl.z[m, :] .= ws[m].z
     end
-    return _saved_times(tvec, recs[1].every), [r.traj for r in recs]
+    output = (_saved_times(tvec, recs[1].every), [r.traj for r in recs])
+    return _result_output(output, result_context; final_time=tvec[end])
 end

@@ -25,6 +25,43 @@ add_event!(sys, ContingencyEvent(sys.busmap[16], 0.05, 0.2, 0.3))
 nothing # hide
 ```
 
+## Named results
+
+The default return remains `(times, trajectory)`. Opt into a `SimulationResult`
+with `result=true` on the CPU or GPU integrators:
+
+```julia
+res = integrate!(dp, sys, 5.0; result=true)
+w = speed(res, 1)                                  # pu speed deviation, view
+w = state(res, :genrou, 1, :w)                      # same raw state
+vm = bus_voltage(res, 16; component=:magnitude)      # external bus 16, pu
+vr = bus_voltage(res, 16; component=:real)           # raw state view
+```
+
+Use `state(res, :genrou, bus, "1", :w)` for explicit external bus and device
+identity. The short `k` form sorts recorded devices by `(external bus, device ID)`,
+independently of solver layout. Controller state names retain their declared case
+(for example `:PF0` for IEESGO). `speed` returns deviation from synchronous speed,
+not absolute speed or frequency in Hz. Voltage angle is in radians.
+
+`res.channels` describes every saved raw row, including device algebraic states
+and rectangular network voltages. `state_channels(sys; save_idxs=rows)` exposes
+the same schema without running a simulation. The schema snapshots initial
+online flags; applied scheduled events are in `res.events`, and limit events
+are in `res.metadata.limit_events`. Samples at event steps precede their
+algebraic re-solve. Missing states in selective recordings raise `ArgumentError`.
+Raw accessors return views; derived complex voltage, magnitude, and angle allocate.
+
+`res.status` is `[:success]` or `[:terminated]` for early stop; failed Newton
+solves still throw. `res.metadata.final_time` gives the actual stop time even
+when a downsampled output does not include that step. `res.times` always matches
+the stored columns.
+
+Batches keep one matrix per scenario in `res.trajectories`. Supply
+`scenario_ids=[:base, :fault]` and select with
+`speed(res, 1; scenario=:fault)`. IDs default to `1:M`. Result objects can still
+be unpacked as `times, trajectories = res`.
+
 ## Store less
 
 Keep only the bus voltages, every 6th step (20 samples per second), in `Float32`:

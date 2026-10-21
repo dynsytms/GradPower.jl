@@ -13,13 +13,17 @@
 
 # Output layout:
 #   <output_root>/<case>/<case>_rank<RRRR>.h5
-#     attrs: schema_version, case_name, baseMVA, dt, dt_eff, t_final,
+#     attrs: schema_version, output_mode, case_name, baseMVA, dt, dt_eff, t_final,
 #            downsample, n_bus, n_gen, n_branch, n_samples, ...
 #     /grid/*            static topology (written once per file)
+#     /state_schema/*    row identities for all_states (written once per file)
 #     /samples/<idx>/    one fault simulation each
 #         attrs: fault_bus_ext, fault_bus_internal, r_fault, t_on, t_off,
 #                clearing_time, stable, max_angle_sep_deg, max_freq_dev, ...
-#         bus_vm,bus_va  [n_bus, T] f32   (chunked + gzip + shuffle)
+#         time          [T] f64 (actual saved integration times)
+#         states        [length(z), T] f64 (all_states, the default)
+#       or, with output_mode = "derived_channels":
+#         bus_vm,bus_va  [n_bus, T] f32
 #         gen_delta,gen_omega [n_gen, T] f32
 
 using GradPower
@@ -48,6 +52,7 @@ function main()
     dt = Float64(sim["dt"])
     t_final = Float64(sim["t_final"])
     downsample = Int(get(sim, "downsample", 1))
+    mode = parse_output_mode(get(sim, "output_mode", "all_states"))
     residual_tol = Float64(get(sim, "residual_tol", 1e-6))
     check_stability = Bool(get(sim, "check_self_stability", true))
     lbl = get(cfg, "label", Dict())
@@ -113,6 +118,7 @@ function main()
         h5open(out_file, "w") do fid
             ra = attributes(fid)
             ra["schema_version"] = EXPORT_SCHEMA_VERSION
+            ra["output_mode"]    = string(mode)
             ra["case_name"]      = name
             ra["baseMVA"]        = sys.baseMVA
             ra["dt"]             = dt
@@ -166,10 +172,10 @@ function main()
                 dprob.zvec .= z0            # every fault starts from this operating point
                 GradPower.add_event!(sys,
                     GradPower.ContingencyEvent(sc.fault_bus_internal, sc.r_fault, sc.t_on, sc.t_off))
-                # Stores only the downsampled channel rows; labels are
-                # accumulated over every step (see simulate_sample).
+                # Save all state rows by default, or explicitly requested
+                # compact channels. Labels always see every step.
                 ch, metrics = simulate_sample(dprob, sys, t_final; dt=dt,
-                    downsample=downsample, angle_sep_threshold=angle_thr,
+                    downsample=downsample, output_mode=mode, angle_sep_threshold=angle_thr,
                     tail_fraction=tail_fraction, decay_ratio=decay_ratio,
                     early_stop_sep=early_stop_sep)
                 write_sample!(fid, k, sc, ch, metrics)

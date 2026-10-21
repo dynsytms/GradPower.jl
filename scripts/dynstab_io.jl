@@ -9,7 +9,20 @@ const REPO_ROOT = normpath(joinpath(@__DIR__, ".."))
 resolve_path(p) = isabspath(p) ? p : joinpath(REPO_ROOT, p)
 
 # Bump when the on-disk HDF5 layout changes in a way consumers must notice.
-const EXPORT_SCHEMA_VERSION = 3
+const EXPORT_SCHEMA_VERSION = 4
+
+"""
+    parse_output_mode(value="all_states") -> Symbol
+
+Validate the data-generation output mode. `all_states` preserves every row of
+the solver's `z` vector; `derived_channels` is the compact, derived-only export.
+"""
+function parse_output_mode(value="all_states")
+    mode = value isa Symbol ? value : Symbol(value)
+    mode in (:all_states, :derived_channels) ||
+        throw(ArgumentError("output_mode must be \"all_states\" (default) or \"derived_channels\", got $(repr(value))"))
+    return mode
+end
 
 function get_rank_size()
     for (rk, sk) in (("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
@@ -313,11 +326,8 @@ GENROU differential layout is `[e_qp, e_dp, phi_1d, phi_2q, w, delta]`, so
 `omega = z[diff_ptr + 4]` and `delta = z[diff_ptr + 5]` (see
 `src/generators.jl:194-199` and `:457-462`).
 
-We index by that offset deliberately and do NOT use `get_diff_names`:
-`get_diff_names(::Genrou)` returns a differently-ordered list than the kernel
-actually uses (`src/generators.jl:151`), a known discrepancy also recorded in
-`study/stability_geometry/AUDIT.md`. `device.diff_ptr` is the post-cluster
-reordering position, so it stays correct after `set_dynamics!`.
+`device.diff_ptr` is the post-cluster reordering position, so it stays correct
+after `set_dynamics!`. The offsets match `get_diff_names(::Genrou)`.
 """
 function generator_pointers(sys)
     ptr = Int[]; bus = Int[]
@@ -416,12 +426,32 @@ function channels_from_rows(sub::AbstractMatrix{Float64}, nbus::Int, ng::Int)
 end
 
 """
+    state_schema(sys) -> Dict
+
+Primitive columns identifying the rows of a full `z` trajectory. `index` is
+the current solver row; `(model, bus, device_id, name)` is its stable identity.
+`bus` is the external bus number, not a layout-dependent internal position.
+"""
+function state_schema(sys)
+    channels = GradPower.state_channels(sys; save_idxs=:)
+    return Dict(
+        "index"     => Int[c.index for c in channels],
+        "model"     => String[string(c.model) for c in channels],
+        "bus"       => Int[c.bus for c in channels],
+        "device_id" => String[c.device_id for c in channels],
+        "name"      => String[string(c.name) for c in channels],
+        "kind"      => String[string(c.kind) for c in channels],
+        "online"    => Bool[c.online for c in channels],
+    )
+end
+
+"""
     DynstabRecorder(sys, nsteps)
 
 Streaming label state for one simulation: pass `rec` as
 `integrate!(...; step_callback = rec)` and call [`metrics`](@ref)`(rec; ...)`
 afterwards. It sees every step, so the labels equal `stability_metrics` of the
-full trajectory, while only the downsampled channel rows are stored.
+full trajectory, regardless of the output mode and downsampling.
 """
 mutable struct DynstabRecorder
     gptr::Vector{Int}
@@ -492,13 +522,17 @@ function metrics(r::DynstabRecorder; angle_sep_threshold::Float64=deg2rad(180.0)
 end
 
 """
-    simulate_sample(dprob, sys, t_final; dt, downsample, early_stop_sep=nothing, label_kw...)
+    simulate_sample(dprob, sys, t_final; dt, downsample, output_mode=:all_states,
+                    early_stop_sep=nothing, label_kw...)
         -> (channels, metrics)
 
-Integrate one scenario and return its channels and labels, storing only the
-downsampled channel rows (not the full trajectory). Equal to
-`dynamics_channels(sys, traj; downsample)` and `stability_metrics(sys, traj)`
-of the full `traj`.
+Integrate one scenario and return its output and labels. The default
+`all_states` output contains `states` (every differential, device-algebraic
+and network-voltage row of `z`, in Float64) and `state_schema`. Explicitly
+select `derived_channels` for only `bus_vm`, `bus_va`, `gen_delta` and
+`gen_omega` in Float32. Both modes include `time`, `T` and `output_mode`.
+`downsample` changes the saved columns, never the full-resolution labels,
+which equal `stability_metrics(sys, traj)` of the full trajectory.
 
 `early_stop_sep` (rad, `>= angle_sep_threshold`) ends the simulation at the
 first step whose rotor-angle separation relative to the initial operating
@@ -508,13 +542,16 @@ point exceeds it. The `stable` label is then the same as for the full run
 (`"angle_separation"` or `"none"`) whenever `early_stop_sep` is given.
 """
 function simulate_sample(dprob, sys, t_final::Float64; dt::Float64, downsample::Int=1,
+                         output_mode=:all_states,
                          angle_sep_threshold::Float64=deg2rad(180.0),
                          tail_fraction::Float64=0.2, decay_ratio::Float64=0.5,
                          early_stop_sep::Union{Nothing,Float64}=nothing)
     downsample >= 1 || error("downsample must be >= 1")
     early_stop_sep === nothing || early_stop_sep >= angle_sep_threshold ||
         error("early_stop_sep must be >= angle_sep_threshold, or the stable label could change")
-    rows, nbus, ng = channel_rows(sys)
+    mode = parse_output_mode(output_mode)
+    rows = mode === :all_states ? Colon() : channel_rows(sys)[1]
+    schema = mode === :all_states ? state_schema(sys) : nothing
     nsteps, _ = GradPower._time_grid(t_final, dt)
     rec = DynstabRecorder(sys, nsteps;
                           stop_sep = early_stop_sep === nothing ? Inf : early_stop_sep)
@@ -522,7 +559,15 @@ function simulate_sample(dprob, sys, t_final::Float64; dt::Float64, downsample::
     tv, sub = GradPower.integrate!(dprob, sys, t_final; dt=dt, save_idxs=rows,
                                    save_every=downsample, step_callback=rec,
                                    stop_condition=stop)
-    ch = channels_from_rows(sub, nbus, ng)
+    ch = if mode === :all_states
+        Dict{String,Any}("states" => sub, "state_schema" => schema,
+                         "T" => size(sub, 2))
+    else
+        _, nbus, ng = channel_rows(sys)
+        Dict{String,Any}(channels_from_rows(sub, nbus, ng))
+    end
+    ch["time"] = tv
+    ch["output_mode"] = string(mode)
     m = metrics(rec; angle_sep_threshold=angle_sep_threshold,
                 tail_fraction=tail_fraction, decay_ratio=decay_ratio)
     if early_stop_sep !== nothing
@@ -741,26 +786,53 @@ function write_grid!(fid, sys)
     return g
 end
 
-function write_series!(parent, name, mat::AbstractMatrix{Float32})
-    n, T = size(mat)
-    chunk = (n, min(T, 256))
-    if n == 0
+function write_series!(parent, name, mat::AbstractMatrix{T}) where {T<:AbstractFloat}
+    n, nt = size(mat)
+    chunk = (n, min(nt, 256))
+    if n == 0 || nt == 0
         parent[name] = mat
         return
     end
-    d = create_dataset(parent, name, Float32, (n, T);
+    d = create_dataset(parent, name, T, (n, nt);
                        chunk=chunk, shuffle=true, deflate=4)
     write(d, mat)
 end
 
+function write_state_schema!(fid, schema)
+    if haskey(fid, "state_schema")
+        stored = read(fid["state_schema"])
+        all(k -> haskey(stored, k) && isequal(stored[k], schema[k]), keys(schema)) ||
+            throw(ArgumentError("state schema changed within one output file"))
+        return
+    end
+    grp = create_group(fid, "state_schema")
+    for (name, values) in schema
+        grp[name] = values
+    end
+end
+
 function write_sample!(fid, idx::Int, sc::Scenario, ch, metrics)
+    mode = parse_output_mode(ch["output_mode"])
+    length(ch["time"]) == ch["T"] ||
+        throw(ArgumentError("sample time count does not match T"))
+    if mode === :all_states
+        schema = ch["state_schema"]
+        size(ch["states"]) == (length(schema["index"]), ch["T"]) ||
+            throw(ArgumentError("sample states do not match the row schema and times"))
+        write_state_schema!(fid, schema)
+    end
     grp = create_group(fid, @sprintf("samples/%06d", idx))
-    write_series!(grp, "bus_vm",    ch["bus_vm"])
-    write_series!(grp, "bus_va",    ch["bus_va"])
-    write_series!(grp, "gen_delta", ch["gen_delta"])
-    write_series!(grp, "gen_omega", ch["gen_omega"])
+    grp["time"] = ch["time"]
+    if mode === :all_states
+        write_series!(grp, "states", ch["states"])
+    else
+        for name in ("bus_vm", "bus_va", "gen_delta", "gen_omega")
+            write_series!(grp, name, ch[name])
+        end
+    end
 
     a = attributes(grp)
+    a["output_mode"]        = string(mode)
     a["load_scale"]         = sc.load_scale
     a["load_draw"]          = sc.load_draw
     a["fault_bus_internal"] = sc.fault_bus_internal
