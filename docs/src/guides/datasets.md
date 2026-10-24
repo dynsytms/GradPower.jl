@@ -19,7 +19,7 @@ julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/example.toml
 
 ## One sample
 
-A sample is one simulation: an operating point (load scale λ), a fault (bus,
+A sample is one simulation: an operating point (multiplicative load scale), a fault (bus,
 resistance, duration) and the response. By default `simulate_sample` records
 **all state rows** in `Float64`: device differential and algebraic states,
 plus real and imaginary voltage at every bus. `downsample` affects only the
@@ -54,12 +54,15 @@ ch, m = sample(16, 0.005, 0.1)
 
 ## Stable or not?
 
-The label is `stable = true` when both hold:
-- the rotor angles never separate by more than 180° **relative to the pre-fault
-  state**;
-- the swing has decayed to at most half its peak by the end of the window.
+With the default thresholds, the label is `stable = true` when all hold:
+- the spread of rotor-angle changes **relative to the initial state** stays
+  strictly below 180° over the simulated window;
+- the maximum spread in the final 20% of that window is at most half the
+  maximum spread over the whole run;
+- the recorded metrics remain finite.
 
-Sweeping the fault duration at one bus crosses the critical clearing time:
+This is a finite-horizon screening label, not a proof of asymptotic or
+small-signal stability. Sweeping fault duration illustrates its transition:
 
 ```@example data
 durations = [0.10, 0.20, 0.30, 0.35, 0.40, 0.50]
@@ -79,10 +82,11 @@ axislegend(ax, position = :lt)
 fig
 ```
 
-Up to 300 ms the machines swing a few tens of degrees and settle. From 350 ms
-they separate without bound, because a machine slips poles and nothing trips
-it. The **critical clearing time** of this fault lies between the two. The gap
-between the two populations is huge, and that is why the label is robust.
+In this example, the shorter faults produce bounded swings over the observation
+window, while the longer faults produce large angle separation. The sweep
+brackets a transition under the chosen model, time step, horizon, and labeling
+rule. Estimating a critical clearing time requires refining that bracket and
+checking sensitivity to these numerical and modeling choices.
 
 ## A small sweep
 
@@ -157,7 +161,10 @@ dyr  = "examples/IEEE39_gov.dyr"
 
 For each λ draw, the power flow and initialization run once and are shared by
 all the faults below it. Before using an operating point, the driver also
-checks that it is a stable equilibrium (`check_self_stability`).
+screens its response to a small speed perturbation (`check_self_stability`).
+Passing that finite-duration check is not a mathematical stability proof.
+The dataset load scale is multiplicative (1 is the base case), unlike the
+additive CPF parameter whose base case is λ = 0.
 
 ## HDF5 layout
 
@@ -195,5 +202,8 @@ important:
   10 s for ACTIVSg2000.
 - **Clearing times must straddle the critical clearing time**, or every sample
   lands in one class.
-- **Fault severity is not monotonic in `r`.** A resistive fault absorbs the most
-  power when `r` matches the local Thevenin impedance, not as `r → 0`.
+- **Fault severity need not be monotonic in `r`.** In a fixed Thevenin
+  equivalent ``Z_{th}=R_{th}+\mathrm{i}X_{th}``, a purely resistive shunt
+  absorbs maximum active power at ``r=|Z_{th}|``, not as ``r\to0``.
+  Maximum absorbed power is not necessarily the worst transient-stability
+  disturbance; the network and machine dynamics also matter.

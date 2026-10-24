@@ -9,6 +9,11 @@ changes. It is built to run **many** simulations: scenarios can be batched on CP
 threads or on an NVIDIA GPU, and the output can be reduced to exactly what a
 study or a machine-learning dataset needs.
 
+For steady-state loadability studies, [`runcpf`](@ref) traces operating points
+through reactive-control changes and voltage noses on CPU. The illustrated
+[continuation power-flow manual](guides/continuation.md) includes the math,
+worked examples, nose curves, and an animation of branch tracing.
+
 ```@example home
 using GradPower, CairoMakie
 ex = joinpath(pkgdir(GradPower), "examples")

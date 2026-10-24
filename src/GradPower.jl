@@ -868,6 +868,12 @@ include("recorder.jl")
 include("results.jl")
 include("network.jl")
 include("pflow.jl")
+include("cpf/statistics.jl")
+include("cpf/formulation.jl")
+include("cpf/palc.jl")
+include("cpf/safeguards.jl")
+include("cpf/events.jl")
+include("cpf/results.jl")
 include("dynamics.jl")
 
 # SoA table builders. Included AFTER dynamics.jl so device structs
@@ -985,6 +991,8 @@ include("display.jl")
 export Bus, Gen, Load, Branch, Shunt, PowerSystem
 export build_network!
 export runpf, runpf!
+export LoadingDirection, runcpf, ContinuationResult, ContinuationPoint, ContinuationEvent
+export ContinuationStats
 export DynamicDevice, PowerSystemDynamics
 export DynamicProblem, ContingencyEvent, DisconnectDeviceEvent, TripLineEvent, LoadStepEvent
 export add_load_step_event!, create_load_step_event, find_load_device
@@ -998,6 +1006,7 @@ export state_index, parameter_index, get_parameter, set_parameter!
 export system_summary, display_parameters, get_bus_info, get_index_info
 export set_load!, set_generator!
 export plot_states, plot_voltage, plot_speed, plot_network, animate_network
+export plot_cpf, animate_cpf
 export FixedStateLimit, LimitEvent, LimitWorkspace
 export set_dynamics!
 export from_psse

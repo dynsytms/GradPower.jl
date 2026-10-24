@@ -166,4 +166,66 @@ function GradPower.animate_network(path::AbstractString, ps::GradPower.PowerSyst
     return String(path)
 end
 
+function _cpf_scene(r, indices; figure_kwargs, axis_kwargs)
+    fig = Makie.Figure(;figure_kwargs...)
+    kwargs = merge((xlabel="Loading factor λ",ylabel="Voltage magnitude (pu)",
+                    title="Steady-state continuation — $(r.status)"),axis_kwargs)
+    ax = Makie.Axis(fig[1,1];kwargs...)
+    colors = Makie.wong_colors()
+    return fig,ax,colors
+end
+
+function GradPower.plot_cpf(r::GradPower.ContinuationResult;
+                            buses=nothing,figure_kwargs=(;),axis_kwargs=(;))
+    indices = GradPower._plot_cpf_indices(r,buses)
+    fig,ax,colors = _cpf_scene(r,indices;figure_kwargs,axis_kwargs)
+    lambda = [p.lambda for p in r.points]
+    for (k,i) in enumerate(indices)
+        color = colors[mod1(k,length(colors))]
+        Makie.lines!(ax,lambda,[p.vm[i] for p in r.points];color,linewidth=2,
+                     label="Bus $(r.bus_numbers[i])")
+        length(lambda)==1 && Makie.scatter!(ax,lambda,[r.points[1].vm[i]];color)
+        for e in r.events
+            e.bus == r.bus_numbers[i] || continue
+            Makie.scatter!(ax,[e.point.lambda],[e.point.vm[i]];color,
+                           marker=e.kind === :recovery ? :utriangle : :rect,markersize=12)
+        end
+        if r.maximum !== nothing
+            Makie.scatter!(ax,[r.maximum.lambda],[r.maximum.vm[i]];color,
+                           marker=:star5,markersize=18)
+        end
+    end
+    _outside_legend!(fig,ax,1)
+    return fig
+end
+
+function GradPower.animate_cpf(path::AbstractString,r::GradPower.ContinuationResult;
+                               buses=nothing,framerate=12,figure_kwargs=(;),axis_kwargs=(;))
+    framerate isa Integer && !(framerate isa Bool) && framerate>0 ||
+        throw(ArgumentError("framerate must be a positive integer"))
+    indices = GradPower._plot_cpf_indices(r,buses)
+    fig,ax,colors = _cpf_scene(r,indices;figure_kwargs,axis_kwargs)
+    lambda = [p.lambda for p in r.points]
+    lo,hi = extrema(lambda)
+    vlo,vhi = extrema(p.vm[i] for p in r.points for i in indices)
+    xpad,ypad = max(.05*(hi-lo),.01),max(.05*(vhi-vlo),.01)
+    Makie.xlims!(ax,lo-xpad,hi+xpad)
+    Makie.ylims!(ax,vlo-ypad,vhi+ypad)
+    frame = Makie.Observable(1)
+    for (k,i) in enumerate(indices)
+        color = colors[mod1(k,length(colors))]
+        curve = Makie.lift(frame) do j
+            Makie.Point2f[(r.points[t].lambda,r.points[t].vm[i]) for t in 1:j]
+        end
+        tip = Makie.lift(j -> [Makie.Point2f(r.points[j].lambda,r.points[j].vm[i])],frame)
+        Makie.lines!(ax,curve;color,linewidth=2,label="Bus $(r.bus_numbers[i])")
+        Makie.scatter!(ax,tip;color,markersize=12)
+    end
+    _outside_legend!(fig,ax,1)
+    Makie.record(fig,path,eachindex(r.points);framerate) do j
+        frame[] = j
+    end
+    return String(path)
+end
+
 end # module

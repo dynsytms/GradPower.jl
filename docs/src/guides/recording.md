@@ -3,8 +3,8 @@
 By default `integrate!` returns the full trajectory: every state at every step,
 in `Float64`. For large systems that is a lot of memory. ACTIVSg70k has
 216,698 unknowns, so 10 s at 1/120 s is about 2 GB per simulation. The
-recording options store only what you need. **They never change the computed
-solution.**
+recording options store only what you need. Selecting or downsampling saved rows does not change the integration. Reducing
+`save_eltype` changes stored precision, and callbacks must not mutate the state.
 
 | option | effect |
 |:--|:--|
@@ -93,7 +93,7 @@ cb = (k, t, z) -> begin
     end
 end
 dp.zvec .= z0
-integrate!(dp, sys, 5.0; save_idxs = Int[], step_callback = cb)   # stores nothing
+integrate!(dp, sys, 5.0; save_idxs = Int[], step_callback = cb)   # stores no state rows
 
 fig = Figure(size = (800, 300))
 ax = Axis(fig[1, 1], xlabel = "PSS/E bus", ylabel = "min |V| during the run (pu)",
@@ -104,10 +104,11 @@ fig
 
 ## Stop early
 
-A fault cleared too late makes some machines lose synchronism: rotor angles
-separate without bound. There is no point simulating such a run to the end.
-`stop_condition` ends it as soon as the outcome is known. The output then holds
-the steps up to that point.
+A sufficiently severe fault can cause loss of synchronism. An angle-separation
+threshold is a useful operational stopping rule when large excursions are all
+the study needs to detect; it is not a general stability certificate.
+`stop_condition` ends the simulation when the rule fires, preserving the saved
+samples up to that point.
 
 ```@example rec
 empty!(sys.dynamic.events)

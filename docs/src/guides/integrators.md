@@ -21,11 +21,13 @@ None of these options change *what* is simulated, only accuracy and cost.
 | `:backward_euler` (default) | ``x_{k+1} = x_k + h\, f(z_{k+1})`` | 1 |
 | `:crank_nicolson` | ``x_{k+1} = x_k + \tfrac{h}{2}\big(f(z_{k+1}) + f(z_k)\big)`` | 2 |
 
-In both cases the algebraic equations hold exactly at every step.
+In both cases Newton enforces the algebraic equations to the requested residual
+tolerance at each converged step.
 - **Backward Euler** strongly damps fast modes. That makes it robust, but it
   also damps the electromechanical oscillations you may want to see.
-- **Crank–Nicolson** preserves them much better. For the same accuracy it can
-  take steps several times larger.
+- **Crank–Nicolson** has less numerical damping and is second-order on smooth
+  solutions. It can permit larger steps for a given accuracy, but it is not
+  L-stable: stiff modes or discontinuities can produce numerical oscillations.
 
 The error after 0.5 s of a smooth transient (a governor setpoint step), against
 a very fine reference:
@@ -59,8 +61,10 @@ axislegend(ax, position = :rb)
 fig
 ```
 
-Halving `dt` halves the backward-Euler error and divides the Crank–Nicolson
-error by four.
+In the asymptotic regime for a smooth solution, halving `dt` approximately
+halves the backward-Euler error and quarters the Crank–Nicolson error. Event
+timing, nonlinear tolerances, and nonsmooth controls can change the observed
+convergence rate.
 
 The difference shows up clearly through a fault on a coarse grid (dt = 1/30 s):
 
@@ -81,8 +85,8 @@ empty!(sys.dynamic.events)
 fig
 ```
 
-Backward Euler visibly damps the swing. Crank–Nicolson stays close to the
-reference even with only 4 steps per oscillation.
+In this example, backward Euler visibly damps the swing, while
+Crank–Nicolson stays closer to the fine-step reference.
 
 !!! note
     Crank–Nicolson cannot be combined with `limit_method` (TGOV1 valve limits),
@@ -96,12 +100,14 @@ both on by default, cut the cost:
 - **`jacobian_reuse = true`** keeps the factorized Jacobian across iterations
   and time steps (modified Newton). It refactors only when convergence slows,
   after an event, or after a failure. A step that fails with reuse is retried
-  with full Newton, so reuse never makes a step fail.
+  with full Newton from the same initial guess. This fallback does not
+  guarantee that full Newton will converge.
 - **`predictor = true`** starts each step from the linear extrapolation
   `2 z_k − z_{k−1}` (not across events).
 
-Both converge to the same `newton_tol` (default `1e-10`), so the trajectories
-agree to that tolerance. [`SolverLog`](@ref) counts the work:
+Both use the same residual tolerance `newton_tol` (default `1e-10`). A residual
+tolerance is not a bound on state error or trajectory differences: conditioning
+and error accumulation also matter. [`SolverLog`](@ref) counts the work:
 
 ```@example integ
 add_event!(sys, ContingencyEvent(sys.busmap[7], 0.02, 0.1, 0.2))
@@ -128,8 +134,9 @@ On large systems, factorizations dominate the cost, so reuse is the main speed-u
 | `:schur` | eliminate each device cluster (dense, small), sparse LU of the reduced network system | large systems, GPU-style structure |
 | `:schur_gmres` | Schur reduction + GMRES preconditioned by the network admittance | experimental |
 
-All three give the same trajectories (to Newton tolerance). The sparse factorization
-itself is chosen with `linear_solver` (see [Linear solvers and GPU](solvers_gpu.md)).
+All three solve the same discretized equations, but conditioning and nonlinear
+convergence can affect their numerical agreement. Choose the sparse direct
+backend with `linear_solver` (see [Linear solvers and GPU](solvers_gpu.md)).
 
 ## When Newton fails
 

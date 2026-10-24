@@ -1,6 +1,6 @@
 # First simulation
 
-Every GradPower study follows the same five steps:
+A typical time-domain GradPower study follows five steps:
 
 ```
  .raw + .dyr ──► from_psse ──► build_network! ──► runpf! ──► DynamicProblem
@@ -26,8 +26,9 @@ sys = from_psse(joinpath(ex, "ieee9_v33.raw"), joinpath(ex, "ieee9bus_gov.dyr"))
 `from_psse` parses the network (buses, lines, transformers, generators, loads) and
 attaches a dynamic model to each device. Generators found in the `.dyr` get their
 machine and controller models. Loads become ZIP loads, constant impedance by
-default. Generators without a dynamic record become `StaticGenerator` stand-ins
-that hold their bus voltage.
+default. Generators without a dynamic record become `StaticGenerator` stand-ins:
+PQ buses hold P/Q injections, PV buses regulate voltage, and reference buses
+hold voltage magnitude and angle.
 
 ## 2. Build the network and solve the power flow
 
@@ -50,8 +51,8 @@ length(dp.zvec)              # number of unknowns of the DAE
 
 `initialize_dynamics!` computes every machine's internal state, every
 controller's setpoint and every load's admittance so that the system sits
-**exactly** at the power-flow equilibrium. A simulation without any event stays
-flat:
+at the power-flow equilibrium to numerical accuracy. Check the drift in a
+simulation without events:
 
 ```@example first
 t, traj = integrate!(dp, sys, 2.0)
@@ -97,8 +98,9 @@ fig
 ```
 
 During the fault, voltages collapse near bus 7. The machines accelerate, swing
-against each other after the fault is cleared, and the governors bring the
-frequency back.
+against each other after the fault is cleared, and the governors oppose the
+frequency deviation. Droop control alone does not guarantee a return to exactly
+nominal frequency.
 
 !!! tip "Running it again"
     `integrate!` leaves `sys` as it found it: faults are switched off, tripped

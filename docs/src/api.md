@@ -10,6 +10,28 @@ runpf
 analyze_dyr_coverage
 ```
 
+## Continuation power flow
+
+`runcpf` traces steady-state AC operating points on CPU without mutating the
+input system. Directions use internal bus indices, while the `buses` recording
+selection and result metadata use external bus numbers. Inspect `status` and
+`maximum`: a sampled maximum or an exhausted step budget does not verify a
+loading margin. See the [continuation manual](guides/continuation.md) for
+worked examples, and the docstrings below for injection/dispatch signs and
+units. `plot_cpf` and `animate_cpf` require a loaded Makie backend, such as
+`CairoMakie`; the continuation solver itself does not.
+
+```@docs
+LoadingDirection
+runcpf
+ContinuationResult
+ContinuationPoint
+ContinuationEvent
+ContinuationStats
+plot_cpf
+animate_cpf
+```
+
 ## Queries and inspection
 
 See [Queries and parameter edits](guides/queries.md) for identity conventions

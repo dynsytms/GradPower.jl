@@ -25,6 +25,43 @@ Requires an optional Makie backend; returns a Makie Figure.
 plot_voltage(args...; kwargs...) = _plot_backend_error()
 
 """
+    plot_cpf(result; buses=nothing, figure_kwargs=(;), axis_kwargs=(;))
+
+Plot voltage magnitude versus loading factor in accepted continuation order.
+`buses` selects recorded external bus numbers; defaults to all recorded buses.
+Control exchanges and a verified terminal maximum are marked. Requires an
+optional Makie backend. Returns a Figure. This is not a time-domain plot.
+"""
+plot_cpf(args...; kwargs...) = _plot_backend_error()
+
+"""
+    animate_cpf(path, result; buses=nothing, framerate=12,
+                figure_kwargs=(;), axis_kwargs=(;))
+
+Animate accepted continuation points in tracing order, one point per frame.
+Axes remain fixed over the recorded branch. Playback speed is not physical
+simulation time; steps are not equally spaced in load or arclength. Requires
+an optional Makie backend and at least one recorded bus/point. Returns `path`.
+"""
+animate_cpf(args...; kwargs...) = _plot_backend_error()
+
+function _plot_cpf_indices(r::ContinuationResult, buses)
+    isempty(r.points) && throw(ArgumentError("continuation result has no accepted points"))
+    selected = buses === nothing ? r.bus_numbers : buses
+    selected isa AbstractVector || throw(ArgumentError("buses must be a vector of recorded external numbers"))
+    isempty(selected) && throw(ArgumentError("select at least one recorded bus"))
+    indices = Int[]
+    for bus in selected
+        bus isa Integer && !(bus isa Bool) || throw(ArgumentError("bus numbers must be integers"))
+        i = findfirst(==(bus),r.bus_numbers)
+        i === nothing && throw(ArgumentError("bus $bus was not recorded"))
+        i in indices && throw(ArgumentError("duplicate bus $bus"))
+        push!(indices,i)
+    end
+    return indices
+end
+
+"""
     plot_speed(result; generators=nothing, scenarios=nothing, envelope=false,
                unit=:pu, nominal_frequency=60.0, model=:genrou,
                figure_kwargs=(;), axis_kwargs=(;))

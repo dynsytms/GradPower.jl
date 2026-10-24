@@ -1,6 +1,7 @@
 # Reading the results
 
-`integrate!` returns `(t, traj)`. Column `j` of `traj` is the complete state of
+By default, `integrate!` returns `(t, traj)` with every state recorded.
+Column `j` of `traj` is the complete state of
 the DAE at time `t[j]`:
 
 ```
@@ -44,7 +45,8 @@ delta = traj[d.diff_ptr + 5, :]     # rotor angle (rad)
 ```
 
 and its algebraic states (e.g. stator currents `i_q`, `i_d`) are at
-`traj[dd + d.alg_ptr + k, :]`. `GradPower.gen_speeds(sys)` returns the speed rows
+`traj[dd + d.alg_ptr + k, :]`, where `k` is a zero-based local offset.
+`GradPower.gen_speeds(sys)` returns the speed rows
 of all machines.
 
 ## Bus voltages
@@ -71,12 +73,14 @@ fig
 ## Power from a machine
 
 Quantities that are not states can be computed from them. For example, the
-electrical power of each GENROU machine `P = vr·ir + vi·ii` (here from the
-stator voltages and currents in the machine's dq frame):
+electrical power of each GENROU machine is `P = vq*iq + vd*id`, using
+stator voltages and currents in the machine's dq frame. Attached machine
+parameters and currents use the system base, so this power is pu on
+`sys.baseMVA`, not on the individual machine's rating:
 
 ```@example sv
 fig = Figure(size = (800, 300))
-ax = Axis(fig[1, 1], xlabel = "time (s)", ylabel = "P electrical (pu, machine base)")
+ax = Axis(fig[1, 1], xlabel = "time (s)", ylabel = "P electrical (pu, system base)")
 for d in sys.dynamic.devices
     d.dtype isa GradPower.Genrou || continue
     a = dd + d.alg_ptr                         # [v_q, v_d, i_q, i_d]
