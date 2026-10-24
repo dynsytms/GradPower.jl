@@ -3,12 +3,15 @@
 Events are registered on the system before calling `integrate!`. They are applied
 between time steps: the step that lands on the event time is computed with the
 old equations, then the event changes the system and the algebraic equations are
-re-solved. Everything is undone when `integrate!` returns, so the same `sys` can
-be reused.
+re-solved. Event times are rounded to the nearest integration-step index; choose
+a `dt` that resolves the schedule. Saved samples at an event step precede the
+algebraic re-solve. Event-induced system changes are undone when `integrate!`
+returns, but `dp.zvec` remains at its final state and must be reset for a repeat.
 
 Devices are addressed the way they appear in the PSS/E files: **external bus
-number + id**. Quotes and blanks in ids are ignored (`"1"`, `"'1 '"` and `1` are
-the same).
+number + id**. Surrounding quotes and blanks in IDs are normalized (`"1"`,
+`"'1 '"` and `1` select the same ordinary ID). The low-level `ContingencyEvent`
+constructor is the exception: it takes an **internal bus index**.
 
 | event | constructor | effect |
 |:--|:--|:--|

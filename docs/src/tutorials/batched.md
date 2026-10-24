@@ -10,8 +10,9 @@ same network and events but have their own initial state `bl.z[m, :]` and
 parameters `bl.p[m, :]`.
 - **Threads:** scenarios run in parallel on Julia threads (start Julia with
   `-t auto`).
-- **Same result as one-by-one:** each scenario's trajectory is bit-for-bit what
-  `integrate!` gives for it alone.
+- **Same equations as one-by-one:** each scenario uses the same model and
+  integration options as an individual run. Numerical agreement depends on
+  the solver and execution path; bitwise identity is not a general guarantee.
 
 ## A load sweep
 
@@ -49,13 +50,13 @@ fig
 ```
 
 Only the parameters were scaled, so each scenario starts from the operating
-point of the base case and drifts toward a new equilibrium. To start each
+point of the base case and undergoes an initial load-change transient. To start each
 scenario at **its own** equilibrium, solve the power flow and initialize once
 per loading level, then copy the result into `bl.z[m, :]` and `bl.p[m, :]`.
-Three things must be scaled together:
-- the static loads, used by the power flow;
-- the ZIP load devices, used by the dynamics;
-- the generation, so the slack does not pick up the whole change.
+Keep the static loads used by power flow consistent with the load devices used
+by dynamics. Generation redispatch is a separate study choice: this example
+also scales nonreference scheduled generation so the reference generator does
+not absorb the entire active-power change.
 
 ```@example batch
 function operating_point(scale)

@@ -1,13 +1,14 @@
 # Linear solvers and GPU
 
-Almost all of the time in a simulation goes into Newton's linear systems. On the
-CPU they are solved with a sparse direct method. On an NVIDIA GPU the whole
+Newton's linear systems often dominate large-network simulation cost. The
+default CPU path uses a sparse direct method. On an NVIDIA GPU the whole
 Newton iteration can run on the device: residual and Jacobian kernels, sparse
 factorization and solve.
 
 ## Choosing the sparse direct solver
 
-Every Newton solve goes through the solver passed as `linear_solver`:
+For time integration, `linear_solver` selects the sparse direct backend
+(including factorizations used by reduced-system solvers):
 
 | backend | where | requires |
 |:--|:--|:--|
@@ -41,6 +42,8 @@ add_event!(sys, ContingencyEvent(sys.busmap[7], 0.02, 0.1, 0.2))
 
 gbl = ext.GpuBatchedLayout(dp, sys, 16)                # 16 scenarios on the device
 t, trajs = ext.integrate_gpu_cudss!(gbl, sys, 1.0)     # monolithic Newton
+# Recreate the batch to compare from the same initial state.
+gbl = ext.GpuBatchedLayout(dp, sys, 16)
 t, trajs = ext.integrate_gpu_schur_cudss!(gbl, sys, 1.0) # Schur-reduced Newton
 ```
 
@@ -89,7 +92,9 @@ integrators for those.
 ## When is the GPU faster?
 
 Measured on one Quadro GV100 and a 4× Xeon Gold 6140 server, 1 s with a bus fault,
-Jacobian reuse on:
+Jacobian reuse on. These are recorded benchmark results, not measurements
+rerun by the documentation build; they depend on hardware, package versions,
+solver configuration, and output selection:
 
 | case (unknowns) | scenarios | GPU | CPU (threads) |
 |:--|--:|--:|--:|
@@ -101,7 +106,8 @@ Jacobian reuse on:
 | ACTIVSg70k | 64 | 93 s | 162 s (64) |
 
 As a rule of thumb:
-- **Large networks** benefit most: one 70 k-bus simulation is about 10× faster.
+- **Large networks** benefited most in these measurements: one 70 k-bus
+  simulation was about 10× faster on the tested GPU.
 - **Small and medium networks** in big batches usually run as fast or faster on
   a many-core CPU with `integrate_batched!`.
 - **GPU memory** grows with the batch, about 0.33 GiB per ACTIVSg70k scenario.
@@ -111,6 +117,8 @@ As a rule of thumb:
 With `solver = :schur` (CPU) or `integrate_gpu_schur_cudss!` (GPU), each Newton
 system is solved by first eliminating every device cluster. A cluster is a
 machine with its controllers, and its block is small and dense. What remains
-is the network-sized system, which has the same sparsity as the admittance
-matrix. The dense blocks are independent, so they batch well on the GPU. See
+is a reduced system whose voltage block retains the network's interbus
+coupling pattern. Singular local constraints remain as additional rows and
+columns. The eliminable dense blocks are independent, so they batch well on
+the GPU. See
 [How it works](../theory.md) for the algebra.

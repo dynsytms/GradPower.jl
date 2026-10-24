@@ -3,6 +3,20 @@
 This page summarizes the model and the numerical method. Each section
 points to where it is implemented.
 
+## Steady-state continuation
+
+Continuation is separate from DAE time integration. It solves
+``F(x,\lambda)=0`` along a loading direction, adding a weighted arclength
+constraint so a simple voltage nose can be traversed even when the ordinary
+power-flow Jacobian is singular. Reactive voltage control uses exact projection
+complementarity with two-way limit recovery. A nonsmooth control-induced
+maximum is distinguished from a smooth fold by one-sided tangents.
+
+See the [illustrated continuation manual](guides/continuation.md#6.-How-the-method-works)
+for AC balances, control inequalities, augmented Newton equations, and examples.
+The implementation is in `src/cpf/`; optional rendering lives in the plotting
+extension. This analysis does not imply time-domain or small-signal stability.
+
 ## The DAE
 
 A power system with machines, controllers and loads is a semi-explicit
@@ -24,9 +38,13 @@ differential-algebraic system:
 
 The network equation is written in **current-injection** form: each device
 injects a current ``I_b(x, y, v)`` at its bus, and Kirchhoff's law gives
-``Y v = I``. A ZIP load with impedance part ``y_L`` injects
-``-y_L v_b - \overline{(S_L / v_b)}``. A fault with impedance
-``r + jx`` injects ``-v_b / (r + jx)``.
+``Y v = I``. An impedance-plus-power load injects
+``-y_L v_b - \overline{S_P/v_b}``, where ``y_L`` is its impedance-part
+admittance and ``S_P`` its constant-power demand. In the implemented `ZIPLoad`,
+these contributions are weighted by ``\alpha`` and ``1-\alpha``; a separate
+constant-current component is not implemented. The power-current denominator
+is clipped below ``|v_b|^2=0.2`` for numerical protection. A fault with nonzero
+impedance ``r + jx`` injects ``-v_b / (r + jx)``.
 
 ## Initialization
 
@@ -35,8 +53,11 @@ generation and load. It enforces generator reactive limits by switching PV
 buses to PQ. `initialize_dynamics!` then inverts each device's equations at
 that operating point. It finds machine internal states that inject exactly
 the power-flow current, and controller setpoints (governor reference, exciter
-voltage reference) that hold them there. The result satisfies ``f = 0`` and
-``g = 0`` to machine precision, so an undisturbed simulation stays flat.
+voltage reference) that hold them there. For a consistent, converged
+initialization, the equilibrium residuals are small and an undisturbed
+simulation should remain close to that state. This is a numerical consistency
+check, not a proof of stability; an unstable equilibrium can amplify roundoff
+or initialization error.
 
 ## Time stepping
 
@@ -66,11 +87,12 @@ the jump in voltages at a fault.
 Each step runs Newton iterations ``J \Delta z = -F(z)``. For large networks the
 sparse LU factorization of ``J`` dominates. Two cheap savings:
 - **Modified Newton**: reuse the factorization across iterations and steps
-  while convergence is fast (``\|F\|`` drops by more than ×10 per iteration).
+  while convergence is fast (the default requires about a tenfold residual
+  reduction), subject to a stale-iteration limit and refreshes at events.
 - **Predictor**: start from the extrapolation ``2z_k - z_{k-1}``.
 
-On ACTIVSg2000 together they cut factorizations from about 1200 to about 10 per
-5 s simulation.
+The savings depend on the case, step size, events, and solver. Use `SolverLog`
+to measure residual evaluations and factorizations for a particular study.
 
 ## Structure: clusters and Schur reduction
 
@@ -86,17 +108,21 @@ S = D - \sum_{k} C_k A_k^{-1} B_k .
 
 - **The blocks:** each ``A_k`` is small and dense. ``B_k`` and ``C_k`` couple the
   cluster to its bus.
-- **Elimination:** eliminating the clusters leaves the **Schur complement**
-  ``S``. It has exactly the sparsity of the admittance matrix ``Y``, because
-  each correction lands on one bus's diagonal block.
+- **Elimination:** when the ``A_k`` blocks are invertible, eliminating them
+  leaves the **Schur complement** ``S``. Each correction is confined to the
+  associated bus's diagonal voltage block, so it adds no interbus coupling.
+  Clusters with singular local blocks, such as some static-generator
+  constraints, stay in the reduced system; it is not always a voltage-only
+  matrix with exactly the sparsity of ``Y``.
 - **One Newton step then costs:**
   1. ``N`` independent small dense LUs, which batch perfectly on a GPU;
   2. one sparse LU of a network-sized matrix;
   3. back-substitution.
 
 This is `solver = :schur` on the CPU and `integrate_gpu_schur_cudss!` on the GPU.
-`:schur_gmres` instead solves the reduced system iteratively, preconditioned by
-the network admittance alone, which never needs refactoring.
+`:schur_gmres` instead solves the reduced system iteratively. Its preconditioner
+uses the network admittance plus retained constraint rows, is reused between
+steps, and is refreshed after topology changes.
 
 ## Kernels and layout
 
@@ -113,6 +139,7 @@ assembly allocates nothing.
 | topic | file |
 |:--|:--|
 | power flow | `src/pflow.jl` |
+| continuation, reactive-control events, physical results | `src/cpf/` |
 | residual, Jacobian, time loop, events | `src/dynamics.jl` |
 | Newton, Jacobian reuse | `src/numerics.jl` |
 | clusters, Schur reduction | `src/clusters.jl`, `src/schur.jl` |

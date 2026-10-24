@@ -15,6 +15,13 @@ include("test_case9data.jl")
     @testset "power flow" begin
         include("test_pflow.jl")
         include("test_pflow_qlimits.jl")
+        include("test_cpf.jl")
+        include("test_cpf_events.jl")
+        include("test_cpf_safeguards.jl")
+        include("test_cpf_validation.jl")
+        include("test_cpf_results.jl")
+        include("test_cpf_plotting.jl")
+        include("test_cpf_statistics.jl")
     end
     include("test_matpower_parser.jl")
     include("test_dyr_coverage.jl")

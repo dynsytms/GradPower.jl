@@ -26,6 +26,8 @@ makedocs(;
             "Many scenarios at once" => "tutorials/batched.md",
         ],
         "Guides" => [
+            "Continuation power flow" => "guides/continuation.md",
+            "Geometry of continuation" => "guides/continuation_geometry.md",
             "Queries and parameter edits" => "guides/queries.md",
             "Plotting simulation results" => "guides/plotting.md",
             "Integrators and Newton options" => "guides/integrators.md",

@@ -104,7 +104,9 @@ Use [`set_load!`](@ref) for static `pd`/`qd`; it also synchronizes mapped ZIPLoa
 configurations and tables. Use [`set_generator!`](@ref) for static
 `psch`/`qsch` schedules and `qmin`/`qmax` reactive limits. Omitted keywords
 leave values unchanged. Powers and limits are in pu on the system base;
-reactive limits may be infinite.
+reactive limits may be infinite. `qd` retains the load struct's sign convention:
+negative `qd` means positive reactive demand. Generator `qsch` is positive for
+reactive injection.
 
 Continuing the example, discard the old problem and solve the new operating
 point before allocating dynamics:

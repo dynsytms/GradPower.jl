@@ -21,10 +21,12 @@
 | `SEXS` | simplified excitation system | 2 / 0 |
 | `ESDC1A` | DC exciter | 3 / 0 |
 | `IEEEST` | power system stabilizer | 7 / 1 |
-| loads | ZIP load: constant impedance (default), current, power | 0 / 0 |
-| generators without `.dyr` record | `StaticGenerator`: holds `P` and the bus voltage | 0 / 0–2 |
+| loads | `ZIPLoad`: impedance (default) / power mixture; no separate current component | 0 / 0 |
+| generators without `.dyr` record | `StaticGenerator`: PQ injection, PV regulation, or fixed reference voltage, according to bus type | 0 / 0–2 |
 
 Controllers are attached to their machine by **bus and id**, as in PSS/E.
+`StaticGenerator` aggregates unmatched online generators at a bus. A PV stand-in
+stops regulating if power flow converts its bus to PQ at a reactive limit.
 
 ## Checking what a `.dyr` file uses
 
@@ -57,5 +59,7 @@ documentation and the tests:
 | `ieee9_v33.raw` (WSCC 9-bus) | 9 | 3 | `ieee9bus.dyr`, `_gov`, `_SEXS`, `_TGOV1` |
 | `IEEE39.raw` (New England) | 39 | 10 | `IEEE39.dyr`, `IEEE39_gov.dyr` |
 
-Larger synthetic grids (ACTIVSg200 to ACTIVSg70k, from the Texas A&M
-electric-grid test-case repository) also work, but are not bundled.
+Larger synthetic grids (including ACTIVSg200 to ACTIVSg70k from the Texas A&M
+electric-grid test-case repository) have been used in studies, but are not
+bundled. Check dynamic-model coverage and initialization for each case; this
+is not a claim that every original model or control is supported.

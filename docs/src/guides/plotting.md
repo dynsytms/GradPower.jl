@@ -9,6 +9,10 @@ The `plot_*` functions return a `Makie.Figure`. Pass figure options through
 `figure_kwargs=(; size=(800, 400))` and axis options through
 `axis_kwargs=(; title="Study title")`. Save a figure with `CairoMakie.save`.
 
+For steady-state loading curves rather than time trajectories, use
+[`plot_cpf`](@ref) and [`animate_cpf`](@ref); see the
+[continuation manual](continuation.md).
+
 ## Simulate a short fault
 
 Use `result=true` to keep the channel identities alongside the trajectory.
