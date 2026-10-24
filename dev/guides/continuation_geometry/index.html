@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Geometry of continuation · GradPower.jl</title><meta name="title" content="Geometry of continuation · GradPower.jl"/><meta property="og:title" content="Geometry of continuation · GradPower.jl"/><meta property="twitter:title" content="Geometry of continuation · GradPower.jl"/><meta name="description" content="Documentation for GradPower.jl."/><meta property="og:description" content="Documentation for GradPower.jl."/><meta property="twitter:description" content="Documentation for GradPower.jl."/><meta property="og:url" content="https://dynsytms.github.io/GradPower.jl/guides/continuation_geometry/"/><meta property="twitter:url" content="https://dynsytms.github.io/GradPower.jl/guides/continuation_geometry/"/><link rel="canonical" href="https://dynsytms.github.io/GradPower.jl/guides/continuation_geometry/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">GradPower.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Tutorials</span><ul><li><a class="tocitem" href="../../tutorials/first_simulation/">First simulation</a></li><li><a class="tocitem" href="../../tutorials/state_vector/">Reading the results</a></li><li><a class="tocitem" href="../../tutorials/events/">Contingencies and events</a></li><li><a class="tocitem" href="../../tutorials/batched/">Many scenarios at once</a></li></ul></li><li><span class="tocitem">Guides</span><ul><li><a class="tocitem" href="../continuation/">Continuation power flow</a></li><li class="is-active"><a class="tocitem" href>Geometry of continuation</a><ul class="internal"><li><a class="tocitem" href="#A-fold-is-a-projection,-not-the-end-of-the-curve"><span>A fold is a projection, not the end of the curve</span></a></li><li><a class="tocitem" href="#Tangent-prediction-and-a-transverse-correction-plane"><span>Tangent prediction and a transverse correction plane</span></a></li><li><a class="tocitem" href="#Reactive-limits-turn-the-equilibrium-curve-into-joined-smooth-pieces"><span>Reactive limits turn the equilibrium curve into joined smooth pieces</span></a></li><li><a class="tocitem" href="#Two-independent-demands:-an-equilibrium-surface-and-its-boundary"><span>Two independent demands: an equilibrium surface and its boundary</span></a></li></ul></li><li><a class="tocitem" href="../queries/">Queries and parameter edits</a></li><li><a class="tocitem" href="../plotting/">Plotting simulation results</a></li><li><a class="tocitem" href="../integrators/">Integrators and Newton options</a></li><li><a class="tocitem" href="../recording/">Recording and early stop</a></li><li><a class="tocitem" href="../solvers_gpu/">Linear solvers and GPU</a></li><li><a class="tocitem" href="../datasets/">Generating training data</a></li><li><a class="tocitem" href="../models/">Supported models and input files</a></li></ul></li><li><a class="tocitem" href="../../theory/">How it works</a></li><li><a class="tocitem" href="../../api/">API reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Guides</a></li><li class="is-active"><a href>Geometry of continuation</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Geometry of continuation</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/dynsytms/GradPower.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/dynsytms/GradPower.jl/blob/main/docs/src/guides/continuation_geometry.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="The-geometry-of-continuation"><a class="docs-heading-anchor" href="#The-geometry-of-continuation">The geometry of continuation</a><a id="The-geometry-of-continuation-1"></a><a class="docs-heading-anchor-permalink" href="#The-geometry-of-continuation" title="Permalink"></a></h1><p>Continuation is easiest to understand as a <strong>curve in state–parameter space</strong>, not a sequence of separate load-flow solves. This gallery complements the <a href="../continuation/">practical manual</a>. Every figure is generated by executable Julia code during the documentation build; the animation is also reproducible.</p><p>We use a lossless two-bus circuit with reference voltage <span>$E=1$</span> and line reactance <span>$X=1$</span>. The receiving-end angle is <span>$\theta=-\alpha$</span>. For positive active demand <span>$P$</span> and signed reactive <strong>demand</strong> <span>$Q$</span>, its balance equations are</p><p class="math-container">\[P=V\sin\alpha,\qquad Q=V\cos\alpha-V^2.\]</p><p>These demand signs differ from the positive net-injection convention of <code>LoadingDirection</code>. They give a convenient exact parameterization for checking and illustrating the numerical solutions.</p><pre><code class="language-julia hljs">using GradPower, CairoMakie, LinearAlgebra
+CairoMakie.activate!()
+include(joinpath(@__DIR__, &quot;..&quot;, &quot;..&quot;, &quot;..&quot;, &quot;examples&quot;, &quot;continuation.jl&quot;))
+blue = colorant&quot;#167DAD&quot;
+orange = colorant&quot;#E58636&quot;
+purple = colorant&quot;#8465B5&quot;
+teal = colorant&quot;#21988D&quot;</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Reactive-limited maximum: lambda = 2.3541019663994143
+Bus 205 qmax at lambda = 1.999999996475331</code></pre><h2 id="A-fold-is-a-projection,-not-the-end-of-the-curve"><a class="docs-heading-anchor" href="#A-fold-is-a-projection,-not-the-end-of-the-curve">A fold is a projection, not the end of the curve</a><a id="A-fold-is-a-projection,-not-the-end-of-the-curve-1"></a><a class="docs-heading-anchor-permalink" href="#A-fold-is-a-projection,-not-the-end-of-the-curve" title="Permalink"></a></h2><p>For <span>$Q=0$</span>, the positive-demand, positive-voltage portion of the branch has the parameterization <span>$0&lt;\alpha&lt;\pi/2$</span>:</p><p class="math-container">\[V(\alpha)=\cos\alpha,\qquad
+P(\alpha)=\sin\alpha\cos\alpha,\qquad
+\lambda(\alpha)=\frac{P(\alpha)}{0.2}-1.\]</p><p>At <span>$\alpha=\pi/4$</span>, <span>$d\lambda/d\alpha=0$</span>, but the tangent to the <strong>full curve</strong> is not zero: voltage and angle still change. The state can no longer be expressed as a locally single-valued smooth function of λ, while arclength remains a valid local coordinate.</p><p>The colored points below come from <code>runcpf</code>; the continuous curve is analytic. The gray curve is its shadow on the voltage–loading plane. The star identifies the exact fold. The tracing order, not increasing λ, connects the solutions.</p><pre><code class="language-julia hljs">pq = continuation_example()
+pq.buses[2].type = 1
+empty!(pq.gens)
+push!(pq.gens, Gen(1,&quot;1&quot;,0.,0.,100.,true))
+pqtrace = runcpf(pq; buses=[205], stop=:steps, max_steps=45)
+alpha = range(0.06, 1.48; length=250)
+lam = @. sin(alpha)*cos(alpha)/.2-1
+voltage = cos.(alpha)
+angles = -rad2deg.(alpha)
+fig = Figure(size=(1050,650))
+ax = Axis3(fig[1,1], xlabel=&quot;Loading factor λ&quot;, ylabel=&quot;Voltage V (pu)&quot;,
+           zlabel=&quot;Receiving angle θ (degrees)&quot;, title=&quot;The branch continues through the loading nose&quot;,
+           azimuth=1.15pi, elevation=.20pi, perspectiveness=.25)
+lines!(ax,lam,voltage,angles; color=blue,linewidth=4)
+lines!(ax,lam,voltage,fill(-90.,length(lam));color=(:gray50,.5),linewidth=2)
+scatter!(ax,[p.lambda for p in pqtrace.points], [p.vm[1] for p in pqtrace.points],
+         [rad2deg(p.va[1]) for p in pqtrace.points];
+         color=collect(eachindex(pqtrace.points)),colormap=:viridis,markersize=8)
+scatter!(ax,[1.5],[inv(sqrt(2))],[-45.];color=orange,marker=:star5,markersize=24)
+xlims!(ax,-1.,1.7); ylims!(ax,0.,1.05); zlims!(ax,-90.,0.)
+fig</code></pre><img src="e4f46f2c.png" alt="Example block output"/><div class="admonition is-info" id="A-visualization-coordinate-is-not-a-solver-weight-890e4f3c17a1c23a"><header class="admonition-header">A visualization coordinate is not a solver weight<a class="admonition-anchor" href="#A-visualization-coordinate-is-not-a-solver-weight-890e4f3c17a1c23a" title="Permalink"></a></header><div class="admonition-body"><p>The plots use degrees for readable axes. The solver uses radians and a size-normalized weighted arclength in the full state vector. Tilting or stretching a 3D plot does not change the solver&#39;s metric.</p></div></div><h2 id="Tangent-prediction-and-a-transverse-correction-plane"><a class="docs-heading-anchor" href="#Tangent-prediction-and-a-transverse-correction-plane">Tangent prediction and a transverse correction plane</a><a id="Tangent-prediction-and-a-transverse-correction-plane-1"></a><a class="docs-heading-anchor-permalink" href="#Tangent-prediction-and-a-transverse-correction-plane" title="Permalink"></a></h2><p>Let <span>$z=(\lambda,V,\alpha)$</span> for this illustration. At a known point <span>$z_k$</span>, a unit tangent <span>$\tau_k$</span> predicts <span>$z_{\rm pred}=z_k+\Delta s\,\tau_k$</span>. The next equilibrium is the intersection of the curve with a plane through that prediction:</p><p class="math-container">\[\tau_k^T(z-z_{\rm pred})=0.\]</p><p>This plane stays transverse to the curve near an ordinary fold, unlike the plane <span>$\lambda=\mathrm{constant}$</span>. Newton moves within that local section to the equilibrium curve. The animation shows: known point (teal), prediction (orange), next intersection (blue), and the translucent correction plane.</p><p>For clarity this construction uses <strong>Euclidean arclength in three displayed coordinates</strong>, not the full solver weighting. The curve and tangent are exact; a scalar root solve locates each curve–plane intersection. The orange dashed segment is the <strong>net correction</strong>, not a depiction of individual Newton iterations or solver diagnostics.</p><pre><code class="language-julia hljs">curve(a) = Point3f(sin(a)*cos(a)/.2-1, cos(a), a)
+function tangent(a)
+    t = Vec3f(cos(2a)/.2, -sin(a), 1.)
+    return t/norm(t)
+end
+function corrected_angle(a, pred, t)
+    # The local root in the forward direction, not a fixed-lambda solve.
+    f(b) = dot(t, curve(b)-pred)
+    lo,hi = a,a+.25
+    @assert f(lo)&lt;0 &amp;&amp; f(hi)&gt;0
+    for _ in 1:50
+        mid = (lo+hi)/2
+        if f(mid)&gt;0
+            hi=mid
+        else
+            lo=mid
+        end
+    end
+    return (lo+hi)/2
+end
+function construction(a)
+    known = curve(a)
+    t = tangent(a)
+    pred = Point3f(known+.08t)
+    corrected = curve(corrected_angle(a,pred,t))
+    u = normalize(cross(t,Vec3f(0,0,1)))
+    v = cross(t,u)
+    corners = Point3f[Point3f(pred+.20s*u+.20r*v) for (s,r) in ((-1,-1),(1,-1),(1,1),(-1,1))]
+    @assert abs(dot(t,corrected-pred)) &lt; 1e-6
+    return (;known,t,pred,corrected,corners)
+end
+function predictor_scene()
+    fig = Figure(size=(950,650))
+    ax = Axis3(fig[1,1], xlabel=&quot;Loading factor λ&quot;, ylabel=&quot;Voltage V (pu)&quot;,
+               zlabel=&quot;Angle α = −θ (rad)&quot;, title=&quot;Tangent predictor → transverse correction&quot;,
+               azimuth=.23pi, elevation=.18pi, perspectiveness=.2)
+    aa=range(.35,1.2;length=250)
+    lines!(ax,curve.(aa);color=(:gray50,.6),linewidth=3)
+    a=Observable(.63)
+    data=lift(construction,a)
+    trail=lift(t -&gt; curve.(range(.35,t;length=120)),a)
+    lines!(ax,trail;color=blue,linewidth=5)
+    patch=lift(d -&gt; d.corners,data)
+    mesh!(ax,patch,[1 2 3; 1 3 4];color=(purple,.22),transparency=true)
+    lines!(ax,lift(d -&gt; Point3f[d.known,d.pred],data);color=orange,linewidth=3)
+    lines!(ax,lift(d -&gt; Point3f[d.pred,d.corrected],data);color=orange,linewidth=3,linestyle=:dash)
+    for (field,color,label) in ((:known,teal,&quot;Known&quot;),(:pred,orange,&quot;Prediction&quot;),
+                              (:corrected,blue,&quot;Corrected&quot;))
+        scatter!(ax,lift(d -&gt; [getproperty(d,field)],data);color,markersize=15,label)
+    end
+    xlims!(ax,.6,1.8); ylims!(ax,.25,1.1); zlims!(ax,.25,1.35)
+    Legend(fig[2,1],ax;orientation=:horizontal,framevisible=false)
+    return fig,a
+end
+predictor_fig,predictor_alpha=predictor_scene()
+predictor_fig</code></pre><img src="ed10d83e.png" alt="Example block output"/><pre><code class="language-julia hljs">record(predictor_fig,&quot;cpf_geometry.gif&quot;,range(.40,1.07;length=60);framerate=15) do a
+    predictor_alpha[]=a
+end</code></pre><p><img src="../cpf_geometry.gif" alt="A tangent predictor and moving correction plane following the fold."/></p><h2 id="Reactive-limits-turn-the-equilibrium-curve-into-joined-smooth-pieces"><a class="docs-heading-anchor" href="#Reactive-limits-turn-the-equilibrium-curve-into-joined-smooth-pieces">Reactive limits turn the equilibrium curve into joined smooth pieces</a><a id="Reactive-limits-turn-the-equilibrium-curve-into-joined-smooth-pieces-1"></a><a class="docs-heading-anchor-permalink" href="#Reactive-limits-turn-the-equilibrium-curve-into-joined-smooth-pieces" title="Permalink"></a></h2><p>Adding regulated <span>$Q_g$</span> does not mean repeatedly adding and removing unknowns. The exact complementarity equation keeps a fixed-size system and allows the curve to switch between smooth control regimes:</p><p>For distinct bounds <span>$l&lt;u$</span>:</p><ul><li><strong>Voltage regulation:</strong> <span>$V=V_s$</span> and <span>$l&lt;Q_g&lt;u$</span>.</li><li><strong>Upper saturation:</strong> <span>$Q_g=u$</span> and <span>$V\le V_s$</span>.</li><li><strong>Lower saturation:</strong> <span>$Q_g=l$</span> and <span>$V\ge V_s$</span>.</li></ul><p>Equal bounds instead impose fixed Q without a voltage inequality. At a transition between regulation and saturation, both constraints hold.</p><p>The next figure displays an actual computed trace in <span>$(\lambda,V,Q_g)$</span>. Demand decreases from an initially saturated point, voltage control recovers, and Qmax is reached again as active power reverses. The violet sheet is the voltage-regulating constraint, and the amber sheet is the upper-Q constraint. They are <strong>control constraints</strong>, not equilibrium surfaces: the power balances pick out a one-dimensional curve on them.</p><pre><code class="language-julia hljs">recovery_ps=continuation_example()
+recovery_ps.loads[1].pd=.65
+recovery_direction=LoadingDirection(recovery_ps;dp=[0.,.65])
+recovery_trace=runcpf(recovery_ps,recovery_direction;buses=[205])
+fig=Figure(size=(1050,650))
+ax=Axis3(fig[1,1],xlabel=&quot;Loading factor λ&quot;,ylabel=&quot;Voltage V (pu)&quot;,
+         zlabel=&quot;Regulating Qg (pu)&quot;,title=&quot;Saturation → recovery → saturation&quot;,
+         azimuth=1.2pi,elevation=.18pi,perspectiveness=.2)
+ll=range(0,2.1;length=2)
+qq=range(-.02,.2;length=2)
+surface!(ax,[l for l in ll,q in qq],fill(1.,2,2),[q for l in ll,q in qq];
+         color=fill(purple,2,2),alpha=.15,transparency=true)
+vv=range(.78,1.;length=2)
+surface!(ax,[l for l in ll,v in vv],[v for l in ll,v in vv],fill(.2,2,2);
+         color=fill(orange,2,2),alpha=.15,transparency=true)
+for mode in (:voltage,:qmax)
+    # Separate consecutive segments, preserving their event endpoints.
+    color=mode === :voltage ? purple : orange
+    for i in 1:length(recovery_trace.points)-1
+        p,q=recovery_trace.points[i:i+1]
+        p.control[1] == mode || continue
+        lines!(ax,[p.lambda,q.lambda],[p.vm[1],q.vm[1]],[p.qg[1],q.qg[1]];
+               color,linewidth=5)
+    end
+end
+for e in recovery_trace.events
+    p=e.point
+    scatter!(ax,[p.lambda],[p.vm[1]],[p.qg[1]];color=teal,
+             marker=e.kind === :recovery ? :utriangle : :rect,markersize=18)
+end
+xlims!(ax,0,2.15);ylims!(ax,.78,1.04);zlims!(ax,-.02,.23)
+fig</code></pre><img src="d45ae158.png" alt="Example block output"/><p>A visible corner does not by itself prove a loading maximum. The sign of λ&#39;s <strong>feasible one-sided derivatives</strong> determines whether the control exchange merely changes regulation or actually reverses the loading direction. See the <a href="../continuation/#Smooth-folds-versus-limit-induced-maxima">manual&#39;s limit-induced example</a>.</p><h2 id="Two-independent-demands:-an-equilibrium-surface-and-its-boundary"><a class="docs-heading-anchor" href="#Two-independent-demands:-an-equilibrium-surface-and-its-boundary">Two independent demands: an equilibrium surface and its boundary</a><a id="Two-independent-demands:-an-equilibrium-surface-and-its-boundary-1"></a><a class="docs-heading-anchor-permalink" href="#Two-independent-demands:-an-equilibrium-surface-and-its-boundary" title="Permalink"></a></h2><p>For the same line, now allow both active demand <span>$P$</span> and reactive demand <span>$Q$</span> to vary independently. These are signed demands: negative Q denotes net reactive injection. Eliminating the angle gives a quadratic in <span>$U=V^2$</span>:</p><p class="math-container">\[U^2+(2Q-1)U+(P^2+Q^2)=0,\qquad
+U_\pm=\frac{1-2Q\pm\sqrt{1-4Q-4P^2}}{2}.\]</p><p>The discriminant <span>$D=1-4Q-4P^2$</span> defines a fold boundary:</p><p class="math-container">\[D=0,\qquad Q_*(P)=\tfrac14-P^2,\qquad
+V_*(P)=\sqrt{\tfrac14+P^2}.\]</p><p>Only real roots with <span>$U&gt;0$</span> represent nonzero-voltage equilibria. The plotted domain satisfies this condition on both sheets; a nonnegative discriminant alone is not a universal substitute for checking voltage feasibility.</p><p>The blue and amber sheets below are the high- and low-voltage equilibria. Their seam is the fold boundary. A chosen loading direction cuts these sheets along a curve—the one-parameter problem solved by <code>runcpf</code>.</p><div class="admonition is-warning" id="Analytic-teaching-surface,-not-two-parameter-continuation-59d9adb2f1e01911"><header class="admonition-header">Analytic teaching surface, not two-parameter continuation<a class="admonition-anchor" href="#Analytic-teaching-surface,-not-two-parameter-continuation-59d9adb2f1e01911" title="Permalink"></a></header><div class="admonition-body"><p>This closed-form surface is special to the lossless two-bus circuit with specified P/Q demand and no regulating generator. It is not computed by a new solver capability. Real networks require additional continuation or repeated directional studies to explore multidimensional loadability.</p></div></div><pre><code class="language-julia hljs">pp=range(.05,.65;length=100)
+# Parameter r measures distance below the curved fold boundary. This keeps
+# every mesh column feasible and makes the seam visible without NaN holes.
+rr=range(0,.22;length=65)
+P=[p for p in pp,r in rr]
+Q=[.25-p^2-r for p in pp,r in rr]
+D=@. 1-4Q-4P^2
+Uplus=@. (1-2Q+sqrt(max(D,0)))/2
+Uminus=@. (1-2Q-sqrt(max(D,0)))/2
+@assert minimum(Uminus)&gt;0
+@assert maximum(abs.(@. Uplus^2+(2Q-1)*Uplus+P^2+Q^2))&lt;1e-12
+@assert maximum(abs.(@. Uminus^2+(2Q-1)*Uminus+P^2+Q^2))&lt;1e-12
+# Recover the angle and check the original balances, not just the eliminated polynomial.
+for U in (Uplus,Uminus)
+    V=sqrt.(U)
+    a=atan.(P,Q.+U)
+    @assert maximum(abs.(V.*sin.(a).-P))&lt;1e-12
+    @assert maximum(abs.(V.*cos.(a).-U.-Q))&lt;1e-12
+end
+fig=Figure(size=(1050,680))
+ax=Axis3(fig[1,1],xlabel=&quot;Active demand P (pu)&quot;,ylabel=&quot;Reactive demand Q (pu)&quot;,
+         zlabel=&quot;Voltage V (pu)&quot;,title=&quot;Two equilibrium sheets join at a fold boundary&quot;,
+         azimuth=1.2pi,elevation=.16pi,perspectiveness=.25)
+surface!(ax,P,Q,sqrt.(max.(Uplus,0));color=fill(blue,size(P)),alpha=.65,transparency=true)
+surface!(ax,P,Q,sqrt.(max.(Uminus,0));color=fill(orange,size(P)),alpha=.65,transparency=true)
+lines!(ax,pp,.25 .-pp.^2,sqrt.(.25 .+pp.^2);color=purple,linewidth=5,label=&quot;Fold boundary&quot;)
+# A constant-Q loading slice, independently computed from its exact roots.
+sliceP=range(.06,.5;length=160)
+sliceD=sqrt.(max.(1 .-4sliceP.^2,0))
+for sign in (1,-1)
+    lines!(ax,sliceP,zeros(length(sliceP)),sqrt.((1 .+sign.*sliceD)./2);
+           color=:gray15,linewidth=3)
+end
+Legend(fig[2,1],ax;orientation=:horizontal,framevisible=false)
+fig</code></pre><img src="144fb263.png" alt="Example block output"/><p>The absence of an equilibrium beyond this idealized boundary says nothing about which dynamic mechanism, protection action, or operational limit a real system encounters first. Geometry helps interpret a <strong>specified mathematical model</strong>; it does not replace those missing models.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../continuation/">« Continuation power flow</a><a class="docs-footer-nextpage" href="../queries/">Queries and parameter edits »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Saturday 24 October 2026 03:38">Saturday 24 October 2026</span>. Using Julia version 1.13.2.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
