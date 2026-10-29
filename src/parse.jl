@@ -121,7 +121,7 @@ const DEVICE_TYPE_MAP = Dict(
 # without first implementing a dozen controller models -- but a surrogate is a
 # STAND-IN, not an implementation: it does not reproduce the source model's
 # equations, and it must never be counted as native coverage or used for
-# scientific validation (plan_enhance.md sections 2.2 and 7.1).
+# scientific validation.
 #
 # Surrogates are OPT-IN. `from_psse(...; surrogates=true)` enables them, and
 # every redirected record is reported distinctly from native ones.
@@ -185,7 +185,7 @@ const DYR_REDIRECT_MAP = Dict{String,Function}(
 # GradPower-vs-uqgrid comparison over them compares different equations.
 #
 # Do not use Tier 2 for validation, parameter studies, or published results.
-# The honest fix is to implement the models (plan_enhance.md phases 2-5);
+# The honest fix is to implement the models;
 # ESST4B is the highest-value one at 278 ACTIVSg2000 records.
 const DYR_LOCAL_SURROGATE_MAP = Dict{String,Function}(
     "HYGOV"  => _hygov_as_tgov1,
