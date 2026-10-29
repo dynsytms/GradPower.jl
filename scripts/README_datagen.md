@@ -201,27 +201,6 @@ offline under a different rule without re-simulating.
 
 ## ACTIVSg2000
 
-**Ready to use, provided the power flow enforces generator reactive limits** —
-which it does by default (`enforce_q_limits` in the case table).
-
-The case itself was never the problem; GradPower's power flow was. Without Q
-limits, 200 of 432 generators solve outside their nameplate QT/QB, 20 machines
-end up past their pull-out angle, and a 1e-6 speed kick with no fault grows to
-147.7° in 5 s — every label would describe that runaway rather than the fault.
-With limits, 199 buses switch PV→PQ, no generator is outside its limits, and
-the same kick decays to 0.0018°.
-
-Validated against uqgrid on the same case, models and fault: identical PV→PQ
-active set (199 buses, all 2000 bus types agree), bus voltages to 6.7e-15,
-reactive dispatch to 2.3e-13, and machine speeds to 1.2e-14 elementwise over
-the whole trajectory.
-
-Keep `check_self_stability = true` — it is the guard that caught this. Full
-analysis in `docs/activsg2000-diagnosis.md`.
-
-**Input strength, measured.** Fault location is the strongest of the three
-inputs, clearing time next, loading the weakest — λ=0.95 and λ=1.05 gave the
-same 79.2% stable fraction and the same unstable buses. The feasible λ range is
-~0.70–1.08; above 1.08 the dynamic initialization fails. The sweep uses
-0.85–1.08 for operating-point diversity, not because it is expected to move the
-labels much.
+The ACTIVSg2000 sweep requires power-flow reactive limits and
+`check_self_stability = true`; both are enabled in
+`scripts/sweeps/activs2000.toml`.

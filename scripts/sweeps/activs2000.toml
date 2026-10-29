@@ -3,32 +3,8 @@
 #   julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/activs2000.toml --dry-run
 #   julia --project=scripts scripts/generate_dynamics.jl scripts/sweeps/activs2000.toml
 #
-# ###########################################################################
-# ACTIVSg2000 requires generator reactive limits in the power flow. That is on
-# by default now (`enforce_q_limits` in the case table below); do not turn it
-# off for this case.
-#
-# Why it matters here, measured:
-#   without Q limits  200 of 432 generators solve outside their nameplate
-#                     QT/QB -- bus 7400 absorbs 279 MVAr against an 8 MVAr
-#                     floor -- which drags 20 machines past their pull-out
-#                     angle (internal angle > 90 deg, worst 164 deg). Past
-#                     90 deg the synchronizing torque is negative, so the
-#                     system runs away on its own: a 1e-6 speed kick with no
-#                     fault at all grows to 147.7 deg in 5 s. Every sample
-#                     would be labelled unstable by a mode that has nothing to
-#                     do with the fault.
-#   with Q limits     199 buses switch PV -> PQ, 0 generators end up outside
-#                     their limits, 0 machines past pull-out (worst 66.6 deg),
-#                     and the same 1e-6 kick decays to 0.0018 deg.
-#
-# Validated against uqgrid on the same case, models and fault: identical
-# PV->PQ active set (199 buses, all 2000 bus types agree), bus voltages to
-# 6.7e-15, generator reactive dispatch to 2.3e-13, and machine speeds over the
-# whole fault trajectory to 1.2e-14.
-#
-# Full analysis: docs/activsg2000-diagnosis.md
-# ###########################################################################
+# ACTIVSg2000 requires generator reactive limits in the power flow. Keep
+# `enforce_q_limits` enabled for this case.
 
 output_root = "./dynstab_out"
 
