@@ -1,0 +1,27 @@
+# PSS/E reference for GradPower CI; written by validation/psse/export_reference.py
+tag = "i9_ctrl_flt7"
+raw = "ieee9_v33.raw"
+dyr = "ieee9_ctrl.dyr"
+
+[powerflow]
+enforce_q_limits = false
+static_gen_mode = "pv"
+
+[event]
+kind = "fault"
+a = 7
+r = 0.01
+t_on = 0.2
+t_off = 0.3
+t_final = 10.0
+
+[reference]
+program = "PSS(R)E 35 0 0 RC5 (September 30th, 2019)"
+steps_per_second = 1920
+gen_bus = [1, 2, 3]
+gen_id = ["1", "1", "1"]
+init_suspect = 0
+solved = 0
+driver = "validation/psse/psse_run.py"
+source_file = "i9_ctrl_flt7_r1920.npz"
+source_sha256 = "727d0f17786e0d6c3620f5374853219bed2a7622e0aadb96d0a62615f1d0775b"
