@@ -74,3 +74,6 @@ end
 @testset "lockstep" begin
     include("test_lockstep.jl")
 end
+@testset "psse_reference" begin
+    include("psse_reference/runtests.jl")
+end
