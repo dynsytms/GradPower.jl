@@ -1,0 +1,27 @@
+# PSS/E reference for GradPower CI; written by validation/psse/export_reference.py
+tag = "i9_gensal_trip57"
+raw = "ieee9_v33.raw"
+dyr = "ieee9_gensal.dyr"
+
+[powerflow]
+enforce_q_limits = false
+static_gen_mode = "pv"
+
+[event]
+kind = "trip"
+a = 5
+b = 7
+ckt = "1"
+t_on = 0.2
+t_final = 10.0
+
+[reference]
+program = "PSS(R)E 35 0 0 RC5 (September 30th, 2019)"
+steps_per_second = 1920
+gen_bus = [1, 2, 3]
+gen_id = ["1", "1", "1"]
+init_suspect = 0
+solved = 0
+driver = "validation/psse/psse_run.py"
+source_file = "i9_gensal_trip57_r1920.npz"
+source_sha256 = "d882c4ec4ad8ec0432bc114736232aea147ff8c4c5652d3e239dec0079a21820"
