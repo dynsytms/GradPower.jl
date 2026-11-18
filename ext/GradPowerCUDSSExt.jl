@@ -9,11 +9,20 @@ using GradPower
 using GradPower: CUDSSBackend
 using SparseArrays
 
+# cuDSS 1.0 enables matching and scaling by default. GradPower analyses with
+# placeholder values and refactorizes with the real ones, so a matching
+# computed at analysis time is wrong; disable it ("default" means no matching
+# on both cuDSS 0.8 and 1.0).
+function _no_matching(solver::CudssSolver)
+    cudss_set(solver, "matching_alg", "default")
+    return solver
+end
+
 GradPower.ds_solver(::CUDSSBackend, rowptr, colval, nzval, structure::String, view::Char) =
-    CudssSolver(rowptr, colval, nzval, structure, view)
+    _no_matching(CudssSolver(rowptr, colval, nzval, structure, view))
 
 GradPower.ds_solver(::CUDSSBackend, A, structure::String, view::Char) =
-    CudssSolver(A, structure, view)
+    _no_matching(CudssSolver(A, structure, view))
 
 GradPower.ds_solver(::CUDSSBackend, ::SparseMatrixCSC; kwargs...) =
     throw(ArgumentError("CUDSSBackend is GPU only; use KLUBackend() or SparseDirectSolverBackend() for CPU matrices"))
