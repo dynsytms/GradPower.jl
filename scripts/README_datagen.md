@@ -216,8 +216,7 @@ active set (199 buses, all 2000 bus types agree), bus voltages to 6.7e-15,
 reactive dispatch to 2.3e-13, and machine speeds to 1.2e-14 elementwise over
 the whole trajectory.
 
-Keep `check_self_stability = true` — it is the guard that caught this. Full
-analysis in `docs/activsg2000-diagnosis.md`.
+Keep `check_self_stability = true` — it is the guard that caught this.
 
 **Input strength, measured.** Fault location is the strongest of the three
 inputs, clearing time next, loading the weakest — λ=0.95 and λ=1.05 gave the

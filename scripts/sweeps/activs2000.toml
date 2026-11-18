@@ -26,8 +26,6 @@
 # PV->PQ active set (199 buses, all 2000 bus types agree), bus voltages to
 # 6.7e-15, generator reactive dispatch to 2.3e-13, and machine speeds over the
 # whole fault trajectory to 1.2e-14.
-#
-# Full analysis: docs/activsg2000-diagnosis.md
 # ###########################################################################
 
 output_root = "./dynstab_out"
