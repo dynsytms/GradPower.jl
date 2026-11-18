@@ -66,6 +66,61 @@ end
     @test _max_row_err(J, J_fd, rows) < 1e-5
 end
 
+@testset "FD Jacobian: GENROU mech_input = :power" begin
+    # Off synchronous speed, so the 1/(1 + w) terms are exercised; the
+    # governor case also covers the d(swing)/d(p_m) cross term.
+    for (raw, dyr) in (("2bus.raw", "2bus.dyr"), ("ieee9_v33.raw", "ieee9bus_gov.dyr"))
+        ps = from_psse(joinpath(EX, raw), joinpath(EX, dyr); mech_input=:power)
+        GradPower.build_network!(ps)
+        GradPower.runpf!(ps)
+        dp = GradPower.DynamicProblem(ps)
+        GradPower.initialize_dynamics!(dp, ps)
+        dyn = ps.dynamic
+        L = dyn.layout
+        np = dyn.diff_dim + dyn.alg_dim
+        n = np + 2 * length(ps.buses)
+        z = copy(dp.zvec)
+        for k in 1:L.genrou.n
+            z[Int(L.genrou.diff_ptr[k]) + 4] = 0.02 * k
+            L.genrou.D[k] = 1.5      # pvec is what the kernels read
+            dp.pvec[Int(L.genrou.par_ptr[k]) + 7] = 1.5
+        end
+
+        J = GradPower.preallocate_jacobian(ps)
+        fill!(J.nzval, 0.0)
+        GradPower._rhs_jac_batched!(J, z, dp.uvec, dp.pvec, dyn, ps.network.ybus_real, L)
+        J_fd = FiniteDiff.finite_difference_jacobian(z) do zz
+            f = zeros(n)
+            GradPower._rhs_fun_batched!(f, zz, copy(dp.uvec), dp.pvec, dyn, ps.network.ybus_real, L)
+            return f
+        end
+        @test maximum(abs, Array(J) - J_fd) < 1e-5
+    end
+end
+
+@testset "GENROU mech_input option" begin
+    raw, dyr = joinpath(EX, "ieee9_v33.raw"), joinpath(EX, "ieee9bus.dyr")
+    @test_throws ArgumentError from_psse(raw, dyr; mech_input=:bogus)
+    for (mode, code) in ((:torque, 0.0), (:power, 1.0))
+        ps = from_psse(raw, dyr; mech_input=mode)
+        gens = [i for (i, d) in enumerate(ps.dynamic.devices) if d.dtype isa GradPower.Genrou]
+        @test all(ps.dynamic.devices[i].dtype.mech_input === mode for i in gens)
+        @test all(get_parameter(ps, i, :mech_input) == code for i in gens)
+    end
+    @test from_psse(raw, dyr).dynamic.devices[1].dtype.mech_input === :torque
+
+    # Same equilibrium in both modes: the forms agree at w = 0.
+    ps = from_psse(raw, dyr; mech_input=:power)
+    GradPower.build_network!(ps)
+    GradPower.runpf!(ps)
+    dp = GradPower.DynamicProblem(ps)
+    GradPower.initialize_dynamics!(dp, ps)
+    @test_throws ArgumentError set_parameter!(dp, ps, 1, :mech_input, 0.0)
+    f = zeros(length(dp.zvec))
+    GradPower.rhs_fun!(f, dp.zvec, copy(dp.uvec), dp.pvec, ps)
+    @test maximum(abs, f) < 1e-8
+end
+
 @testset "FD Jacobian: IEESGO" begin
     ps, dp, L, dd, np, n = _setup("2bus.raw", "2bus_IEESGO.dyr")
     tab = L.ieesgo

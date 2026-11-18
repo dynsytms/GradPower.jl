@@ -22,15 +22,37 @@ mutable struct Genrou <: AbstractGeneratorType
     T_q0dp::Float64
     S1::Float64
     S2::Float64
+    # Mechanical input of the swing equation; see `mech_input_code`.
+    mech_input::Symbol
     # Initialization-derived: post-PF field voltage. Set by
     # `extract_init_params!(::Genrou)` so attached exciters can read it
     # during their own init. Not a Genrou parameter, not in pvec.
     e_fd0::Float64
 end
 
-function Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1=0.0, S2=0.0)
-    gen = Genrou(6, 4, 2, 14, bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2, 0.0)
+function Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1=0.0, S2=0.0;
+                mech_input::Symbol=:torque)
+    mech_input_code(mech_input)
+    gen = Genrou(6, 4, 2, 15, bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2, mech_input, 0.0)
     return gen
+end
+
+"""
+    mech_input_code(mech_input::Symbol) -> Float64
+
+How the mechanical input enters the GENROU swing equation, encoded for `pvec`:
+
+- `:torque` (0.0, default): `p_m - D*w` is the mechanical torque.
+- `:power` (1.0): `p_m - D*w` is a power, and the torque is `(p_m - D*w)/(1 + w)`,
+  as in PSS/E.
+
+The two forms agree at synchronous speed and differ while the speed deviation
+`w` persists, e.g. after a disturbance with no governor.
+"""
+function mech_input_code(mech_input::Symbol)
+    mech_input === :torque && return 0.0
+    mech_input === :power && return 1.0
+    throw(ArgumentError("mech_input must be :torque or :power, got :$mech_input"))
 end
 
 function GenericGenerator(bus, id)
@@ -44,7 +66,7 @@ end
 # separate kernel / table is needed.
 struct Gensal end
 
-function from_data_fields(::Type{Gensal}, fields::Vector{SubString{String}})
+function from_data_fields(::Type{Gensal}, fields::Vector{SubString{String}}; mech_input::Symbol=:torque)
     # PSS/E GENSAL field order: bus, 'GENSAL', id,
     # T_d0p, T_d0dp, T_q0dp, H, D, x_d, x_q, x_dp, x_ddp, xl, S1, S2
     bus    = parse(Int64, fields[1])
@@ -62,7 +84,7 @@ function from_data_fields(::Type{Gensal}, fields::Vector{SubString{String}})
     S1     = length(fields) >= 15 ? parse(Float64, fields[14]) : 0.0
     S2     = length(fields) >= 16 ? parse(Float64, fields[15]) : 0.0
     # GENSAL substitutions: x_qp = x_dp, T_q0p = T_d0p.
-    Genrou(bus, id, x_d, x_q, x_dp, x_dp, x_ddp, xl, H, D, T_d0p, T_d0p, T_d0dp, T_q0dp, S1, S2)
+    Genrou(bus, id, x_d, x_q, x_dp, x_dp, x_ddp, xl, H, D, T_d0p, T_d0p, T_d0dp, T_q0dp, S1, S2; mech_input)
 end
 
 # Quadratic open-circuit saturation model. Coefficients are derived once
@@ -84,7 +106,7 @@ end
     return sat_b * (psi - sat_a)^2 / psi
 end
 
-function from_data_fields(::Type{Genrou}, fields::Vector{SubString{String}})
+function from_data_fields(::Type{Genrou}, fields::Vector{SubString{String}}; mech_input::Symbol=:torque)
     # Parse fields into Genrou constructor
     bus = parse(Int64, fields[1])
     id = String(fields[3])
@@ -105,7 +127,7 @@ function from_data_fields(::Type{Genrou}, fields::Vector{SubString{String}})
     S1 = length(fields) >= 17 ? parse(Float64, fields[16]) : 0.0
     S2 = length(fields) >= 18 ? parse(Float64, fields[17]) : 0.0
 
-    Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2)
+    Genrou(bus, id, x_d, x_q, x_dp, x_qp, x_ddp, xl, H, D, T_d0p, T_q0p, T_d0dp, T_q0dp, S1, S2; mech_input)
 end
                 
 function set_ratio!(dtype::Genrou, ratio::Float64)
@@ -134,6 +156,7 @@ function fill_pvec!(pvec::AbstractArray, dtype::Genrou)
     pvec[12] = dtype.T_q0dp
     pvec[13] = dtype.S1
     pvec[14] = dtype.S2
+    pvec[15] = mech_input_code(dtype.mech_input)
 end
 
 function get_device_name(dtype::Genrou)
@@ -145,7 +168,7 @@ function get_bus(dtype::Genrou)
 end
 
 function get_param_names(dtype::Genrou)
-    return ["x_d", "x_q", "x_dp", "x_qp", "x_ddp", "xl", "H", "D", "T_d0p", "T_q0p", "T_d0dp", "T_q0dp", "S1", "S2"]
+    return ["x_d", "x_q", "x_dp", "x_qp", "x_ddp", "xl", "H", "D", "T_d0p", "T_q0p", "T_d0dp", "T_q0dp", "S1", "S2", "mech_input"]
 end
 
 function get_diff_names(dtype::Genrou)
@@ -447,7 +470,8 @@ function rhs_diff!(
                     + phi_2q)/((x_qp - xl)^2))*(x_q - x_qp) + Se*psi_qe*gqd)/T_q0p
         f_diff[3] = ( e_qp - i_d*(x_dp - xl) - phi_1d)/T_d0dp
         f_diff[4] = (-e_dp - i_q*(x_qp - xl) - phi_2q)/T_q0dp
-        f_diff[5] = (p_m - D*w - psi_de*i_q + psi_qe*i_d)/(2.0*H)
+        t_m = p[15] > 0.5 ? (p_m - D*w)/(1.0 + w) : p_m - D*w
+        f_diff[5] = (t_m - psi_de*i_q + psi_qe*i_d)/(2.0*H)
         f_diff[6] = 2.0*π*60.0*w
     end
 end

@@ -111,13 +111,13 @@ end
 # Jacobian KA @kernel wrappers (phase 14c D2)
 # -----------------------------------------------------------------------
 
-@kernel function genrou_jacobian_ka!(nz, z, p, online,
-        diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+@kernel function genrou_jacobian_ka!(nz, z, u, p, online,
+        diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc, pm_idx,
         @Const(diff_dim), @Const(net_ptr), @Const(twopi60))
     k = @index(Global)
     if @inbounds online[k]
-        _genrou_jacobian_one!(nz, z, p,
-            diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+        _genrou_jacobian_one!(nz, z, u, p,
+            diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc, pm_idx,
             k, diff_dim, net_ptr, twopi60)
     end
 end

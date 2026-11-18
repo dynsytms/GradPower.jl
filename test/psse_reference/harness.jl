@@ -26,7 +26,7 @@ export check_case, load_case, run_gradpower, compare_runs, ANGLE_TARGET_PCT
 
 const DATA = joinpath(@__DIR__, "data")
 
-"Angle error bound the project validates against (the ANDES-level bound, 1/1920 s)."
+"Angle error bound the project validates against (1/1920 s)."
 const ANGLE_TARGET_PCT = 4.5
 
 "Steps per second GradPower is run at; the references were made at the same rate."
@@ -53,9 +53,13 @@ every bus voltage magnitude.
 """
 function run_gradpower(case; dir=DATA, rate=RATE)
     pf, ev = case["powerflow"], case["event"]
+    # GradPower's units without a .dyr record regulate by bus type, i.e. PSS/E's "pv".
+    get(pf, "static_gen_mode", "pv") == "pv" ||
+        error("static_gen_mode = $(pf["static_gen_mode"]) is not supported")
     sys = with_logger(NullLogger()) do
+        # PSS/E turns the mechanical input into torque by dividing by speed.
         s = GradPower.from_psse(joinpath(dir, case["raw"]), joinpath(dir, case["dyr"]);
-                                static_gen_mode=Symbol(pf["static_gen_mode"]))
+                                mech_input=:power)
         GradPower.build_network!(s)
         GradPower.runpf!(s; verbose=false, enforce_q_limits=pf["enforce_q_limits"])
         s
@@ -70,7 +74,9 @@ function run_gradpower(case; dir=DATA, rate=RATE)
         error("unknown event kind $(ev["kind"])")
     end
     u0 = copy(dp.uvec)                     # control values of machines with no controller
-    tv, tr = GradPower.integrate!(dp, sys, Float64(ev["t_final"]); dt=1 / rate)
+    # Second order, so the integration error stays well below the model differences.
+    tv, tr = GradPower.integrate!(dp, sys, Float64(ev["t_final"]); dt=1 / rate,
+                                  integrator=:crank_nicolson)
 
     dyn = sys.dynamic
     gi = [i for (i, d) in enumerate(dyn.devices) if d.dtype isa GradPower.Genrou]

@@ -24,6 +24,22 @@
 | loads | `ZIPLoad`: impedance (default) / power mixture; no separate current component | 0 / 0 |
 | generators without `.dyr` record | `StaticGenerator`: PQ injection, PV regulation, or fixed reference voltage, according to bus type | 0 / 0–2 |
 
+### GENROU mechanical input
+
+The swing equation of `GENROU` (and `GENSAL`) can treat the mechanical input
+`p_m - D*w` in two ways, selected with `from_psse(raw, dyr; mech_input = ...)`:
+
+| `mech_input` | mechanical torque |
+|:--|:--|
+| `:torque` (default) | `p_m - D*w` |
+| `:power` | `(p_m - D*w) / (1 + w)`, as in PSS/E |
+
+The two agree at synchronous speed. They differ while the speed deviation `w`
+persists, most visibly after a disturbance on machines with no governor, where
+`:power` acts as extra damping on the frequency drift. Use `:power` to compare
+against PSS/E results. The choice is stored per machine as the read-only
+parameter `mech_input` (0 = `:torque`, 1 = `:power`).
+
 Controllers are attached to their machine by **bus and id**, as in PSS/E.
 `StaticGenerator` aggregates unmatched online generators at a bus. A PV stand-in
 stops regulating if power flow converts its bus to PQ at a reactive limit.

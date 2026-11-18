@@ -77,6 +77,7 @@ struct GpuGenrouArrays
     jac_pos::CuMatrix{Int32}
     has_gov::CuVector{Bool}
     has_exc::CuVector{Bool}
+    pm_idx::CuVector{Int32}
 end
 
 struct GpuZIPLoadArrays
@@ -121,12 +122,12 @@ function GpuGenrouArrays(gt::GradPower.GenrouTable)
         CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
         CuVector{Int32}(undef,0), CuVector{Int32}(undef,0),
         CuVector{Bool}(undef,0), CuMatrix{Int32}(undef,0,0),
-        CuVector{Bool}(undef,0), CuVector{Bool}(undef,0))
+        CuVector{Bool}(undef,0), CuVector{Bool}(undef,0), CuVector{Int32}(undef,0))
     GpuGenrouArrays(gt.n, CuVector(gt.diff_ptr), CuVector(gt.alg_ptr),
                      CuVector(gt.ctrl_ptr), CuVector(gt.par_ptr),
                      CuVector(gt.bus), CuVector(gt.online),
                      CuMatrix(gt.jac_pos), CuVector(gt.has_gov),
-                     CuVector(gt.has_exc))
+                     CuVector(gt.has_exc), CuVector(gt.pm_idx))
 end
 
 function GpuZIPLoadArrays(zt::GradPower.ZIPLoadTable)
@@ -1234,13 +1235,13 @@ end
 
 # Batched Jacobian kernels (D6) — same pattern, loop M internally
 
-@kernel function genrou_jacobian_batched_ka!(nzval, z, p, online,
-        diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+@kernel function genrou_jacobian_batched_ka!(nzval, z, u, p, online,
+        diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc, pm_idx,
         @Const(diff_dim), @Const(net_ptr), @Const(twopi60))
     m, k = @index(Global, NTuple)
     @inbounds if online[k]
-        GradPower._genrou_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(p[m,:]),
-            diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+        GradPower._genrou_jacobian_one!(@view(nzval[m,:]), @view(z[m,:]), @view(u[m,:]), @view(p[m,:]),
+            diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc, pm_idx,
             k, diff_dim, net_ptr, twopi60)
     end
 end
@@ -1513,9 +1514,9 @@ function _jacobian_all_scenarios_gpu!(gbl::GpuBatchedLayout, dyn::GradPower.Powe
     # 3. Device Jacobians — one launch per type
     if gt.n > 0
         kernel = genrou_jacobian_batched_ka!(backend)
-        kernel(gbl.J_nzval, gbl.z, gbl.p, gt.online,
-               gt.diff_ptr, gt.alg_ptr, gt.par_ptr, gt.bus, gt.jac_pos,
-               gt.has_gov, gt.has_exc,
+        kernel(gbl.J_nzval, gbl.z, gbl.u, gbl.p, gt.online,
+               gt.diff_ptr, gt.alg_ptr, gt.ctrl_ptr, gt.par_ptr, gt.bus, gt.jac_pos,
+               gt.has_gov, gt.has_exc, gt.pm_idx,
                diff_dim, net_ptr, twopi60; ndrange=(M, gt.n))
     end
     if ig.n > 0

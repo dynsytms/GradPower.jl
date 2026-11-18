@@ -34,7 +34,7 @@ _parameter_field(::ESDC1A, name::Symbol) =
     name == :sat_a ? :Ae : name == :sat_b ? :Be : name
 
 _parameter_readonly(::AbstractDeviceType, name::Symbol) = true
-_parameter_readonly(::Genrou, name::Symbol) = false
+_parameter_readonly(::Genrou, name::Symbol) = name == :mech_input
 _parameter_readonly(::IEESGO, name::Symbol) = name == :pref
 _parameter_readonly(::TGOV1, name::Symbol) = name == :pref
 _parameter_readonly(::SEXS, name::Symbol) = name == :vref
