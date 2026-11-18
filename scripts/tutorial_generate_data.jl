@@ -232,32 +232,4 @@ and on Polaris:
 Always run --dry-run first: it prints the scenario count and the sampled
 lambda range without simulating anything.
 
-NOTES on ACTIVSg2000:
-
-1. IT NEEDS POWER-FLOW Q LIMITS, WHICH ARE ON BY DEFAULT. Without them 200 of
-   432 generators solve outside their nameplate QT/QB -- bus 7400 absorbs
-   279 MVAr against an 8 MVAr floor. That drags 20 machines past their
-   pull-out angle (internal angle > 90 deg, worst 164 deg), where the
-   synchronizing torque is negative, and the system then runs away on its own:
-   a 1e-6 speed kick with no fault at all grows to 147.7 deg in 5 s, so every
-   label would describe that mode rather than the fault.
-
-   With limits enforced, 199 buses switch PV -> PQ, no generator ends up
-   outside its limits, no machine is past pull-out, and the same kick decays
-   to 0.0018 deg. Validated against uqgrid on the same case, models and fault:
-   identical PV->PQ active set and machine speeds agreeing to 1.2e-14 over the
-   whole trajectory.
-
-   Leave `enforce_q_limits` alone unless you are deliberately reproducing a
-   pre-fix dataset. `check_self_stability` in the sweep config is the guard
-   that catches this class of problem; keep it on.
-
-2. MODEL COVERAGE. Separately, 858 .dyr records have no native kernel and are
-   silently skipped unless you pass surrogates => true, which maps them onto
-   TGOV1/SEXS in two tiers (440 mirrored from uqgrid, 418 GradPower-local with
-   no oracle). Surrogates are stand-ins, never native coverage. Note this was
-   NOT the cause of the instability above -- removing exciters entirely
-   changed nothing, because the defect was in the operating point.
-
-   Full analysis: docs/activsg2000-diagnosis.md
 """)

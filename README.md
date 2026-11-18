@@ -257,7 +257,13 @@ ForwardDiff is still pulled in transitively by NLsolve for device initialization
 | `ext/`        | CUDA extension (GPU kernels, batched GPU layout) and sparse direct solver extensions (CUDSS.jl, SparseDirectSolver.jl) |
 | `examples/`   | PSS/E `.raw` / `.dyr` files (2-bus through 70k-bus) |
 | `test/`       | Unit tests (`julia --project -e 'using Pkg; Pkg.test()'`) |
-| `docs/`       | Design proposal and notes |
+| `docs/`       | User guides, tutorials, and API reference |
+
+## Contributing
+
+Keep generated reports, run outputs, and temporary or debug files out of commits.
+Use the ignored `scratch/` or `artifacts/` directories for local outputs; commit
+only reusable source, tests, and maintained documentation.
 
 ## License
 
