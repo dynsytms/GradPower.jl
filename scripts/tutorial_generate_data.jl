@@ -258,6 +258,4 @@ NOTES on ACTIVSg2000:
    no oracle). Surrogates are stand-ins, never native coverage. Note this was
    NOT the cause of the instability above -- removing exciters entirely
    changed nothing, because the defect was in the operating point.
-
-   Full analysis: docs/activsg2000-diagnosis.md
 """)
