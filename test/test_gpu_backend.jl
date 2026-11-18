@@ -252,6 +252,24 @@ end
     empty!(ps.dynamic.events)
 end
 
+@testset "GENROU mech_input = :power on GPU ($(nameof(typeof(ls))))" for ls in GPU_SOLVERS
+    HAS_CUDA || return
+    ext = Base.get_extension(GradPower, :GradPowerCUDAExt)
+    ps = from_psse(joinpath(@__DIR__, "..", "examples", "ieee9_v33.raw"),
+                   joinpath(@__DIR__, "..", "examples", "ieee9bus_gov.dyr"); mech_input = :power)
+    GradPower.build_network!(ps)
+    GradPower.runpf!(ps)
+    dp = GradPower.DynamicProblem(ps)
+    GradPower.initialize_dynamics!(dp, ps)
+    z0 = copy(dp.zvec)
+    add_event!(ps, GradPower.ContingencyEvent(7, 0.02, 0.1, 0.2))
+    _, tr_cpu = integrate!(dp, ps, 0.5; jacobian_reuse = false, predictor = false)
+    dp.zvec .= z0
+    g1 = ext.GpuBatchedLayout(dp, ps, 1; linear_solver = ls)
+    _, tr = ext.integrate_gpu_cudss!(g1, ps, 0.5)
+    @test maximum(abs.(tr[1] .- tr_cpu)) < 1e-6
+end
+
 @testset "KA CUDA kernel dispatch — single-scenario residual" begin
     HAS_CUDA || return
 

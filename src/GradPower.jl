@@ -341,11 +341,12 @@ end
 
 function PowerSystemDynamics(psse_dyr_file::String;
                               active_gen_keys::Union{Nothing,Set{Tuple{Int64,String}}}=nothing,
-                              surrogates::Bool=false)
+                              surrogates::Bool=false,
+                              mech_input::Symbol=:torque)
     psd = PowerSystemDynamics()
     dyr_data = read_psse_dyr(psse_dyr_file)
     psse_devices = create_device_vector(dyr_data; active_gen_keys=active_gen_keys,
-                                        surrogates=surrogates)
+                                        surrogates=surrogates, mech_input=mech_input)
     for device in psse_devices
         add_device!(psd, device)
     end

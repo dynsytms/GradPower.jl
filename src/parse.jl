@@ -76,10 +76,14 @@ end
 
 Reads a PSSE raw file and a PSSE dyr file and constructs a PowerSystem
 
+`mech_input` selects how GENROU/GENSAL machines turn the mechanical input into
+torque: `:torque` (default) or `:power` (PSS/E form, divided by
+speed).
 """
 function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
                     add_static_gen_stubs::Bool=true,
-                    surrogates::Bool=false)
+                    surrogates::Bool=false,
+                    mech_input::Symbol=:torque)
     raw = read_psse_raw(raw_file)
     sys = raw_to_grad(raw)
     if dyr_file !== nothing
@@ -91,7 +95,8 @@ function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
         for gen in sys.gens
             push!(active, (sys.buses[gen.bus].i, _normalize_id(gen.id)))
         end
-        psd = PowerSystemDynamics(dyr_file; active_gen_keys=active, surrogates=surrogates)
+        psd = PowerSystemDynamics(dyr_file; active_gen_keys=active, surrogates=surrogates,
+                                  mech_input=mech_input)
         set_dynamics!(sys, psd; add_static_gen_stubs=add_static_gen_stubs)
     end
     return sys
@@ -675,7 +680,9 @@ Converts a vector of PSSE dyr devices to a vector of AbstractDeviceType structs.
 """
 function create_device_vector(devices;
                                active_gen_keys::Union{Nothing,Set{Tuple{Int64,String}}}=nothing,
-                               surrogates::Bool=false)
+                               surrogates::Bool=false,
+                               mech_input::Symbol=:torque)
+    mech_input_code(mech_input)
     psse_devices = Vector{GradPower.AbstractDeviceType}()
     skipped_inactive_gen = 0
     skipped_orphan_ctrl = 0
@@ -688,7 +695,9 @@ function create_device_vector(devices;
         device_type_name = strip(device[2], ''')  # strip apostrophes
         if haskey(DEVICE_TYPE_MAP, device_type_name)
             device_type = DEVICE_TYPE_MAP[device_type_name]
-            dev = from_data_fields(device_type, device)
+            dev = device_type in (Genrou, Gensal) ?
+                from_data_fields(device_type, device; mech_input) :
+                from_data_fields(device_type, device)
             push!(parsed, (dev, String(device_type_name)))
         elseif surrogates && haskey(DYR_SURROGATE_MAP, device_type_name)
             # Stand-in, not an implementation -- tracked separately from native.

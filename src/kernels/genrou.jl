@@ -74,6 +74,7 @@ independent of `PowerSystem`. Caller:
     T_q0dp = p[pp + 11]
     S1     = p[pp + 12]
     S2     = p[pp + 13]
+    power_input = p[pp + 14] > 0.5     # mech_input = :power (1.0)
     x_qdp  = x_ddp
 
     # ----- states (global z vector) -----
@@ -115,7 +116,8 @@ independent of `PowerSystem`. Caller:
     f[dp + 1] = (-e_dp +        (i_q - (-x_qdp + x_qp)*( e_dp + i_q*(x_qp - xl) + phi_2q)/((x_qp - xl)^2)) * (x_q - x_qp) + Se*psi_qe*gqd) / T_q0p
     f[dp + 2] = ( e_qp - i_d*(x_dp - xl) - phi_1d) / T_d0dp
     f[dp + 3] = (-e_dp - i_q*(x_qp - xl) - phi_2q) / T_q0dp
-    f[dp + 4] = (p_m - D*w - psi_de*i_q + psi_qe*i_d) / (2.0 * H)
+    t_m = power_input ? (p_m - D*w) / (1.0 + w) : p_m - D*w
+    f[dp + 4] = (t_m - psi_de*i_q + psi_qe*i_d) / (2.0 * H)
     f[dp + 5] = twopi60 * w
 
     # ----- alg residuals (stator currents + park projection) -----
@@ -410,8 +412,8 @@ device and the cumulative Jacobian-zero fill in `beuler_jac!` already
 cleared them.
 """
 @inline function _genrou_jacobian_one!(
-        nz, z, p,
-        diff_ptr, alg_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc,
+        nz, z, u, p,
+        diff_ptr, alg_ptr, ctrl_ptr, par_ptr, bus_arr, jac_pos, has_gov, has_exc, pm_idx,
         k::Int, diff_dim::Int, net_ptr::Int, twopi60::Float64,
 )
     @inbounds begin
@@ -436,6 +438,7 @@ cleared them.
     T_q0dp = p[pp + 11]
     S1     = p[pp + 12]
     S2     = p[pp + 13]
+    power_input = p[pp + 14] > 0.5     # mech_input = :power (1.0)
     x_qdp  = x_ddp
 
     # ----- states -----
@@ -522,10 +525,16 @@ cleared them.
     nz[jac_pos[k, J_GR_R5_edp]]   =  0.5 * i_d * (-x_ddp + xl) / (H * (x_qp - xl))
     nz[jac_pos[k, J_GR_R5_phi1d]] = -0.5 * i_q * (-x_ddp + x_dp) / (H * (x_dp - xl))
     nz[jac_pos[k, J_GR_R5_phi2q]] =  0.5 * i_d * (-x_ddp + x_qp) / (H * (x_qp - xl))
-    nz[jac_pos[k, J_GR_R5_w]]     = -0.5 * D / H
-    # Optional cross-coupling df5/dp_m = 1/(2H), only when wired.
+    if power_input
+        # t_m = (p_m - D*w)/(1 + w); p_m is the governor state when wired.
+        p_m = has_gov[k] ? z[pm_idx[k]] : u[Int(ctrl_ptr[k]) + 1]
+        nz[jac_pos[k, J_GR_R5_w]] = -0.5 * (p_m + D) / (H * (1.0 + w)^2)
+    else
+        nz[jac_pos[k, J_GR_R5_w]] = -0.5 * D / H
+    end
+    # Optional cross-coupling df5/dp_m, only when wired.
     if has_gov[k]
-        nz[jac_pos[k, J_GR_R5_pm]] = 0.5 / H
+        nz[jac_pos[k, J_GR_R5_pm]] = power_input ? 0.5 / (H * (1.0 + w)) : 0.5 / H
     end
     nz[jac_pos[k, J_GR_R5_iq]]    =  0.5 * (-e_qp * (x_ddp - xl) / (x_dp - xl) - phi_1d * (-x_ddp + x_dp) / (x_dp - xl)) / H
     nz[jac_pos[k, J_GR_R5_id]]    =  0.5 * ( e_dp * (-x_ddp + xl) / (x_qp - xl) + phi_2q * (-x_ddp + x_qp) / (x_qp - xl)) / H
@@ -584,9 +593,9 @@ end
     twopi60 = 2.0 * π * 60.0
     @inbounds for k in 1:n
         table.online[k] || continue
-        _genrou_jacobian_one!(nz, z, p,
-            table.diff_ptr, table.alg_ptr, table.par_ptr, table.bus, table.jac_pos,
-            table.has_gov, table.has_exc,
+        _genrou_jacobian_one!(nz, z, u, p,
+            table.diff_ptr, table.alg_ptr, table.ctrl_ptr, table.par_ptr, table.bus, table.jac_pos,
+            table.has_gov, table.has_exc, table.pm_idx,
             k, diff_dim, net_ptr, twopi60)
     end
     return nothing
