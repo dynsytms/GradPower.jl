@@ -36,6 +36,9 @@ makedocs(;
             "Generating training data" => "guides/datasets.md",
             "Supported models and input files" => "guides/models.md",
         ],
+        "Validation" => [
+            "PSS/E" => "validation/psse.md",
+        ],
         "How it works" => "theory.md",
         "API reference" => "api.md",
     ],
