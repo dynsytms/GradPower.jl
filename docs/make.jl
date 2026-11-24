@@ -35,6 +35,7 @@ makedocs(;
             "Linear solvers and GPU" => "guides/solvers_gpu.md",
             "Generating training data" => "guides/datasets.md",
             "Supported models and input files" => "guides/models.md",
+            "Data-center loads (PERC2)" => "guides/perc2.md",
         ],
         "Validation" => [
             "PSS/E" => "validation/psse.md",
