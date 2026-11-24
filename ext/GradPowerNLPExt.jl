@@ -21,6 +21,7 @@ function GradPower.DynamicNLP(
     uvar::AbstractArray;
     counters=NLPModels.Counters()
 )
+    GradPower._check_no_perc2(sys, "DynamicNLP (optimization/sensitivities)")
     nvar = length(dprob.pvec)
     ncon = 0
     λ0 = zeros(length(dprob.zvec))

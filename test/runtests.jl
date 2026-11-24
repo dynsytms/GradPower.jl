@@ -41,6 +41,12 @@ end
     include("test_load_step.jl")
     include("test_events_ext.jl")
 end
+@testset "perc2" begin
+    include("perc2_helpers.jl")
+    include("test_perc2_core.jl")
+    include("test_perc2_network.jl")
+    include("test_perc2_dyr_batched.jl")
+end
 @testset "layout" begin
     include("test_layout.jl")
 end

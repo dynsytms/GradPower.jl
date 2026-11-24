@@ -5,7 +5,7 @@ const COVERAGE_DATA = joinpath(@__DIR__, "..", "uqgrid", "data")
 
 @testset "DYR capability coverage" begin
     @test GradPower.native_dyr_models() == Set(["GENROU", "GENSAL", "IEESGO", "TGOV1",
-                                                "SEXS", "ESDC1A", "IEEEST"])
+                                                "SEXS", "ESDC1A", "IEEEST", "PERCBL2U"])
 
     raw_source = read(joinpath(@__DIR__, "testdata", "2bus.raw"), String)
     inactive_gen = "     2,'2 ', 0, 0, 100, -100, 1, 0, 100, 0, 1, 0, 0, 1, 0, 100, 0, 1, 1, 1.0\n"

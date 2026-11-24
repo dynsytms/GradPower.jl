@@ -259,6 +259,8 @@ function _rhs_fun_ka_cpu!(f::AbstractArray, z::AbstractArray, u::AbstractArray,
                            dyn::PowerSystemDynamics,
                            ybus::SparseMatrixCSC, L::SimulationLayout,
                            inj_meta::InjectionMeta)
+    L.perc2load.n == 0 ||
+        throw(ArgumentError("the KernelAbstractions residual path does not support PERC2 loads; use the plain CPU path"))
     backend = KernelAbstractions.CPU()
     diff_dim = dyn.diff_dim
     alg_dim  = dyn.alg_dim

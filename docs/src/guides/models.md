@@ -22,6 +22,7 @@
 | `ESDC1A` | DC exciter | 3 / 0 |
 | `IEEEST` | power system stabilizer | 7 / 1 |
 | loads | `ZIPLoad`: impedance (default) / power mixture; no separate current component | 0 / 0 |
+| `PERCBL2U` (`USRLODC`) | [`PERC2Load`](@ref): data-center / power-electronic load with current limits and cease/reconnect logic ([Data-center loads (PERC2)](perc2.md)) | 0 / 0 |
 | generators without `.dyr` record | `StaticGenerator`: PQ injection, PV regulation, or fixed reference voltage, according to bus type | 0 / 0–2 |
 
 ### GENROU mechanical input

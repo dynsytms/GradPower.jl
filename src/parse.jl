@@ -79,6 +79,14 @@ Reads a PSSE raw file and a PSSE dyr file and constructs a PowerSystem
 `mech_input` selects how GENROU/GENSAL machines turn the mechanical input into
 torque: `:torque` (default) or `:power` (PSS/E form, divided by
 speed).
+
+PERC2 load components (`IBUS 'USRLODC' ID 'PERCBL2U' 230 1 6 57 8
+44 16 CompNum 'CompDesc' <6 flags> <57 CONs> /`, also `'USRLOD'`) become
+[`PERC2Load`](@ref)s via [`add_perc2_load!`](@ref): each replaces the load
+fraction its `MAINBL10` record gives the component (or the whole load, with a
+warning, when there is no main record) of the static load with the same bus
+and id. The static remainder stays a ZIP load (an `LSTCBL` record's exponents
+are not modelled). Only bus-scope records are supported.
 """
 function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
                     add_static_gen_stubs::Bool=true,
@@ -98,6 +106,34 @@ function from_psse(raw_file::String, dyr_file::Union{String, Nothing};
         psd = PowerSystemDynamics(dyr_file; active_gen_keys=active, surrogates=surrogates,
                                   mech_input=mech_input)
         set_dynamics!(sys, psd; add_static_gen_stubs=add_static_gen_stubs)
+        _attach_perc2_dyr_records!(sys, dyr_file)
+    end
+    return sys
+end
+
+# PERCxx2U records: each replaces its load fraction (MAINxx10 component
+# fraction, or the whole load) of the matching static load with a PERC2Load.
+# The power flow is unchanged; V0 is refreshed by initialize_dynamics!.
+function _attach_perc2_dyr_records!(sys::PowerSystem, dyr_file::String)
+    dyr_data = read_psse_dyr(dyr_file)
+    records = read_perc2_dyr_records(dyr_data)
+    isempty(records) && return sys
+    dyn = sys.dynamic::PowerSystemDynamics
+    for r in records
+        b = get(sys.busmap, r.bus, 0)
+        key = _normalize_id(r.id)
+        if b == 0 || !any(d -> d.dtype isa ZIPLoad && d.dtype.bus == b && _normalize_id(d.dtype.id) == key,
+                          dyn.devices)
+            @warn "PERC2 record at bus $(r.bus) load \"$key\": no in-service static load; record skipped."
+            continue
+        end
+        f = _perc2_dyr_fraction(r)
+        f < 1.0 && any(v -> length(v) >= 3 && occursin(r"^LSTC(BL|OW|ZN|AR|AL)$", uppercase(_dyr_unquote(v[2]))) &&
+                            _device_key(something(tryparse(Int64, _dyr_unquote(v[1])), -1), String(v[3])) ==
+                            _device_key(r.bus, r.id), dyr_data) &&
+            @info "PERC2 record at bus $(r.bus) load \"$key\": the static remainder (LSTC record, " *
+                  "fraction $(round(1 - f; digits=6))) stays in GradPower's static ZIP load; its LSTC exponents are not modelled."
+        add_perc2_load!(sys, Int(r.bus), r.id; fraction=f, params=r.params)
     end
     return sys
 end
@@ -221,6 +257,181 @@ const _DYR_EXCITER_MODELS = Set(["ESAC1A", "ESAC6A", "ESDC1A", "ESDC2A", "ESST4B
 const _DYR_STABILIZER_MODELS = Set(["IEEEST"])
 const _DYR_LOAD_MODELS = Set(["CIM5BL"])
 
+# ---------------------------------------------------------------------------
+# PERC2 standard load component (PERCxx2U)
+# ---------------------------------------------------------------------------
+#
+# Record:
+#
+#     IBUS 'USRLODC' ID 'PERCxx2U' 230 IT 6 57 8 44 16 CompNum 'CompDesc'
+#          ICON(M)..ICON(M+5) CON(J)..CON(J+56) /
+#
+# The six numbers after the model code are IT, NICON, NCON, NSTATE, NVAR and
+# the reserved-ICON count. It is a component of a composite load and applies
+# with a main-component record of the same scope and load id:
+#
+#     IBUS 'MAINxx10' ID ICON(1..10) (component types) CON(1..10) (fractions) /
+#
+# where the fraction of component k is CON(k) (-1 = the balance). Only the
+# bus scope (xx = BL, IT = 1) is imported. `'USRLOD'` with the same header is
+# accepted as well.
+
+const PERC2_DYR_MODEL_CODE = 230
+const PERC2_DYR_HEADER = (6, 57, 8, 44, 16)   # NICON NCON NSTATE NVAR NRESERVED
+const PERC2_DYR_MAX_COMPONENTS = 10
+
+"""CON names of `PERCxx2U` in record order (after the six ICON flags)."""
+const PERC2_DYR_CON_NAMES = (
+    :Ldfact, :QPratio, :Tt, :Tv, :Tf, :dbfl, :dbfh, :Kdroop,
+    :Kvp, :Tvp, :Kvq, :Tvq, :Tap, :Tbp, :Taq, :Tbq,
+    :nP, :nQ, :Ipmax, :Ipmin, :Iqmax, :Iqmin, :Imax,
+    :fcease, :VLcease, :VHcease, :Tcease, :Tdelay, :frecon, :VLrecon, :VHrecon, :Tramp, :Trecon,
+    :TLrampL, :TLreconL, :VLC1, :TVLC1, :VLC2, :TVLC2, :VLC3, :TVLC3, :VLC4, :TVLC4,
+    :TLrampH, :TLreconH, :VHC1, :TVHC1, :VHC2, :TVHC2, :VHC3, :TVHC3, :VHC4, :TVHC4,
+    :FLC1, :TFLC1, :FHC1, :TFHC1)
+
+_dyr_unquote(s) = strip(replace(String(s), "'" => "", "\"" => ""))
+
+_is_perc2_model_name(m::AbstractString) = occursin(r"^PERC(BL|OW|ZN|AR|AL)2U$", uppercase(m))
+_is_main_model_name(m::AbstractString) = occursin(r"^MAIN(BL|OW|ZN|AR|AL)10$", uppercase(m))
+
+# A user-written load record (USRLOD / USRLODC) whose model name is PERCxx2U.
+function _is_perc2_dyr_record(values)
+    length(values) >= 4 || return false
+    uppercase(_dyr_unquote(values[2])) in ("USRLOD", "USRLODC") || return false
+    return _is_perc2_model_name(_dyr_unquote(values[4]))
+end
+
+"""
+    PERC2DyrRecord
+
+One `PERCxx2U` record of a `.dyr` file: external bus number, load id (as
+written), component number, description, `PERC2Params` and the load fraction
+from the matching `MAINxx10` record (`nothing` when the file has none).
+"""
+struct PERC2DyrRecord
+    bus::Int64
+    id::String
+    component::Int
+    description::String
+    params::PERC2Params
+    load_fraction::Union{Nothing,Float64}
+end
+
+_dyr_tokens(values) = [String(v) for v in values if v != "/"]
+
+"""
+    parse_perc2_dyr_record(values) -> (bus, id, component, description, params)
+
+Parse the tokens of one `IBUS 'USRLODC' ID 'PERCBL2U' 230 1 6 57 8 44 16
+CompNum 'CompDesc' <6 flags> <57 CONs> /` record (as returned by
+`read_psse_dyr`). Throws `ArgumentError` for a malformed or non-bus-scope
+record. A flag is on only when it equals 1; any other value disables the
+check.
+"""
+function parse_perc2_dyr_record(values)
+    tok = _dyr_tokens(values)
+    what = "PERC2 .dyr record at bus $(get(tok, 1, "?"))"
+    length(tok) >= 11 || throw(ArgumentError("$what: header too short"))
+    bus = tryparse(Int64, _dyr_unquote(tok[1]))
+    bus === nothing && throw(ArgumentError("$what: invalid bus field $(repr(tok[1]))"))
+    id = _dyr_unquote(tok[3])
+    model = uppercase(_dyr_unquote(tok[4]))
+    _is_perc2_model_name(model) || throw(ArgumentError("$what: model $(repr(model)) is not PERCxx2U"))
+    hdr = [tryparse(Float64, t) for t in tok[5:11]]
+    any(isnothing, hdr) && throw(ArgumentError("$what: non-numeric header $(tok[5:11])"))
+    code, it = Int(hdr[1]), Int(hdr[2])
+    code == PERC2_DYR_MODEL_CODE ||
+        throw(ArgumentError("$what: model code $code (the record format requires $PERC2_DYR_MODEL_CODE)"))
+    Tuple(Int.(hdr[3:7])) == PERC2_DYR_HEADER ||
+        throw(ArgumentError("$what: header $(Int.(hdr[3:7])) is not the PERCxx2U header $(PERC2_DYR_HEADER)"))
+    (model[5:6] == "BL" && it == 1) ||
+        throw(ArgumentError("$what: only bus-scope records (PERCBL2U, IT = 1) are supported; got $model with IT = $it"))
+    rest = tok[12:end]
+    component, description = 1, ""
+    # CompNum 'CompDesc' (present in USRLODC records; tolerated if absent)
+    if length(rest) >= 2 && tryparse(Int, rest[1]) !== nothing && startswith(rest[2], "'")
+        component = parse(Int, rest[1])
+        description = _dyr_unquote(rest[2])
+        rest = rest[3:end]
+    end
+    1 <= component <= PERC2_DYR_MAX_COMPONENTS ||
+        throw(ArgumentError("$what: component number $component outside 1-$PERC2_DYR_MAX_COMPONENTS"))
+    nflag, ncon = PERC2_DYR_HEADER[1], PERC2_DYR_HEADER[2]
+    length(rest) == nflag + ncon ||
+        throw(ArgumentError("$what: expected $nflag flags and $ncon CONs, got $(length(rest)) values"))
+    vals = [tryparse(Float64, t) for t in rest]
+    any(isnothing, vals) && throw(ArgumentError("$what: non-numeric value in $(rest)"))
+    kw = Dict{Symbol,Any}()
+    for (i, n) in enumerate(PERC2_FLAG_NAMES)
+        kw[n] = round(vals[i]) == 1
+    end
+    for (i, n) in enumerate(PERC2_DYR_CON_NAMES)
+        kw[n] = Float64(vals[nflag + i])
+    end
+    return bus, id, component, description, PERC2Params(; kw...)
+end
+
+# Fractions of every MAINxx10 record, keyed by (bus, normalized id).
+function _main_dyr_fractions(dyr_data)
+    mains = Dict{Tuple{Int64,String},Vector{Float64}}()
+    for values in dyr_data
+        length(values) >= 3 || continue
+        _is_main_model_name(_dyr_unquote(values[2])) || continue
+        tok = _dyr_tokens(values)
+        bus = tryparse(Int64, _dyr_unquote(tok[1]))
+        bus === nothing && continue
+        nums = [tryparse(Float64, t) for t in tok[4:end]]
+        (length(nums) >= 2 * PERC2_DYR_MAX_COMPONENTS && !any(isnothing, nums)) || continue
+        mains[_device_key(bus, _dyr_unquote(tok[3]))] =
+            Float64.(nums[end - PERC2_DYR_MAX_COMPONENTS + 1:end])
+    end
+    return mains
+end
+
+# Load fraction of component `k` from MAIN fractions `fr` (-1 = the balance).
+function _main_component_fraction(fr::Vector{Float64}, k::Int)
+    f = fr[k]
+    f == -1.0 || return f
+    return 1.0 - sum(x for (j, x) in enumerate(fr) if j != k && x > 0; init = 0.0)
+end
+
+"""
+    read_perc2_dyr_records(dyr_data) -> Vector{PERC2DyrRecord}
+
+Every `PERCxx2U` record in parsed `.dyr` data (`read_psse_dyr`), with its
+load fraction from the matching `MAINxx10` record (same bus and load id).
+"""
+function read_perc2_dyr_records(dyr_data)
+    mains = _main_dyr_fractions(dyr_data)
+    out = PERC2DyrRecord[]
+    for values in dyr_data
+        _is_perc2_dyr_record(values) || continue
+        bus, id, comp, desc, params = parse_perc2_dyr_record(values)
+        fr = get(mains, _device_key(bus, id), nothing)
+        frac = fr === nothing ? nothing : _main_component_fraction(fr, comp)
+        push!(out, PERC2DyrRecord(bus, id, comp, desc, params, frac))
+    end
+    return out
+end
+
+read_perc2_dyr_records(dyr_file::AbstractString) = read_perc2_dyr_records(read_psse_dyr(dyr_file))
+
+# The load fraction a PERC2 record replaces: the MAINxx10 component fraction,
+# or the whole load (with a warning) when the file has no main record.
+function _perc2_dyr_fraction(r::PERC2DyrRecord)
+    if r.load_fraction === nothing
+        @warn "PERC2 record at bus $(r.bus) load \"$(r.id)\" has no matching MAINxx10 record " *
+              "(the record format expects one); the PERC2 component replaces the whole load (fraction 1.0)."
+        return 1.0
+    end
+    f = r.load_fraction
+    0.0 < f <= 1.0 || throw(ArgumentError(
+        "PERC2 record at bus $(r.bus) load \"$(r.id)\": MAINxx10 gives component $(r.component) " *
+        "a load fraction of $f; expected 0 < fraction <= 1"))
+    return f
+end
+
 struct DyrRecordCoverage
     record_index::Int
     source_model::String
@@ -250,10 +461,28 @@ struct DyrCoverageReport
     active_generators_without_machine::Vector{Tuple{Int64,String}}
 end
 
-"""Return the DYR model names implemented by the current `DEVICE_TYPE_MAP`."""
-native_dyr_models() = Set(String.(keys(DEVICE_TYPE_MAP)))
+# Load-component models imported natively outside DEVICE_TYPE_MAP (records
+# are `USRLODC`/`USRLOD`; coverage reports them under their model name).
+const _NATIVE_LOAD_COMPONENT_MODELS = Set(["PERCBL2U"])
+
+"""Return the DYR model names implemented natively (`DEVICE_TYPE_MAP` plus the
+PERC2 standard load component `PERCBL2U`)."""
+native_dyr_models() = union(Set(String.(keys(DEVICE_TYPE_MAP))), _NATIVE_LOAD_COMPONENT_MODELS)
+
+# Source-model name used by coverage: the user-model name for USRLOD/USRLODC
+# records (e.g. PERCBL2U), otherwise the record's model field.
+function _dyr_source_model(values)
+    m = uppercase(_dyr_unquote(values[2]))
+    if m in ("USRLOD", "USRLODC") && length(values) >= 4
+        return uppercase(_dyr_unquote(values[4]))
+    end
+    return m
+end
 
 function _dyr_model_family(model::String)
+    model in _NATIVE_LOAD_COMPONENT_MODELS && return :load
+    _is_perc2_model_name(model) && return :load
+    _is_main_model_name(model) && return :load_main
     model in _DYR_MACHINE_MODELS && return :machine
     if haskey(DEVICE_TYPE_MAP, model)
         dtype = DEVICE_TYPE_MAP[model]
@@ -326,12 +555,16 @@ function analyze_dyr_coverage(raw_path::String, dyr_path::String;
     active_loads = Set(_device_key(load.busn, load.name) for load in raw.loads if load.status == 1)
     inactive_loads = Set(_device_key(load.busn, load.name) for load in raw.loads if load.status == 0)
 
+    # A MAINxx10 record is native when it carries an imported PERC2 component.
+    perc2_keys = Set(_device_key(parse(Int64, _dyr_unquote(v[1])), String(v[3]))
+                     for v in dyr if _is_perc2_dyr_record(v) && tryparse(Int64, _dyr_unquote(v[1])) !== nothing)
+
     seen = Set{Tuple{Symbol,Int64,String}}()
     covered_machines = Set{Tuple{Int64,String}}()
     records = DyrRecordCoverage[]
     for (index, values) in enumerate(dyr)
         length(values) >= 3 || throw(ArgumentError("Malformed DYR record $index: expected bus, model, and ID"))
-        source_model = uppercase(strip(replace(String(values[2]), "'" => "", "\"" => "")))
+        source_model = _dyr_source_model(values)
         bus = try
             parse(Int64, strip(replace(String(values[1]), "'" => "", "\"" => "")))
         catch
@@ -341,7 +574,7 @@ function analyze_dyr_coverage(raw_path::String, dyr_path::String;
         family = _dyr_model_family(source_model)
         identity = (family, key...)
 
-        active_keys, inactive_keys = if family == :load
+        active_keys, inactive_keys = if family in (:load, :load_main)
             active_loads, inactive_loads
         elseif family in (:machine, :governor, :exciter, :stabilizer) ||
                source_model in native || haskey(normalized_redirects, source_model)
@@ -354,7 +587,8 @@ function analyze_dyr_coverage(raw_path::String, dyr_path::String;
         status = if identity in seen
             :duplicate
         elseif key in active_keys
-            if source_model in native
+            if source_model in native ||
+               (family == :load_main && source_model == "MAINBL10" && key in perc2_keys)
                 effective_model = source_model
                 :native
             elseif haskey(normalized_redirects, source_model)
@@ -387,7 +621,29 @@ function return_dyr_device(data, dev, ptr)
         append!(dev, split(strip(data[ptr]), r"\s*,\s*|\s+"))
         ptr = ptr + 1
     end
-    return ptr, dev
+    return ptr, _join_quoted_tokens(dev)
+end
+
+# Re-join a quoted field that contains blanks ('PERC2 load' was split into
+# "'PERC2" and "load'"). Tokens without an unbalanced quote are unchanged.
+function _join_quoted_tokens(dev)
+    any(t -> startswith(t, "'") && (length(t) == 1 || !endswith(t, "'")), dev) || return dev
+    out = SubString{String}[]
+    i = 1
+    while i <= length(dev)
+        t = dev[i]
+        close = (startswith(t, "'") && (length(t) == 1 || !endswith(t, "'"))) ?
+            findnext(u -> endswith(u, "'"), dev, i + 1) : nothing
+        if close !== nothing
+            s = join(dev[i:close], " ")
+            push!(out, SubString(s, 1))
+            i = close + 1
+        else
+            push!(out, SubString(String(t), 1))
+            i += 1
+        end
+    end
+    return out
 end
 
 function read_psse_dyr(dyr_filename)
@@ -407,8 +663,8 @@ function read_psse_dyr(dyr_filename)
         if length(dev) == 0 || isempty(dev[1])
             # Blank line — split("") yields [""] not [], so check both.
             ptr = ptr + 1
-        elseif startswith(dev[1], "//")
-            # Comment
+        elseif startswith(dev[1], "//") || startswith(dev[1], "@!")
+            # Comment (`@!` is the `.dyr` comment-row marker)
             ptr = ptr + 1
         else
             ptr, dev = return_dyr_device(data, dev, ptr)
@@ -691,8 +947,17 @@ function create_device_vector(devices;
     kept_gen_keys = Set{Tuple{Int64,String}}()
 
     parsed = Tuple{GradPower.AbstractDeviceType,String}[]
+    perc2_keys = Set(_device_key(something(tryparse(Int64, _dyr_unquote(d[1])), -1), String(d[3]))
+                     for d in devices if _is_perc2_dyr_record(d))
     for device in devices
         device_type_name = strip(device[2], ''')  # strip apostrophes
+        # PERC2 load components and their MAINxx10 records are imported by
+        # from_psse (read_perc2_dyr_records), not as dynamic devices here.
+        _is_perc2_dyr_record(device) && continue
+        (_is_main_model_name(device_type_name) ||
+         occursin(r"^LSTC(BL|OW|ZN|AR|AL)$", uppercase(device_type_name))) && length(device) >= 3 &&
+            _device_key(something(tryparse(Int64, _dyr_unquote(device[1])), -1), String(device[3])) in perc2_keys &&
+            continue
         if haskey(DEVICE_TYPE_MAP, device_type_name)
             device_type = DEVICE_TYPE_MAP[device_type_name]
             dev = device_type in (Genrou, Gensal) ?

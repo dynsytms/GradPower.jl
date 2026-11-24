@@ -199,6 +199,14 @@ after every accepted step; with `threaded=true` it runs on worker threads,
 concurrently for different `m`, so it must only touch per-scenario data.
 `result=true` opts into [`SimulationResult`](@ref); `scenario_ids` supplies
 unique labels in scenario order (default `1:bl.M`).
+
+PERC2 loads ([`add_perc2_load!`](@ref)) run per scenario: scenario `m` has its
+own PERC2 logic and bus-frequency estimator (`L.perc2load.states[m]`,
+`freq[m]`), initialized from its own parameter row (`P0`, `Q0`, `V0`) and
+initial state, and stepped after each of its accepted steps; the held
+currents live in its workspace copy of `bl.p[m, :]` (`bl.p` is not modified).
+The PERC2 settings (`PERC2Params`) are shared by all scenarios. Build the
+`BatchedLayout` after the last `add_perc2_load!` and `initialize_dynamics!`.
 """
 function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                              dt::Float64=1.0/120.0, newton_tol::Float64=1e-10,
@@ -211,10 +219,15 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                              integrator::Symbol=:backward_euler,
                              result::Bool=false, scenario_ids=nothing)
     _check_integrator(integrator)
+    linear_solver isa CUDSSBackend &&
+        _check_no_perc2(ps, "integrate_batched! with the GPU linear solver CUDSSBackend")
     dyn = ps.dynamic::PowerSystemDynamics
     L = dyn.layout::SimulationLayout
     ybus = (ps.network::Network).ybus_real
     M = bl.M
+    size(bl.p, 2) == dyn.par_dim ||
+        throw(ArgumentError("integrate_batched!: bl has $(size(bl.p, 2)) parameters, the system $(dyn.par_dim); " *
+                            "rebuild the BatchedLayout after adding devices (e.g. add_perc2_load!)"))
 
     nsteps, tvec = _time_grid(tf, dt)
     result_context = result ? _result_context(ps, save_idxs, M, scenario_ids, dt,
@@ -256,6 +269,20 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
                                    linear_solver, jacobian_reuse)
     end
 
+    # PERC2 loads: one logic store and bus-frequency estimator per scenario
+    # (table.states[m], table.freq[m]), started from that scenario's own
+    # parameter row (P0, Q0, V0) and initial state; the held currents are
+    # written into ws[m].p. Scenarios never share a store, so threads do not race.
+    p2 = L.perc2load
+    net_ptr = dyn.diff_dim + dyn.alg_dim
+    if p2.n > 0
+        perc2_ensure_scenarios!(p2, M)
+        for m in 1:M
+            perc2_init_scenario!(p2, m, ws[m].z, ws[m].p, tvec[1], dt, net_ptr) &&
+                (ws[m].reuse.dt = NaN)
+        end
+    end
+
     # One recorder (own output buffer) per scenario: threads never share one.
     recs = [_Recorder(bl.sys_dim, nsteps, save_idxs, save_every, save_eltype) for _ in 1:M]
     for m in 1:M
@@ -275,6 +302,12 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
             ok[m] = _solve_scenario!(ws[m], ps, dt, newton_tol, predictor, integrator)
             _record!(recs[m], k + 1, ws[m].z)
             step_callback === nothing || step_callback(m, k + 1, tvec[k + 1], ws[m].z)
+            # Accepted step: advance this scenario's PERC2 logic with its
+            # converged voltages; new held currents go into its own p row.
+            if ok[m] && p2.n > 0 &&
+               perc2_accept_step!(p2, m, ws[m].z, ws[m].p, tvec[k + 1], dt, net_ptr)
+                ws[m].reuse.dt = NaN   # held currents changed: refactor
+            end
         end
         all(ok) || check_newton(false, tvec[k + 1],
             "batched time step (scenarios $(findall(!, ok)))")
@@ -306,6 +339,8 @@ function integrate_batched!(bl::BatchedLayout, ps::PowerSystem, tf::Float64;
             _foreach_scenario(M, threaded) do m
                 ws[m].reuse.dt = NaN   # the equations changed
                 ok[m] = _solve_scenario!(ws[m], ps, 0.0, newton_tol, predictor)
+                # The event's angle jump is not a frequency.
+                ok[m] && p2.n > 0 && perc2_event_resolved!(p2, m, ws[m].z, net_ptr)
             end
             all(ok) || check_newton(false, tvec[k + 1],
                 "batched dt=0 event re-solve (scenarios $(findall(!, ok)))")

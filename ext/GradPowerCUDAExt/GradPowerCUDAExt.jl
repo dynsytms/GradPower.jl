@@ -546,6 +546,7 @@ size (see [`GradPower.default_gpu_backend`](@ref)).
 function GpuBatchedLayout(dp::GradPower.DynamicProblem, ps::GradPower.PowerSystem, M::Int;
                           linear_solver::GradPower.AbstractDirectSolverBackend =
                               GradPower.default_gpu_backend(M))
+    GradPower._check_no_perc2(ps, "GpuBatchedLayout (GPU integrators)")
     ds = linear_solver
     # Build CPU layout first (reuses existing code)
     bl_cpu = GradPower.BatchedLayout(dp, ps, M)

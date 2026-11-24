@@ -877,6 +877,12 @@ include("cpf/events.jl")
 include("cpf/results.jl")
 include("dynamics.jl")
 
+# PERC2 data-center load model: parameters + device type, and the pure
+# time-stepped logic advanced after each accepted step.
+include("perc2load.jl")
+include("kernels/perc2_logic.jl")
+include("bus_frequency.jl")
+
 # SoA table builders. Included AFTER dynamics.jl so device structs
 # (Genrou, IEESGO, ZIPLoad, ...) are in scope. Each file defines an
 # `_build_*_table_impl(psd)` function and registers itself with
@@ -889,6 +895,7 @@ include("tables/esdc1a.jl")
 include("tables/zipload.jl")
 include("tables/ieeest.jl")
 include("tables/static_gen.jl")
+include("tables/perc2.jl")
 
 # Device coupling graph. Defines `attaches_to`, `produces_signals`,
 # `consumes_signals` traits + `wire_controls!`. Must be included AFTER
@@ -914,6 +921,7 @@ include("kernels/esdc1a.jl")
 include("kernels/zipload.jl")
 include("kernels/ieeest.jl")
 include("kernels/static_gen.jl")
+include("kernels/perc2.jl")
 
 # Fixed-state limit declarations and backward-Euler row transformations.
 include("limits.jl")
@@ -966,6 +974,7 @@ _set_table_online!(L::SimulationLayout, ::ESDC1A,           k::Int, v::Bool) = (
 _set_table_online!(L::SimulationLayout, ::IEEEST,           k::Int, v::Bool) = (L.ieeest.online[k] = v; nothing)
 _set_table_online!(L::SimulationLayout, ::ZIPLoad,          k::Int, v::Bool) = (L.zipload.online[k] = v; nothing)
 _set_table_online!(L::SimulationLayout, ::StaticGenerator,  k::Int, v::Bool) = (L.static_gen.online[k] = v; nothing)
+_set_table_online!(L::SimulationLayout, ::PERC2Load,        k::Int, v::Bool) = (L.perc2load.online[k] = v; nothing)
 
 # Device contract registry. Included AFTER kernels/*.jl so device structs
 # (Genrou, IEESGO, TGOV1, SEXS, ESDC1A, ZIPLoad, StaticGenerator) are in
@@ -1016,5 +1025,6 @@ export DyrRecordCoverage, DyrModelCoverage, DyrCoverageReport
 export analyze_dyr_coverage, native_dyr_models, coverage_counts, coverage_by_model, native_coverage
 export SolverLog
 export AbstractDirectSolverBackend, KLUBackend, CUDSSBackend, SparseDirectSolverBackend
+export PERC2Params, PERC2Load, add_perc2_load!, perc2_states
 
 end # module GradPower

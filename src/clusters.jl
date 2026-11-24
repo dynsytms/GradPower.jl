@@ -45,6 +45,7 @@ _device_symbol(::ESDC1A)           = :esdc1a
 _device_symbol(::IEEEST)           = :ieeest
 _device_symbol(::StaticGenerator)  = :static_gen
 _device_symbol(::ZIPLoad)          = :zipload
+_device_symbol(::PERC2Load)        = :perc2load
 
 # -----------------------------------------------------------------------
 # ClusterTable
@@ -356,7 +357,7 @@ function _update_table_pointers!(layout::SimulationLayout, old_to_new::Vector{In
     _remap_esdc1a!(layout.esdc1a, old_to_new, diff_dim, n_da)
     # IEEEST: diff_ptr absolute, alg_ptr offset (kernel does diff_dim + alg_ptr)
     _remap_ieeest!(layout.ieeest, old_to_new, diff_dim, n_da)
-    # ZIPLoad: no diff/alg states
+    # ZIPLoad, PERC2Load: no diff/alg states
     # StaticGenerator: alg_ptr is absolute
     _remap_static_gen!(layout.static_gen, old_to_new, diff_dim, n_da)
     return nothing

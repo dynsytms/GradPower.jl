@@ -154,6 +154,9 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
             yload = (device.dtype.pinj + 1im*device.dtype.qinj)/(device.dtype.v0mag^2.0)
             device.dtype.yreal = real(yload)
             device.dtype.yimag = imag(yload)
+        elseif device.dtype isa PERC2Load
+            device.dtype.V0 = ps.buses[ps.dynamic.map.bus[i]].v0m
+            device.dtype.va0 = ps.buses[ps.dynamic.map.bus[i]].v0a
         end
     end
     
@@ -273,6 +276,10 @@ function initialize_dynamics!(dp::DynamicProblem, ps::PowerSystem)
         refresh_esdc1a_table!(ps.dynamic)
         refresh_ieeest_table!(ps.dynamic)
         refresh_static_gen_table!(ps.dynamic)
+        refresh_perc2_table!(ps.dynamic)
+        # PERC2 logic (scenario 1) restarts at the power-flow point; the held
+        # currents in p are those written by fill_pvec! above.
+        perc2_reset_scenario!(ps.dynamic.layout.perc2load, 1, p)
     end
 end
 
@@ -321,6 +328,7 @@ end
     sexs_residual_batch!(f, z, p, L.sexs)
     esdc1a_residual_batch!(f, z, p, L.esdc1a)
     zipload_residual_batch!(f, z, p, L.zipload, net_ptr)
+    perc2_residual_batch!(f, z, p, L.perc2load, net_ptr)
     static_gen_residual_batch!(f, z, p, L.static_gen)
 
     _zero_offline_rows!(f, dyn)
@@ -664,8 +672,14 @@ function integrate!(
     stop_condition=nothing,
     result::Bool=false,
     scenario_ids=nothing,
+    perc2_log=nothing,
 )
     # NOTE: Assumes initialize_dynamics!(dp, ps) has been called.
+    solver === :monolithic || (ps.dynamic.layout::SimulationLayout).perc2load.n == 0 ||
+        throw(ArgumentError("PERC2Load is not supported with solver=:$solver; use solver=:monolithic"))
+    length(dp.pvec) == ps.dynamic.par_dim ||
+        throw(ArgumentError("dp.pvec has length $(length(dp.pvec)), the system has $(ps.dynamic.par_dim) " *
+                            "parameters (devices added after DynamicProblem?): rebuild it and call initialize_dynamics!"))
     _check_integrator(integrator)
     integrator === :crank_nicolson && limit_method !== :none &&
         throw(ArgumentError("integrator=:crank_nicolson does not support limit_method=:$limit_method " *
@@ -738,6 +752,14 @@ function integrate!(
 
     # initial condition
     zold .= dp.zvec
+    # PERC2 loads: restart the logic at the initial state and take the first
+    # step at t0 (held currents written into dp.pvec, see src/kernels/perc2.jl).
+    perc2_tab = (ps.dynamic.layout::SimulationLayout).perc2load
+    net_ptr_ = ps.dynamic.diff_dim + ps.dynamic.alg_dim
+    # The held currents are parameters that change during the run; restore
+    # their entry values on exit, like the load-step parameters.
+    perc2_saved = perc2_tab.n == 0 ? nothing : _perc2_save_pvec(perc2_tab, dp.pvec)
+    perc2_init_scenario!(perc2_tab, 1, zold, dp.pvec, tvec[1], dt, net_ptr_; log=perc2_log)
     _record!(rec, 1, zold)
     step_callback === nothing || step_callback(1, tvec[1], zold)
     zlast === nothing || copyto!(zlast, zold)
@@ -816,6 +838,12 @@ function integrate!(
             record_limit_events!(limit_workspace, zold, zlast, dp.pvec, dt, tvec[k+1])
             copyto!(zlast, zold)
         end
+        # PERC2 accepted-step hook: advance the logic with the converged
+        # state and hold the new currents during the next solve. A changed
+        # current changes the Jacobian: refactor at the next solve.
+        if perc2_accept_step!(perc2_tab, 1, zold, dp.pvec, tvec[k+1], dt, net_ptr_; log=perc2_log)
+            reuse.dt = NaN
+        end
         _record!(rec, k + 1, zold)
         step_callback === nothing || step_callback(k + 1, tvec[k+1], zold)
         k == nsteps && copyto!(zfinal, zold)
@@ -878,12 +906,14 @@ function integrate!(
                 success = newton_step!(zold, f0, J0, fact, zold, dp.uvec, dp.pvec, ps, 0.0, verbose=verbose, tol=ftol, dx=dx_buf, zwork=zwork, log=log, newton_norm=newton_norm, limits=limit_workspace, reuse=reuse)
             end
             check_newton(success, tvec[k+1], "dt=0 event re-solve (solver=$solver, limit_method=$limit_method)")
+            perc2_event_resolved!(perc2_tab, 1, zold, net_ptr_)
         end
 
     end
     finally
         _restore_event_state!(ps, saved)
         pvec_saved === nothing || copyto!(dp.pvec, pvec_saved)
+        perc2_saved === nothing || _perc2_restore_pvec!(perc2_tab, dp.pvec, perc2_saved)
     end
 
     # Final state: the last grid step, before any event re-solve at that step
@@ -906,6 +936,7 @@ function _check_gpu_events(ps::PowerSystem, what::AbstractString)
     isempty(dyn.trip_events) || push!(bad, "TripLineEvent")
     isempty(dyn.load_step_events) || push!(bad, "LoadStepEvent")
     any(ev -> ev.xfault != 0.0, dyn.events) && push!(bad, "ContingencyEvent with xfault != 0")
+    _check_no_perc2(ps, what)
     isempty(bad) || throw(ArgumentError("$what supports resistive ContingencyEvent only; registered: " *
                                         join(bad, ", ") * " (use the CPU integrators)"))
     return nothing
@@ -1107,6 +1138,7 @@ function preallocate_jacobian(ps::PowerSystem)
     sexs_jac_positions!(L.sexs, Jsp)
     esdc1a_jac_positions!(L.esdc1a, Jsp)
     zipload_jac_positions!(L.zipload, Jsp, net_ptr)
+    perc2_jac_positions!(L.perc2load, Jsp, net_ptr)
     static_gen_jac_positions!(L.static_gen, Jsp)
 
     return Jsp
@@ -1154,6 +1186,7 @@ end
     sexs_jacobian_batch!(jac, z, p, L.sexs)
     esdc1a_jacobian_batch!(jac, z, p, L.esdc1a)
     zipload_jacobian_batch!(jac, z, p, L.zipload, net_ptr)
+    perc2_jacobian_batch!(jac, z, p, L.perc2load, net_ptr)
     static_gen_jacobian_batch!(jac, z, p, L.static_gen)
 
     isempty(dyn.offline_alg_rows) || _pin_offline_jacobian!(jac, dyn)

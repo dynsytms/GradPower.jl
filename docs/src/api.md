@@ -83,6 +83,19 @@ GradPower.BatchedLayout
 GradPower.gen_speeds
 ```
 
+## Data-center loads (PERC2)
+
+See [Data-center loads (PERC2)](guides/perc2.md) for the model, parameter
+units and supported solver paths. PERC2 quantities are not in the state
+vector: read them with `integrate!(...; perc2_log = v)` or `perc2_states`.
+
+```@docs
+PERC2Load
+PERC2Params
+add_perc2_load!
+perc2_states
+```
+
 ## Optional plotting
 
 Load a Makie backend such as `CairoMakie` before or after `GradPower` to enable
