@@ -1,0 +1,2631 @@
+{
+ "dt": 0.004166666666666667,
+ "cases": {
+  "s1_nocease_sag09": {
+   "description": "0.9 pu sag, 0.5 s, no ceasing",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.0,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.9,
+     60.0
+    ],
+    [
+     0.6,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 1.5,
+   "events": {},
+   "history": []
+  },
+  "s1_nocease_sag06": {
+   "description": "0.6 pu sag, Ipmax binds (Ldfact/V > 1)",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.0,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.6,
+     60.0
+    ],
+    [
+     0.6,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 1.5,
+   "events": {},
+   "history": []
+  },
+  "s1_nocease_sag03": {
+   "description": "0.3 pu sag, deep current limiting",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.0,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.6,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 1.5,
+   "events": {},
+   "history": []
+  },
+  "s1_nocease_np1": {
+   "description": "nP = 1 (constant current), 0.6 pu sag",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 1.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.0,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.6,
+     60.0
+    ],
+    [
+     0.6,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 1.5,
+   "events": {},
+   "history": []
+  },
+  "s1_nocease_np2_v0": {
+   "description": "nP = 2, non-unity initial voltage",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 2.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.0,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.02,
+     60.0
+    ],
+    [
+     0.1,
+     0.5,
+     60.0
+    ],
+    [
+     0.6,
+     1.02,
+     60.0
+    ]
+   ],
+   "t_end": 1.5,
+   "events": {},
+   "history": []
+  },
+  "s2_vlm_dip_short": {
+   "description": "dip below VLcease longer than Tcease; momentary reconnect",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.25,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 3.0,
+   "events": {
+    "trip_time": 0.2125,
+    "reconnect_start": 0.325,
+    "reconnect_end": 1.325
+   },
+   "history": [
+    [
+     "trip_time",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "reconnect_start",
+     0.325,
+     null
+    ],
+    [
+     "reconnect_end",
+     1.325,
+     null
+    ]
+   ]
+  },
+  "s2_vlm_dip_too_short": {
+   "description": "dip shorter than Tcease: no cease",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.13,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 1.0,
+   "events": {},
+   "history": []
+  },
+  "s2_vlm_tdelay_end": {
+   "description": "dip ends while Tdelay runs (trigger 0.2125, Tdelay to 0.3125): still ceases",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.1,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.25,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 3.0,
+   "events": {
+    "trip_time": 0.3125,
+    "reconnect_start": 0.3625,
+    "reconnect_end": 1.3625
+   },
+   "history": [
+    [
+     "trip_time",
+     0.3125,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.3125,
+     "VLM"
+    ],
+    [
+     "reconnect_start",
+     0.3625,
+     null
+    ],
+    [
+     "reconnect_end",
+     1.3625,
+     null
+    ]
+   ]
+  },
+  "s2_vlm_full_recon": {
+   "description": "fcease = frecon = 1",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 1.0,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 1.0,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.3,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 3.0,
+   "events": {
+    "trip_time": 0.2125,
+    "reconnect_start": 0.375,
+    "reconnect_end": 1.375
+   },
+   "history": [
+    [
+     "trip_time",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "reconnect_start",
+     0.375,
+     null
+    ],
+    [
+     "reconnect_end",
+     1.375,
+     null
+    ]
+   ]
+  },
+  "s2_vlm_recover_to_vlrecon": {
+   "description": "recovery to exactly VLrecon: strict window, never reconnects",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.0,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.3,
+     0.6,
+     60.0
+    ]
+   ],
+   "t_end": 3.0,
+   "events": {
+    "trip_time": 0.15
+   },
+   "history": [
+    [
+     "trip_time",
+     0.15,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.15,
+     "VLM"
+    ]
+   ]
+  },
+  "s2_vlm_ldfact03": {
+   "description": "Ldfact 0.3",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.3,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.25,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 3.0,
+   "events": {
+    "trip_time": 0.2125,
+    "reconnect_start": 0.325,
+    "reconnect_end": 0.7041666666666666
+   },
+   "history": [
+    [
+     "trip_time",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "reconnect_start",
+     0.325,
+     null
+    ],
+    [
+     "reconnect_end",
+     0.7041666666666666,
+     null
+    ]
+   ]
+  },
+  "s2_vlm_ldfact06": {
+   "description": "Ldfact 0.6",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.6,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.25,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 3.0,
+   "events": {
+    "trip_time": 0.2125,
+    "reconnect_start": 0.325,
+    "reconnect_end": 1.075
+   },
+   "history": [
+    [
+     "trip_time",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "reconnect_start",
+     0.325,
+     null
+    ],
+    [
+     "reconnect_end",
+     1.075,
+     null
+    ]
+   ]
+  },
+  "s2_vlm_ldfact10": {
+   "description": "Ldfact 1.0",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 1.0,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.25,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 3.0,
+   "events": {
+    "trip_time": 0.2125,
+    "reconnect_start": 0.325,
+    "reconnect_end": 1.575
+   },
+   "history": [
+    [
+     "trip_time",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "reconnect_start",
+     0.325,
+     null
+    ],
+    [
+     "reconnect_end",
+     1.575,
+     null
+    ]
+   ]
+  },
+  "s2_vlm_recease_ramp": {
+   "description": "second dip during the ramp ceases again",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.25,
+     1.0,
+     60.0
+    ],
+    [
+     0.6,
+     0.3,
+     60.0
+    ],
+    [
+     0.75,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 4.0,
+   "events": {
+    "trip_time": 0.2125,
+    "reconnect_start": 0.325,
+    "reconnect_end": 1.825
+   },
+   "history": [
+    [
+     "trip_time",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "reconnect_start",
+     0.325,
+     null
+    ],
+    [
+     "trip_time",
+     0.7125,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.7125,
+     "VLM"
+    ],
+    [
+     "reconnect_start",
+     0.825,
+     null
+    ],
+    [
+     "reconnect_end",
+     1.825,
+     null
+    ]
+   ]
+  },
+  "s3_vll_escalate": {
+   "description": "momentary cease escalates to long (VLC4) while ceased",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 1,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.45,
+     60.0
+    ],
+    [
+     0.5,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 4.0,
+   "events": {
+    "trip_time": 0.26666666666666666,
+    "reconnect_start": 0.5625,
+    "reconnect_end": 1.5625
+   },
+   "history": [
+    [
+     "trip_time",
+     0.26666666666666666,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.26666666666666666,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.36666666666666664,
+     "VLC4"
+    ],
+    [
+     "reconnect_start",
+     0.5625,
+     null
+    ],
+    [
+     "reconnect_end",
+     1.5625,
+     null
+    ]
+   ]
+  },
+  "s3_vll_long_only": {
+   "description": "0.75 pu for 0.7 s: VLC2 long cease without a momentary cease",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 1,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.75,
+     60.0
+    ],
+    [
+     0.8,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 4.0,
+   "events": {
+    "trip_time": 0.6791666666666667,
+    "reconnect_start": 0.7291666666666666,
+    "reconnect_end": 1.7291666666666667
+   },
+   "history": [
+    [
+     "trip_time",
+     0.6791666666666667,
+     "VLC2"
+    ],
+    [
+     "cease",
+     0.6791666666666667,
+     "VLC2"
+    ],
+    [
+     "reconnect_start",
+     0.7291666666666666,
+     null
+    ],
+    [
+     "reconnect_end",
+     1.7291666666666667,
+     null
+    ]
+   ]
+  },
+  "s3_vll_cycling": {
+   "description": "sustained 0.7 pu sag inside the reconnect window cycles",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 1,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.7,
+     60.0
+    ],
+    [
+     4.0,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 6.0,
+   "events": {
+    "trip_time": 0.6541666666666667,
+    "reconnect_start": 0.7041666666666666,
+    "reconnect_end": 5.029166666666667
+   },
+   "history": [
+    [
+     "trip_time",
+     0.6541666666666667,
+     "VLC2"
+    ],
+    [
+     "cease",
+     0.6541666666666667,
+     "VLC2"
+    ],
+    [
+     "reconnect_start",
+     0.7041666666666666,
+     null
+    ],
+    [
+     "trip_time",
+     1.2083333333333333,
+     "VLC2"
+    ],
+    [
+     "cease",
+     1.2083333333333333,
+     "VLC2"
+    ],
+    [
+     "reconnect_start",
+     1.2583333333333333,
+     null
+    ],
+    [
+     "trip_time",
+     1.7625,
+     "VLC2"
+    ],
+    [
+     "cease",
+     1.7625,
+     "VLC2"
+    ],
+    [
+     "reconnect_start",
+     1.8125,
+     null
+    ],
+    [
+     "trip_time",
+     2.3166666666666664,
+     "VLC2"
+    ],
+    [
+     "cease",
+     2.3166666666666664,
+     "VLC2"
+    ],
+    [
+     "reconnect_start",
+     2.3666666666666667,
+     null
+    ],
+    [
+     "trip_time",
+     2.870833333333333,
+     "VLC2"
+    ],
+    [
+     "cease",
+     2.870833333333333,
+     "VLC2"
+    ],
+    [
+     "reconnect_start",
+     2.9208333333333334,
+     null
+    ],
+    [
+     "trip_time",
+     3.425,
+     "VLC2"
+    ],
+    [
+     "cease",
+     3.425,
+     "VLC2"
+    ],
+    [
+     "reconnect_start",
+     3.475,
+     null
+    ],
+    [
+     "trip_time",
+     3.9791666666666665,
+     "VLC2"
+    ],
+    [
+     "cease",
+     3.9791666666666665,
+     "VLC2"
+    ],
+    [
+     "reconnect_start",
+     4.029166666666667,
+     null
+    ],
+    [
+     "reconnect_end",
+     5.029166666666667,
+     null
+    ]
+   ]
+  },
+  "s3_vll_recease_ramp": {
+   "description": "long cease, then a second long cease during the ramp",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 1,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 2.5,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.75,
+     60.0
+    ],
+    [
+     0.8,
+     1.0,
+     60.0
+    ],
+    [
+     1.2,
+     0.75,
+     60.0
+    ],
+    [
+     1.9,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 6.0,
+   "events": {
+    "trip_time": 0.6791666666666667,
+    "reconnect_start": 0.7291666666666666,
+    "reconnect_end": 3.8291666666666666
+   },
+   "history": [
+    [
+     "trip_time",
+     0.6791666666666667,
+     "VLC2"
+    ],
+    [
+     "cease",
+     0.6791666666666667,
+     "VLC2"
+    ],
+    [
+     "reconnect_start",
+     0.7291666666666666,
+     null
+    ],
+    [
+     "trip_time",
+     1.7791666666666666,
+     "VLC2"
+    ],
+    [
+     "cease",
+     1.7791666666666666,
+     "VLC2"
+    ],
+    [
+     "reconnect_start",
+     1.8291666666666666,
+     null
+    ],
+    [
+     "reconnect_end",
+     3.8291666666666666,
+     null
+    ]
+   ]
+  },
+  "s4_vhm_swell": {
+   "description": "momentary high-voltage cease",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 1,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     1.25,
+     60.0
+    ],
+    [
+     0.3,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 3.0,
+   "events": {
+    "trip_time": 0.22916666666666666,
+    "reconnect_start": 0.39166666666666666,
+    "reconnect_end": 1.3916666666666666
+   },
+   "history": [
+    [
+     "trip_time",
+     0.22916666666666666,
+     "VHM"
+    ],
+    [
+     "cease",
+     0.22916666666666666,
+     "VHM"
+    ],
+    [
+     "reconnect_start",
+     0.39166666666666666,
+     null
+    ],
+    [
+     "reconnect_end",
+     1.3916666666666666,
+     null
+    ]
+   ]
+  },
+  "s4_vhl_swell_long": {
+   "description": "1.12 pu for 1.5 s: VHC1 long cease",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 1,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     1.12,
+     60.0
+    ],
+    [
+     1.6,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 4.0,
+   "events": {
+    "trip_time": 1.1875,
+    "reconnect_start": 1.6583333333333332,
+    "reconnect_end": 2.658333333333333
+   },
+   "history": [
+    [
+     "trip_time",
+     1.1875,
+     "VHC1"
+    ],
+    [
+     "cease",
+     1.1875,
+     "VHC1"
+    ],
+    [
+     "reconnect_start",
+     1.6583333333333332,
+     null
+    ],
+    [
+     "reconnect_end",
+     2.658333333333333,
+     null
+    ]
+   ]
+  },
+  "s4_vhcease_zero": {
+   "description": "VHcease = 0 lowers VHrecon to 0: load stranded",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 0.0,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.3,
+     60.0
+    ],
+    [
+     0.25,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 3.0,
+   "events": {
+    "trip_time": 0.2125
+   },
+   "history": [
+    [
+     "trip_time",
+     0.2125,
+     "VLM"
+    ],
+    [
+     "cease",
+     0.2125,
+     "VLM"
+    ]
+   ]
+  },
+  "s6_freq_low_cease": {
+   "description": "under-frequency cease, never reconnects",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 1,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 59.5,
+    "TFLC1": 0.5,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     1.0,
+     59.0
+    ],
+    [
+     1.5,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 5.0,
+   "events": {
+    "trip_time": 0.6125
+   },
+   "history": [
+    [
+     "trip_time",
+     0.6125,
+     "FLC1"
+    ],
+    [
+     "cease",
+     0.6125,
+     "FLC1"
+    ]
+   ]
+  },
+  "s6_freq_gate_low_v": {
+   "description": "frequency input held at nominal below 0.7 pu: no cease",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 1,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": 0.0,
+    "dbfh": 0.0,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.9,
+    "VLcease": 0.4,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 59.5,
+    "TFLC1": 0.2,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     0.6,
+     57.0
+    ],
+    [
+     0.6,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 2.0,
+   "events": {},
+   "history": []
+  },
+  "s6_droop_step": {
+   "description": "droop with deadband",
+   "cons": {
+    "VLMflag": 1,
+    "VHMflag": 0,
+    "VLLflag": 0,
+    "VLHflag": 0,
+    "FLflag": 0,
+    "FHflag": 0,
+    "Ldfact": 0.8,
+    "QPratio": 0.0,
+    "Tt": 0.02,
+    "Tv": 0.05,
+    "Tf": 0.02,
+    "dbfl": -0.0005,
+    "dbfh": 0.0005,
+    "Kdroop": 8.0,
+    "Kvp": 0.0,
+    "Tvp": 0.05,
+    "Kvq": 0.0,
+    "Tvq": 0.1,
+    "Tap": 1.0,
+    "Tbp": 1.0,
+    "Taq": 1.0,
+    "Tbq": 1.0,
+    "nP": 0.0,
+    "nQ": 0.0,
+    "Ipmax": 1.0,
+    "Ipmin": 0.0,
+    "Iqmax": 0.7,
+    "Iqmin": -0.7,
+    "Imax": 1.5,
+    "fcease": 0.0,
+    "VLcease": 0.5,
+    "VHcease": 1.2,
+    "Tcease": 0.05,
+    "Tdelay": 0.0,
+    "frecon": 0.5,
+    "VLrecon": 0.6,
+    "VHrecon": 1.1,
+    "Tramp": 1.25,
+    "Trecon": 0.05,
+    "TLrampL": 1.25,
+    "TLreconL": 0.05,
+    "VLC1": 0.9,
+    "TVLC1": 2.0,
+    "VLC2": 0.8,
+    "TVLC2": 0.5,
+    "VLC3": 0.0,
+    "TVLC3": 0.0,
+    "VLC4": 0.5,
+    "TVLC4": 0.15,
+    "TLrampH": 1.25,
+    "TLreconH": 0.05,
+    "VHC1": 1.1,
+    "TVHC1": 1.0,
+    "VHC2": 1.15,
+    "TVHC2": 0.5,
+    "VHC3": 99.0,
+    "TVHC3": 0.0,
+    "VHC4": 1.2,
+    "TVHC4": 0.16,
+    "FLC1": 58.0,
+    "TFLC1": 100.0,
+    "FHC1": 62.0,
+    "TFHC1": 100.0
+   },
+   "breakpoints": [
+    [
+     0,
+     1.0,
+     60.0
+    ],
+    [
+     0.1,
+     1.0,
+     60.3
+    ],
+    [
+     1.0,
+     1.0,
+     59.7
+    ],
+    [
+     2.0,
+     1.0,
+     60.0
+    ]
+   ],
+   "t_end": 3.0,
+   "events": {},
+   "history": []
+  }
+ }
+}

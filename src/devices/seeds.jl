@@ -90,6 +90,20 @@ let
     ))
 end
 
+# PERC2Load: no states; held currents in p. No residual pullback
+# (sensitivities are not supported with PERC2).
+let
+    g = PERC2Load(1, "1", 1.0, 0.0)
+    d, a, c, p = _sizes_of(g)
+    register_contract!(DeviceContract(
+        :perc2load, PERC2Load, :load,
+        d, a, c, p,
+        :perc2_residual_batch!, :perc2_jacobian_batch!,
+        nothing,
+        :none,
+    ))
+end
+
 let
     g = StaticGenerator(Int64(1), Int64(2), Int64[1], 1.0, 0.0)
     d, a, c, p = _sizes_of(g)
